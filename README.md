@@ -20,6 +20,22 @@ The durable harness gives: SQLite-backed conversations
 conversations owned by the calling task), model selection per conversation,
 and per-conversation execution environments — including remote hosts.
 
+## Space RPC through pi-serverd
+
+`pi-serverd.mjs` connects the space service to socket requests with
+`withSpaceService`; the existing `sessions` service remains available.
+For a standalone daemon, explicitly provision its private socket identity:
+
+```sh
+PI_SERVERD_SPACE_PRINCIPAL=local-operator PI_SERVERD_SPACE_ROLES=member \
+  node runtime/pi-serverd.mjs
+```
+
+Both variables are required together. Without them, space requests are denied;
+SSH/socket access does not assign a space role automatically. Federation mode
+uses `PI_SERVERD_FEDERATION_CONFIG` and its provisioned identity, key proofs,
+and grants. Client request fields cannot override either identity.
+
 ## App pages
 
 - **Chat** (`/`) — durable pi conversation (prompt, abort, new session,

@@ -5,7 +5,10 @@
 // Env: HOME (storage root), PI_SERVERD_SOCK (socket path, default
 // $HOME/.pi-serverd/server.sock), PI_SERVERD_ID (stable serverId, default:
 // persisted random uuid), PI_WORKDIR (agent cwd), PI_PROVIDER/PI_MODEL.
-import { chmodSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
+// PI_SERVERD_STATE_DIR and PI_SERVERD_AUTH_FILE isolate test/alternate runtimes.
+// Space RPC is opt-in: PI_SERVERD_SPACE_PRINCIPAL is a configured peer id;
+// PI_SERVERD_SPACE_ROLES is a comma-separated explicit role list. Never trust client JSON for identity.
+import { existsSync, chmodSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +17,7 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { createUnixServer } from '@earendil-works/pi-server/unix';
 import { SessionNotFoundError } from '@earendil-works/pi-server';
+import { SpaceService, StaticIdentity, withSpaceService, startConfiguredFederation } from './pi-spaces.mjs';
 import {
   acquireOwnerLock, createCredentialStore, createEventHub, createModelCatalog,
   ensureModel, isBusy, openHarness, pickModel, readJson, requestIdOf, sessionStore, Subagent,
@@ -22,7 +26,10 @@ import {
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.HOME || ROOT;
-const STATE_DIR = `${HOME}/.pi-serverd`;
+const STATE_DIR = process.env.PI_SERVERD_STATE_DIR || `${HOME}/.pi-serverd`;
+const spacePeer = process.env.PI_SERVERD_SPACE_PRINCIPAL;
+const spaceRoles = (process.env.PI_SERVERD_SPACE_ROLES || "").split(",").map(x => x.trim()).filter(Boolean);
+if (Boolean(spacePeer) !== Boolean(spaceRoles.length)) throw new Error("space RPC requires both PI_SERVERD_SPACE_PRINCIPAL and PI_SERVERD_SPACE_ROLES");
 const SOCK_PATH = process.env.PI_SERVERD_SOCK || `${STATE_DIR}/server.sock`;
 const WORKDIR = process.env.PI_WORKDIR || HOME;
 const LEGACY_MANIFEST = `${STATE_DIR}/sessions.json`;
@@ -34,6 +41,7 @@ try { chmodSync(STATE_DIR, 0o700); } catch {}
 mkdirSync(path.dirname(SOCK_PATH), { recursive: true, mode: 0o700 });
 mkdirSync(WORKDIR, { recursive: true });
 
+if (existsSync(`${STATE_DIR}/restart.lock`)) throw new Error("normal boot is blocked by the persistent recovery restart lock");
 const releaseLock = await acquireOwnerLock(`${STATE_DIR}/serverd.lock`, 'pi-serverd.mjs');
 
 const ID_FILE = `${STATE_DIR}/server-id`;
@@ -46,7 +54,7 @@ if (!serverId) {
 // --- harness ----------------------------------------------------------------
 
 const ctx = BACKGROUND_CONTEXT;
-const credentials = createCredentialStore(`${HOME}/.pi/agent/auth.json`);
+const credentials = createCredentialStore(process.env.PI_SERVERD_AUTH_FILE || `${HOME}/.pi/agent/auth.json`);
 const models = await createModelCatalog(credentials);
 const env = new NodeExecutionEnv({ cwd: WORKDIR, env: process.env });
 const harness = await openHarness({
@@ -67,8 +75,11 @@ const sessions = sessionStore(harness, ctx);
     console.log(`migrated ${n} sessions from ${LEGACY_MANIFEST}`);
   }
 }
+const federation = process.env.PI_SERVERD_FEDERATION_CONFIG
+  ? await startConfiguredFederation(harness, ctx, process.env.PI_SERVERD_FEDERATION_CONFIG) : null;
+if (existsSync(`${STATE_DIR}/restart.lock`)) throw new Error("restart lock was installed during boot");
 harness.resume();
-const stopSpaces = await startSpaceService(harness, ctx); // reaper + event delivery for the shared space
+const stopSpaces = federation ? () => federation.close() : await startSpaceService(harness, ctx); // reaper + event delivery for the shared space
 
 const events = createEventHub(harness, ctx);
 
@@ -231,6 +242,11 @@ const host = {
     return routedSession(metadata.id);
   },
 };
+
+// The private socket has one administrator-configured space identity. SSH access alone grants no space role.
+const spaceIdentity = new StaticIdentity(spacePeer ? { [spacePeer]: { principal: { peerId: spacePeer }, roles: spaceRoles } } : {});
+const spaceService = new SpaceService({ host: harness, ctx, identity: spaceIdentity, hostId: serverId, authorityId: serverId });
+host.serverServices = withSpaceService(host.serverServices, federation?.service || spaceService, federation?.trustedConnection || (() => ({ peerId: spacePeer || '' })));
 
 const server = createUnixServer(host, { serverId, path: SOCK_PATH, mode: 0o600 });
 await server.start();
