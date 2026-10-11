@@ -1,19 +1,89 @@
 var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res, err) => function __init() {
-  if (err) throw err[0];
-  try {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  } catch (e) {
-    throw err = [e], e;
-  }
-};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// src/index.ts
+import { Type } from "@earendil-works/pi-ai";
+import { defineDoc as defineDoc3, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
+
+// src/client.ts
+import { awaitWithContext } from "@earendil-works/chord/context";
+
+// src/core.ts
+var core_exports = {};
+__export(core_exports, {
+  ANY: () => ANY,
+  CHANGES_OVERHEAD: () => CHANGES_OVERHEAD,
+  CompletionViolation: () => CompletionViolation,
+  DEFAULT_LEASE_MS: () => DEFAULT_LEASE_MS,
+  DEFAULT_LIMITS: () => DEFAULT_LIMITS,
+  FOREVER: () => FOREVER,
+  IllegalArgumentError: () => IllegalArgumentError,
+  LimitError: () => LimitError,
+  MAX_LIST: () => MAX_LIST,
+  MAX_TIMER_MS: () => MAX_TIMER_MS,
+  NO_WAIT: () => NO_WAIT,
+  PAGE_OVERHEAD: () => PAGE_OVERHEAD,
+  PermissionError: () => PermissionError,
+  ResourceExhausted: () => ResourceExhausted,
+  ResponseBudgetTooSmall: () => ResponseBudgetTooSmall,
+  RevisionAhead: () => RevisionAhead,
+  SnapshotExpired: () => SnapshotExpired,
+  TransactionError: () => TransactionError,
+  UnknownLeaseError: () => UnknownLeaseError,
+  abortTxn: () => abortTxn,
+  addWaiter: () => addWaiter,
+  beginCommit: () => beginCommit,
+  cancel: () => cancel,
+  cancelWaiter: () => cancelWaiter,
+  changes: () => changes,
+  claimBytes: () => claimBytes,
+  commitTxn: () => commitTxn,
+  count: () => count,
+  createTxn: () => createTxn,
+  deadlineOf: () => deadlineOf,
+  deepEqual: () => deepEqual,
+  gidOf: () => gidOf,
+  initialState: () => initialState,
+  limitsOf: () => limitsOf,
+  list: () => list,
+  listPage: () => listPage,
+  maintenanceStep: () => maintenanceStep,
+  matches: () => matches,
+  migrate: () => migrate,
+  needsMaintenance: () => needsMaintenance,
+  nextExpiry: () => nextExpiry,
+  notify: () => notify,
+  overheadBytes: () => overheadBytes,
+  parkOperation: () => parkOperation,
+  plain: () => plain,
+  probe: () => probe,
+  releaseTxn: () => releaseTxn,
+  renew: () => renew,
+  revision: () => revision,
+  seal: () => seal2,
+  setCompletionProfiles: () => setCompletionProfiles,
+  setLimits: () => setLimits,
+  settle: () => settle,
+  stats: () => stats,
+  streamIdOf: () => streamIdOf,
+  timerDelay: () => timerDelay,
+  touch: () => touch2,
+  until: () => until,
+  view: () => view,
+  write: () => write
+});
+
 // src/stream.ts
+var encoder = new TextEncoder();
+var bytesOf = (v) => encoder.encode(JSON.stringify(v) ?? "").length;
+var opBytes = (o) => bytesOf(o) + 1;
+var open = /* @__PURE__ */ new WeakMap();
+var seal = (s) => {
+  open.delete(s);
+};
 function touch(s, now, maxLogBytes) {
   if (open.has(s)) return;
   if (!s.stream) s.stream = { rev: 0, floor: 0, bytes: 0, log: [] };
@@ -70,20 +140,7 @@ function collect(s, afterRev, cap, overhead) {
   }
   return { batches, next: batches.length ? batches[batches.length - 1].rev : afterRev };
 }
-var encoder, bytesOf, opBytes, open, seal, revisionOf;
-var init_stream = __esm({
-  "src/stream.ts"() {
-    "use strict";
-    encoder = new TextEncoder();
-    bytesOf = (v) => encoder.encode(JSON.stringify(v) ?? "").length;
-    opBytes = (o) => bytesOf(o) + 1;
-    open = /* @__PURE__ */ new WeakMap();
-    seal = (s) => {
-      open.delete(s);
-    };
-    revisionOf = (s) => s.stream?.rev ?? 0;
-  }
-});
+var revisionOf = (s) => s.stream?.rev ?? 0;
 
 // src/canonical.ts
 function canonicalJson(v) {
@@ -99,11 +156,6 @@ function canonicalJson(v) {
   }
   throw new TypeError(`canonical JSON: unsupported ${typeof v}`);
 }
-var init_canonical = __esm({
-  "src/canonical.ts"() {
-    "use strict";
-  }
-});
 
 // src/claims.ts
 var claims_exports = {};
@@ -123,6 +175,30 @@ __export(claims_exports, {
   sweep: () => sweep
 });
 import { createHash, createHmac, randomBytes } from "node:crypto";
+var encoder2 = new TextEncoder();
+var bytesOf2 = (v) => encoder2.encode(JSON.stringify(v) ?? "").length;
+var RequestConflict = class extends Error {
+};
+var RequestExpired = class extends Error {
+};
+var ResultExpired = class extends Error {
+};
+var IncarnationChanged = class extends Error {
+};
+var OperationCancelled = class extends Error {
+};
+var rpc = (s) => {
+  const x = s;
+  if (!x.rpc) x.rpc = { generations: {}, claims: {}, bytes: 0 };
+  else if (x.rpc.bytes === void 0) x.rpc.bytes = bytesOf2(x.rpc.claims) + bytesOf2(x.rpc.generations);
+  return x.rpc;
+};
+var samePrincipal = (a, b) => canonicalJson(a) === canonicalJson(b);
+var checkPrincipal = (p) => {
+  if (!p || typeof p.peerId !== "string" || p.peerId === "" || p.agentId !== void 0 && typeof p.agentId !== "string") throw new TypeError("principal needs a peerId");
+};
+var argHash = (method, args) => createHash("sha256").update(canonicalJson({ method, args })).digest("hex");
+var keyOf = (s, r) => canonicalJson([r.principal, s.spaceId ?? null, r.generation, r.requestId]);
 function issueGeneration(s, now, principal, options = {}) {
   checkPrincipal(principal);
   sweep(s, now);
@@ -146,16 +222,14 @@ function admit(s, now, r, method, args, deadline, resultBytes = 1024) {
   sweep(s, now);
   const st = rpc(s);
   const key = keyOf(s, r);
-  const hash2 = argHash(method, args);
+  const hash = argHash(method, args);
   const c = st.claims[key];
-  if (s.restoredClaims?.[key]) throw new IncarnationChanged("request belongs to historical restored data; replay is forbidden");
   if (c) {
-    if (c.method !== method || c.argHash !== hash2) throw new RequestConflict(`request ${r.requestId} was used for different arguments`);
+    if (c.method !== method || c.argHash !== hash) throw new RequestConflict(`request ${r.requestId} was used for different arguments`);
     if (c.state === "pending") return { kind: "pending", key, deadline: c.deadline };
     if (c.resultExpired || c.decidedAt !== void 0 && c.decidedAt + limitsOf(s).claimResultMs <= now) throw new ResultExpired(`request ${r.requestId} was decided; its result is no longer kept`);
     return c.state === "cancelled" ? { kind: "cancelled", key } : { kind: "done", key, result: c.result ?? null };
   }
-  if (s.invalidGenerations?.[r.generation]) throw new IncarnationChanged("generation belongs to restored data");
   const g = st.generations[r.generation];
   if (!g) throw new RequestExpired(`generation ${r.generation} is unknown or expired`);
   if (g.incarnation !== (s.incarnation ?? null)) throw new IncarnationChanged(`generation ${r.generation} belongs to an earlier incarnation of this space`);
@@ -163,7 +237,7 @@ function admit(s, now, r, method, args, deadline, resultBytes = 1024) {
   if (!samePrincipal(g.principal, r.principal)) throw new RequestExpired(`generation ${r.generation} was issued to another principal`);
   if (now > g.admitUntil) throw new RequestExpired(`generation ${r.generation} no longer admits new requests`);
   const lim = limitsOf(s);
-  const rec = { method, argHash: hash2, deadline, state: "pending", generation: r.generation, requestId: r.requestId, principal: { ...r.principal }, reservedResultBytes: resultBytes };
+  const rec = { method, argHash: hash, deadline, state: "pending", generation: r.generation, requestId: r.requestId, principal: { ...r.principal }, reservedResultBytes: resultBytes };
   const added = bytesOf2(rec) + bytesOf2(key) + 2;
   if (claimBytes(s) + added + resultBytes > lim.maxClaimBytes) throw new LimitError("the request and its reserved result exceed maxClaimBytes");
   st.claims[key] = rec;
@@ -190,12 +264,10 @@ function decide(s, now, key, outcome) {
   touch2(s, now);
 }
 function lookup(s, r, now) {
-  const key = keyOf(s, r);
-  const historical = s.restoredClaims?.[key];
-  const c = s.rpc?.claims[key] ?? historical;
+  const c = s.rpc?.claims[keyOf(s, r)];
   if (!c) throw new RequestExpired(`request ${r.requestId} is unknown`);
   const expired = c.resultExpired || c.state !== "pending" && c.decidedAt !== void 0 && c.decidedAt + limitsOf(s).claimResultMs <= now;
-  return { state: c.state, deadline: c.deadline, method: c.method, ...c.orphanedAfterRestore ? { orphanedAfterRestore: c.orphanedAfterRestore } : {}, ...historical ? { restoredHistory: true, ...c.state === "pending" ? { unknownOutcome: true } : {} } : {}, ...c.error ? { error: c.error } : {}, ...expired ? { resultExpired: true } : c.state === "pending" ? {} : { result: c.result ?? null } };
+  return { state: c.state, deadline: c.deadline, method: c.method, ...c.error ? { error: c.error } : {}, ...expired ? { resultExpired: true } : c.state === "pending" ? {} : { result: c.result ?? null } };
 }
 function cancelRequest(s, now, target) {
   sweep(s, now);
@@ -242,40 +314,9 @@ function sweep(s, now, maxRecords = 256) {
   }
   if (changed) touch2(s, now);
 }
-var encoder2, bytesOf2, RequestConflict, RequestExpired, ResultExpired, IncarnationChanged, OperationCancelled, rpc, samePrincipal, checkPrincipal, argHash, keyOf;
-var init_claims = __esm({
-  "src/claims.ts"() {
-    "use strict";
-    init_canonical();
-    init_core();
-    encoder2 = new TextEncoder();
-    bytesOf2 = (v) => encoder2.encode(JSON.stringify(v) ?? "").length;
-    RequestConflict = class extends Error {
-    };
-    RequestExpired = class extends Error {
-    };
-    ResultExpired = class extends Error {
-    };
-    IncarnationChanged = class extends Error {
-    };
-    OperationCancelled = class extends Error {
-    };
-    rpc = (s) => {
-      const x = s;
-      if (!x.rpc) x.rpc = { generations: {}, claims: {}, bytes: 0 };
-      else if (x.rpc.bytes === void 0) x.rpc.bytes = bytesOf2(x.rpc.claims) + bytesOf2(x.rpc.generations);
-      return x.rpc;
-    };
-    samePrincipal = (a, b) => canonicalJson(a) === canonicalJson(b);
-    checkPrincipal = (p) => {
-      if (!p || typeof p.peerId !== "string" || p.peerId === "" || p.agentId !== void 0 && typeof p.agentId !== "string") throw new TypeError("principal needs a peerId");
-    };
-    argHash = (method, args) => createHash("sha256").update(canonicalJson({ method, args })).digest("hex");
-    keyOf = (s, r) => canonicalJson([r.principal, s.spaceId ?? null, r.generation, r.requestId]);
-  }
-});
 
 // src/paging.ts
+var encodedBytes = (v) => Buffer.byteLength(JSON.stringify(v) ?? "", "utf8");
 function bytePage(source, offset, cap, make) {
   const items = [];
   let contents = 0;
@@ -294,17 +335,15 @@ function bytePage(source, offset, cap, make) {
   if (encodedBytes(result) > cap) throw new ResponseBudgetTooSmall(encodedBytes(result));
   return result;
 }
-var encodedBytes;
-var init_paging = __esm({
-  "src/paging.ts"() {
-    "use strict";
-    init_core();
-    encodedBytes = (v) => Buffer.byteLength(JSON.stringify(v) ?? "", "utf8");
-  }
-});
 
 // src/mailbox.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
+var MailboxEpochMismatch = class extends Error {
+};
+var InvalidAck = class extends Error {
+};
+var principalId = (p) => canonicalJson([p.peerId, p.agentId ?? null]);
+var epoch = () => `mb${randomBytes2(16).toString("hex")}`;
 function box(s, p) {
   if (!p || typeof p.peerId !== "string" || !p.peerId || p.agentId !== void 0 && typeof p.agentId !== "string") throw new IllegalArgumentError("invalid mailbox principal");
   s.mailboxes ??= { boxes: {} };
@@ -405,88 +444,68 @@ function ackMailbox(s, p, mailboxEpoch, upTo) {
   }
   return { mailboxEpoch: b.epoch, acked: b.acked };
 }
-var MailboxEpochMismatch, InvalidAck, principalId, epoch;
-var init_mailbox = __esm({
-  "src/mailbox.ts"() {
-    "use strict";
-    init_canonical();
-    init_paging();
-    init_core();
-    MailboxEpochMismatch = class extends Error {
-    };
-    InvalidAck = class extends Error {
-    };
-    principalId = (p) => canonicalJson([p.peerId, p.agentId ?? null]);
-    epoch = () => `mb${randomBytes2(16).toString("hex")}`;
-  }
-});
 
 // src/core.ts
-var core_exports = {};
-__export(core_exports, {
-  ANY: () => ANY,
-  CHANGES_OVERHEAD: () => CHANGES_OVERHEAD,
-  CompletionViolation: () => CompletionViolation,
-  DEFAULT_LEASE_MS: () => DEFAULT_LEASE_MS,
-  DEFAULT_LIMITS: () => DEFAULT_LIMITS,
-  FOREVER: () => FOREVER,
-  IllegalArgumentError: () => IllegalArgumentError,
-  LimitError: () => LimitError,
-  MAX_LIST: () => MAX_LIST,
-  MAX_TIMER_MS: () => MAX_TIMER_MS,
-  NO_WAIT: () => NO_WAIT,
-  PAGE_OVERHEAD: () => PAGE_OVERHEAD,
-  PermissionError: () => PermissionError,
-  ResourceExhausted: () => ResourceExhausted,
-  ResponseBudgetTooSmall: () => ResponseBudgetTooSmall,
-  RevisionAhead: () => RevisionAhead,
-  SnapshotExpired: () => SnapshotExpired,
-  TransactionError: () => TransactionError,
-  UnknownLeaseError: () => UnknownLeaseError,
-  abortTxn: () => abortTxn,
-  addWaiter: () => addWaiter,
-  beginCommit: () => beginCommit,
-  cancel: () => cancel,
-  cancelWaiter: () => cancelWaiter,
-  changes: () => changes,
-  claimBytes: () => claimBytes,
-  commitTxn: () => commitTxn,
-  count: () => count,
-  createTxn: () => createTxn,
-  deadlineOf: () => deadlineOf,
-  deepEqual: () => deepEqual,
-  gidOf: () => gidOf,
-  importRestoredEntry: () => importRestoredEntry,
-  initialState: () => initialState,
-  limitsOf: () => limitsOf,
-  list: () => list,
-  listPage: () => listPage,
-  maintenanceStep: () => maintenanceStep,
-  matches: () => matches,
-  migrate: () => migrate,
-  needsMaintenance: () => needsMaintenance,
-  nextExpiry: () => nextExpiry,
-  notify: () => notify,
-  overheadBytes: () => overheadBytes,
-  parkOperation: () => parkOperation,
-  plain: () => plain,
-  probe: () => probe,
-  releaseRestoredEntry: () => releaseRestoredEntry,
-  releaseTxn: () => releaseTxn,
-  renew: () => renew,
-  revision: () => revision,
-  seal: () => seal2,
-  setCompletionProfiles: () => setCompletionProfiles,
-  setLimits: () => setLimits,
-  settle: () => settle,
-  stats: () => stats,
-  streamIdOf: () => streamIdOf,
-  timerDelay: () => timerDelay,
-  touch: () => touch2,
-  until: () => until,
-  view: () => view,
-  write: () => write
-});
+var NO_WAIT = 0;
+var ANY = -1;
+var FOREVER = Number.MAX_SAFE_INTEGER;
+var DEFAULT_LEASE_MS = 3600 * 1e3;
+var MAX_TIMER_MS = 2 ** 31 - 1;
+var until = (now, ms2) => ms2 >= FOREVER - now ? FOREVER : now + ms2;
+var timerDelay = (ms2) => Math.min(Math.max(1, ms2), MAX_TIMER_MS);
+var DEFAULT_LIMITS = { maxEntryBytes: 64 * 1024, maxTypeChars: 128, maxTypes: 16, maxEntries: 1e4, maxEntriesPerOwner: 1e3, maxRegsPerOwner: 20, maxWaitersPerOwner: 20, maxTxnsPerOwner: 20, maxSpaceBytes: 64 * 1024 * 1024, notifyIntervalMs: 1e3, claimResultMs: 24 * 3600 * 1e3, generationAdmitMs: 3600 * 1e3, maxClaimBytes: 32 * 1024 * 1024, maxOutboxBytes: 8 * 1024 * 1024, maxDocBytes: 128 * 1024 * 1024, maxCommitBytes: 192 * 1024, maxFrameBytes: 256 * 1024, maxEventBytes: 160 * 1024, maxLogBytes: 4 * 1024 * 1024, maxSnapshotBytes: 64 * 1024 * 1024, maxSnapshots: 16, snapshotTtlMs: 6e4, maxMailboxBytes: 8 * 1024 * 1024, mailboxTtlMs: 7 * 24 * 3600 * 1e3, maxJobBytes: 16 * 1024 * 1024 };
+var LimitError = class extends Error {
+};
+var ResourceExhausted = class extends LimitError {
+};
+var ResponseBudgetTooSmall = class extends Error {
+  requiredBytes;
+  // (no parameter property: the code runs under node's strip-only TypeScript mode)
+  constructor(requiredBytes) {
+    super(`the next element needs ${requiredBytes} bytes of budget`);
+    this.requiredBytes = requiredBytes;
+  }
+};
+var IllegalArgumentError = class extends Error {
+};
+var PermissionError = class extends Error {
+};
+var TransactionError = class extends Error {
+};
+var CompletionViolation = class extends TransactionError {
+};
+var UnknownLeaseError = class extends Error {
+};
+var initialState = () => ({ nextId: 1, entries: [], txns: {}, regs: [], waiters: [], outbox: [], returned: 0 });
+var migrate = (v, _from) => {
+  const d = initialState();
+  return {
+    nextId: v.nextId ?? d.nextId,
+    entries: (v.entries ?? d.entries).map((e) => ({ ...e, types: e.types ?? [e.type], readBy: e.readBy ?? [], writtenUnder: e.writtenUnder ?? null, takenBy: e.takenBy ?? null, owner: e.owner ?? null })),
+    txns: Object.fromEntries(Object.entries(v.txns ?? d.txns).map(([k, t]) => [k, { ...t, owner: t.owner ?? null }])),
+    regs: (v.regs ?? d.regs).map((r) => ({ ...r, seq: r.seq ?? 0 })),
+    waiters: v.waiters ?? d.waiters,
+    outbox: v.outbox ?? d.outbox,
+    ...v.limits ? { limits: v.limits } : {},
+    ...typeof v.spaceId === "string" ? { spaceId: v.spaceId } : {},
+    ...typeof v.incarnation === "string" ? { incarnation: v.incarnation } : {},
+    ...v.rpc ? { rpc: v.rpc } : {},
+    // request claims (claims.ts)
+    ...v.stream ? { stream: v.stream } : {},
+    // revisions and change batches (stream.ts)
+    ...v.completionProfiles ? { completionProfiles: v.completionProfiles } : {},
+    ...v.mailboxes ? { mailboxes: v.mailboxes } : {},
+    ...v.jobs ? { jobs: v.jobs } : {},
+    ...v.releaseQueue ? { releaseQueue: v.releaseQueue } : {},
+    ...v.maintenance ? { maintenance: v.maintenance } : {},
+    returned: v.returned ?? d.returned
+  };
+};
+var clone = (v) => JSON.parse(JSON.stringify(v));
+var plain = (v) => v === void 0 ? v : clone(v);
+var encoder3 = new TextEncoder();
+var jsonBytes = (v) => encoder3.encode(JSON.stringify(v) ?? "").length;
+var commitBudgets = /* @__PURE__ */ new WeakMap();
 function seal2(s) {
   seal(s);
   commitBudgets.delete(s);
@@ -519,6 +538,7 @@ function maintenanceStep(s, cost, now, cursor) {
   charge(s, cost);
   return true;
 }
+var limitsOf = (s) => ({ ...DEFAULT_LIMITS, ...s.limits ?? {} });
 function setLimits(s, l, now = Date.now()) {
   for (const [k, v] of Object.entries(l)) {
     if (!(k in DEFAULT_LIMITS) || typeof v !== "number" || !Number.isInteger(v) || v < (k === "notifyIntervalMs" ? 0 : 1)) throw new IllegalArgumentError(`bad limit ${k}`);
@@ -533,15 +553,15 @@ function setLimits(s, l, now = Date.now()) {
   touch2(s, now);
   return limitsOf(s);
 }
+var ownedBy = (as) => (o) => o.owner === as;
 function overheadBytes(s) {
-  return jsonBytes(s.authorityTransition ?? {}) + jsonBytes(s.authorityCounters ?? {}) + (s.restore ? jsonBytes(s.restore) : 0) + claimBytes(s) + (s.stream?.bytes ?? 0) + jsonBytes(s.outbox) + jsonBytes(s.waiters) + jsonBytes(s.regs) + jsonBytes(s.txns) + jsonBytes(s.jobs ?? []) + jsonBytes(s.mailboxes ?? {});
+  return claimBytes(s) + (s.stream?.bytes ?? 0) + jsonBytes(s.outbox) + jsonBytes(s.waiters) + jsonBytes(s.regs) + jsonBytes(s.txns) + jsonBytes(s.jobs ?? []) + jsonBytes(s.mailboxes ?? {});
 }
 function claimBytes(s) {
   const r = s.rpc;
-  const history = (s.restoredClaims ? jsonBytes(s.restoredClaims) : 0) + (s.invalidGenerations ? jsonBytes(s.invalidGenerations) : 0);
-  if (!r) return history;
-  if (r.bytes === void 0) return history + jsonBytes(r.claims) + jsonBytes(r.generations);
-  return history + r.bytes + (r.reservedBytes ?? 0);
+  if (!r) return 0;
+  if (r.bytes === void 0) return jsonBytes(r.claims) + jsonBytes(r.generations);
+  return r.bytes + (r.reservedBytes ?? 0);
 }
 function checkEventSize(s, rec, lim) {
   if (s.regs.length === 0 && s.waiters.length === 0) return;
@@ -551,6 +571,8 @@ function checkEventSize(s, rec, lim) {
   const bound = jsonBytes(view(rec, s.spaceId)) + handback + EVENT_OVERHEAD;
   if (bound > lim.maxEventBytes) throw new ResourceExhausted(`an event for this entry could take ${bound} bytes; the limit is ${lim.maxEventBytes}`);
 }
+var EVENT_OVERHEAD = 256;
+var COMMIT_FIXED = 1024;
 function publishCost(s, e) {
   const v = jsonBytes(view(e, s.spaceId));
   let n = jsonBytes(putOp(e)) + 1;
@@ -624,6 +646,7 @@ function runJobs(s, now) {
   }
   if (s.jobs) prune(s.jobs, (j) => j.cursor === j.events.length);
 }
+var coreJobRetry = (now) => until(now, 1e3);
 function reserve(s, txn, cost, lim) {
   const t = txn === null ? void 0 : s.txns[txn];
   const have = t?.reserved ?? 0;
@@ -641,6 +664,13 @@ function checkSize(what, v, lim) {
   const n = jsonBytes(v);
   if (n > lim.maxEntryBytes) throw new LimitError(`${what} is ${n} bytes; the limit is ${lim.maxEntryBytes}`);
 }
+var peekId = (s, p) => s.incarnation ? `${p}${s.incarnation}-${s.nextId}` : `${p}${s.nextId}`;
+var newId = (s, p) => {
+  const id = peekId(s, p);
+  s.nextId++;
+  return id;
+};
+var gidOf = (spaceId, id) => `${spaceId}/${id}`;
 function grant(requested, now) {
   if (typeof requested !== "number" || Number.isNaN(requested)) throw new IllegalArgumentError("bad lease");
   if (requested < 0 && requested !== ANY) throw new IllegalArgumentError("negative lease");
@@ -840,6 +870,7 @@ function emit(s, r, e, count2, now, completing = false) {
   delete r.pendingEntry;
   queueEvent(s, now, { kind: "entry", eventId: r.id, seq: r.seq, handback: r.handback, target: r.target, entry: e, ...count2 > 1 ? { count: count2 } : {} }, r.consumer, completing);
 }
+var intervalOf = (s, r) => r.minIntervalMs ? limitsOf(s).notifyIntervalMs : 0;
 function notifyWrite(s, e, txn, now, completing = false) {
   for (const r of s.regs) {
     const applies = txn === null ? true : r.txn === txn;
@@ -865,10 +896,11 @@ function probe(s, now, tmpl2, txn, take, as) {
   if (f.status === "found" && take && txn !== null && f.rec.writtenUnder !== txn) reserve(s, txn, publishCost(s, f.rec), limitsOf(s));
   return f.status === "found" ? { status: "found", entry: apply(s, now, f.rec, txn, take) } : f;
 }
+var view = (e, spaceId) => ({ id: e.id, ...spaceId ? { gid: gidOf(spaceId, e.id) } : {}, type: e.type, types: [...e.types], fields: clone(e.fields), owner: e.owner });
 function find(s, tmpl2, txn, take) {
   let locked = false;
   for (const e of s.entries) {
-    if (!matches(tmpl2, e) || e.restoredUnverified && (take || txn !== null)) continue;
+    if (!matches(tmpl2, e)) continue;
     const mine = txn !== null && e.writtenUnder === txn;
     if (e.writtenUnder !== null && !mine) continue;
     if (e.takenBy !== null) {
@@ -884,7 +916,7 @@ function find(s, tmpl2, txn, take) {
   return locked ? { status: "locked" } : { status: "none" };
 }
 function apply(s, now, e, txn, take) {
-  const copy2 = clone(e);
+  const copy = clone(e);
   if (take) {
     const profiles = (s.completionProfiles ?? []).filter((p) => e.types.includes(p.taskType));
     if (profiles.length) {
@@ -904,7 +936,7 @@ function apply(s, now, e, txn, take) {
     e.readBy.push(txn);
     touch2(s, now);
   }
-  return copy2;
+  return copy;
 }
 function createTxn(s, now, lease, as) {
   settle(s, now);
@@ -914,6 +946,12 @@ function createTxn(s, now, lease, as) {
   touch2(s, now);
   return { id: t.id, expires: t.expires };
 }
+var mayUse = (owner, as) => as === void 0 || owner !== null && owner === as;
+var requireTxn = (s, id, as) => {
+  const t = s.txns[id];
+  if (!t) throw new TransactionError(`transaction ${id} is not active`);
+  if (!mayUse(t.owner, as)) throw new PermissionError(`transaction ${id} belongs to another conversation`);
+};
 function setCompletionProfiles(s, profiles, now = Date.now()) {
   if (Object.keys(s.txns).length) throw new TransactionError("configure completion profiles before opening transactions");
   const seen = /* @__PURE__ */ new Set();
@@ -935,6 +973,21 @@ function checkCompletion(s, id) {
     }
   }
 }
+var commitTxn = (s, now, id, as) => {
+  settle(s, now);
+  requireTxn(s, id, as);
+  checkCompletion(s, id);
+  charge(s, s.txns[id].reserved ?? 0);
+  finish(s, id, true, now);
+  serve(s, now);
+};
+var abortTxn = (s, now, id, as) => {
+  settle(s, now);
+  requireTxn(s, id, as);
+  charge(s, s.txns[id].reserved ?? 0);
+  finish(s, id, false, now);
+  serve(s, now);
+};
 function releaseTxn(s, now, id) {
   settle(s, now);
   if (!s.txns[id]) return false;
@@ -961,7 +1014,7 @@ function addWaiter(s, now, w) {
   checkOutbox(s);
   if (jsonBytes(w.handback ?? null) + EVENT_OVERHEAD > limitsOf(s).maxEventBytes) throw new ResourceExhausted("the wait's metadata exceeds maxEventBytes");
   const txnLeaseMs = grant(w.txnLeaseMs ?? ANY, now) - now;
-  const rec = { id: newId(s, "w"), template: w.template, take: w.take, target: w.target, deadline, txnLeaseMs, handback: w.handback ?? null, ...w.consumer ? { consumer: { ...w.consumer } } : {}, ...w.authorizedUntil === void 0 ? {} : { authorizedUntil: w.authorizedUntil } };
+  const rec = { id: newId(s, "w"), template: w.template, take: w.take, target: w.target, deadline, txnLeaseMs, handback: w.handback ?? null, ...w.consumer ? { consumer: { ...w.consumer } } : {} };
   const updated = refreshReservations(s, { waiter: rec });
   for (const e of s.entries) if (matches(rec.template, e) && jsonBytes(view(e, s.spaceId)) + jsonBytes(rec.handback) + EVENT_OVERHEAD > limitsOf(s).maxEventBytes) throw new ResourceExhausted("the wait would create an oversized event");
   s.waiters.push(rec);
@@ -982,13 +1035,6 @@ function serve(s, now) {
       const claim = s.rpc?.claims[w.claimKey];
       if (!claim || claim.state !== "pending") {
         s.waiters.splice(s.waiters.indexOf(w), 1);
-        continue;
-      }
-      if (w.authorizedUntil !== void 0 && now >= w.authorizedUntil) {
-        if (w.deadline <= now) {
-          decide(s, now, w.claimKey, { state: "done", result: null });
-          s.waiters.splice(s.waiters.indexOf(w), 1);
-        }
         continue;
       }
       const txn = w.requestTxn ?? null;
@@ -1018,7 +1064,6 @@ function serve(s, now) {
       s.waiters.splice(s.waiters.indexOf(w), 1);
       continue;
     }
-    if (w.authorizedUntil !== void 0 && now >= w.authorizedUntil) continue;
     const f = find(s, w.template, null, w.take);
     if (f.status !== "found") continue;
     const event = { kind: "waiter", eventId: w.id, seq: 1, handback: w.handback, target: w.target, entry: view(f.rec, s.spaceId) };
@@ -1176,6 +1221,7 @@ function nextExpiry(s) {
 function needsMaintenance(s, now) {
   return nextExpiry(s) <= now;
 }
+var active = (s, id, now) => id !== null && (s.txns[id]?.expires ?? -Infinity) > now;
 function standing(s, e, now) {
   if (e.expires <= now) return "expired";
   if (e.writtenUnder !== null) return active(s, e.writtenUnder, now) ? "uncommitted" : "expired";
@@ -1187,25 +1233,29 @@ function count(s, now, tmpl2 = null, txn = null, as) {
   const mine = active(s, txn, now);
   let n = 0;
   for (const e of s.entries) {
-    if (e.restoredUnverified && txn !== null) continue;
     const st = standing(s, e, now);
     if ((st === "visible" || st === "uncommitted" && mine && e.writtenUnder === txn) && matches(tmpl2, e)) n++;
   }
   return n;
 }
+var MAX_LIST = 1e3;
 function list(s, now, tmpl2 = null, txn = null, limit = Number.MAX_SAFE_INTEGER, as) {
   if (!Number.isInteger(limit) || limit < 1) throw new IllegalArgumentError("limit must be a positive integer");
   if (txn !== null) requireTxn(s, txn, as);
   const mine = active(s, txn, now);
   const out = [];
   for (const e of s.entries) {
-    if (e.restoredUnverified && txn !== null) continue;
     if (out.length >= limit) break;
     const st = standing(s, e, now);
     if ((st === "visible" || st === "uncommitted" && mine && e.writtenUnder === txn) && matches(tmpl2, e)) out.push(view(e, s.spaceId));
   }
   return out;
 }
+var PAGE_OVERHEAD = 96;
+var seqOf = (id) => {
+  const m = /(\d+)$/.exec(id);
+  return m ? Number(m[1]) : 0;
+};
 function listPage(s, now, tmpl2 = null, txn = null, o = {}, as) {
   const frame2 = limitsOf(s).maxFrameBytes;
   const budget = o.maxBytes === void 0 ? frame2 : o.maxBytes;
@@ -1215,42 +1265,23 @@ function listPage(s, now, tmpl2 = null, txn = null, o = {}, as) {
   const after = o.after == null ? 0 : Number(o.after);
   if (txn !== null) requireTxn(s, txn, as);
   const mine = active(s, txn, now);
-  const eligible = s.entries.filter((e) => !(e.restoredUnverified && txn !== null) && seqOf(e.id) > after && (standing(s, e, now) === "visible" || standing(s, e, now) === "uncommitted" && mine && e.writtenUnder === txn) && matches(tmpl2, e)).map((e) => view(e, s.spaceId));
+  const eligible = s.entries.filter((e) => seqOf(e.id) > after && (standing(s, e, now) === "visible" || standing(s, e, now) === "uncommitted" && mine && e.writtenUnder === txn) && matches(tmpl2, e)).map((e) => view(e, s.spaceId));
   return bytePage(eligible, 0, cap, (items, next) => ({ items, next: next === null ? null : String(seqOf(eligible[next - 1].id)), rev: revisionOf(s), streamId: streamIdOf(s) }));
 }
+var putOp = (e) => ({ op: "put", id: e.id, type: e.type, types: [...e.types], fields: clone(e.fields), expires: e.expires, owner: e.owner });
 function logPut(s, now, e) {
   record(s, now, putOp(e), limitsOf(s).maxLogBytes);
-}
-function importRestoredEntry(s, now, e) {
-  const cost = jsonBytes(e) + jsonBytes(putOp(e)) + 256;
-  const lim = limitsOf(s), used = s.entries.reduce((n, x) => n + (x.size ?? jsonBytes(x.fields)), 0) + jsonBytes(e.fields);
-  if (s.entries.some((x) => x.id === e.id) || s.entries.length >= lim.maxEntries || jsonBytes(e.fields) > lim.maxEntryBytes || used > lim.maxSpaceBytes || used + overheadBytes(s) + cost > lim.maxDocBytes) throw new ResourceExhausted("restored entry violates current space limits or has a duplicate id");
-  if (cost + 1024 > lim.maxCommitBytes) throw new ResourceExhausted("restored entry cannot fit the commit budget");
-  if (!maintenanceStep(s, cost, now, `restore-entry:${e.id}`)) return false;
-  s.entries.push(clone(e));
-  logPut(s, now, e);
-  return true;
-}
-function releaseRestoredEntry(s, now, e) {
-  const lim = limitsOf(s), preview = clone(e);
-  delete preview.restoredUnverified;
-  checkEventSize(s, preview, lim);
-  const publication = publishCost(s, preview), update = jsonBytes(preview) + 256;
-  if (publication + update + COMMIT_FIXED > lim.maxCommitBytes) throw new ResourceExhausted("restored release and fanout cannot fit the commit budget");
-  if (!canCharge(s, publication + update)) {
-    deferMaintenance(s, now, `release:${e.id}`);
-    return false;
-  }
-  reserve(s, null, publication, lim);
-  charge(s, update);
-  delete e.restoredUnverified;
-  logPut(s, now, e);
-  notifyWrite(s, e, null, now, true);
-  return true;
 }
 function logDel(s, now, id) {
   record(s, now, { op: "del", id }, limitsOf(s).maxLogBytes);
 }
+var streamIdOf = (s) => `${s.spaceId ?? "local"}:${s.incarnation ?? "0"}`;
+var revision = (s) => revisionOf(s);
+var SnapshotExpired = class extends Error {
+};
+var RevisionAhead = class extends Error {
+};
+var CHANGES_OVERHEAD = 160;
 function changes(s, afterRev, o = {}) {
   const lim = limitsOf(s);
   const budget = o.maxBytes === void 0 ? lim.maxFrameBytes : o.maxBytes;
@@ -1280,170 +1311,41 @@ function stats(s, now) {
   r.bytes.total = jsonBytes(s);
   return r;
 }
-var NO_WAIT, ANY, FOREVER, DEFAULT_LEASE_MS, MAX_TIMER_MS, until, timerDelay, DEFAULT_LIMITS, LimitError, ResourceExhausted, ResponseBudgetTooSmall, IllegalArgumentError, PermissionError, TransactionError, CompletionViolation, UnknownLeaseError, initialState, migrate, clone, plain, encoder3, jsonBytes, commitBudgets, limitsOf, ownedBy, EVENT_OVERHEAD, COMMIT_FIXED, coreJobRetry, peekId, newId, gidOf, intervalOf, view, mayUse, requireTxn, commitTxn, abortTxn, active, MAX_LIST, PAGE_OVERHEAD, seqOf, putOp, streamIdOf, revision, SnapshotExpired, RevisionAhead, CHANGES_OVERHEAD;
-var init_core = __esm({
-  "src/core.ts"() {
-    "use strict";
-    init_stream();
-    init_canonical();
-    init_claims();
-    init_paging();
-    init_mailbox();
-    NO_WAIT = 0;
-    ANY = -1;
-    FOREVER = Number.MAX_SAFE_INTEGER;
-    DEFAULT_LEASE_MS = 3600 * 1e3;
-    MAX_TIMER_MS = 2 ** 31 - 1;
-    until = (now, ms2) => ms2 >= FOREVER - now ? FOREVER : now + ms2;
-    timerDelay = (ms2) => Math.min(Math.max(1, ms2), MAX_TIMER_MS);
-    DEFAULT_LIMITS = { maxEntryBytes: 64 * 1024, maxTypeChars: 128, maxTypes: 16, maxEntries: 1e4, maxEntriesPerOwner: 1e3, maxRegsPerOwner: 20, maxWaitersPerOwner: 20, maxTxnsPerOwner: 20, maxSpaceBytes: 64 * 1024 * 1024, notifyIntervalMs: 1e3, claimResultMs: 24 * 3600 * 1e3, generationAdmitMs: 3600 * 1e3, maxClaimBytes: 32 * 1024 * 1024, maxOutboxBytes: 8 * 1024 * 1024, maxDocBytes: 128 * 1024 * 1024, maxCommitBytes: 192 * 1024, maxFrameBytes: 256 * 1024, maxEventBytes: 160 * 1024, maxLogBytes: 4 * 1024 * 1024, maxSnapshotBytes: 64 * 1024 * 1024, maxSnapshots: 16, snapshotTtlMs: 6e4, maxMailboxBytes: 8 * 1024 * 1024, mailboxTtlMs: 7 * 24 * 3600 * 1e3, maxJobBytes: 16 * 1024 * 1024 };
-    LimitError = class extends Error {
-    };
-    ResourceExhausted = class extends LimitError {
-    };
-    ResponseBudgetTooSmall = class extends Error {
-      requiredBytes;
-      // (no parameter property: the code runs under node's strip-only TypeScript mode)
-      constructor(requiredBytes) {
-        super(`the next element needs ${requiredBytes} bytes of budget`);
-        this.requiredBytes = requiredBytes;
-      }
-    };
-    IllegalArgumentError = class extends Error {
-    };
-    PermissionError = class extends Error {
-    };
-    TransactionError = class extends Error {
-    };
-    CompletionViolation = class extends TransactionError {
-    };
-    UnknownLeaseError = class extends Error {
-    };
-    initialState = () => ({ nextId: 1, entries: [], txns: {}, regs: [], waiters: [], outbox: [], returned: 0 });
-    migrate = (v, _from) => {
-      const d = initialState();
-      return {
-        nextId: v.nextId ?? d.nextId,
-        entries: (v.entries ?? d.entries).map((e) => ({ ...e, types: e.types ?? [e.type], readBy: e.readBy ?? [], writtenUnder: e.writtenUnder ?? null, takenBy: e.takenBy ?? null, owner: e.owner ?? null })),
-        txns: Object.fromEntries(Object.entries(v.txns ?? d.txns).map(([k, t]) => [k, { ...t, owner: t.owner ?? null }])),
-        regs: (v.regs ?? d.regs).map((r) => ({ ...r, seq: r.seq ?? 0 })),
-        waiters: v.waiters ?? d.waiters,
-        outbox: v.outbox ?? d.outbox,
-        ...v.limits ? { limits: v.limits } : {},
-        ...typeof v.spaceId === "string" ? { spaceId: v.spaceId } : {},
-        ...typeof v.incarnation === "string" ? { incarnation: v.incarnation } : {},
-        ...v.rpc ? { rpc: v.rpc } : {},
-        // request claims (claims.ts)
-        ...v.stream ? { stream: v.stream } : {},
-        // revisions and change batches (stream.ts)
-        ...v.completionProfiles ? { completionProfiles: v.completionProfiles } : {},
-        ...v.mailboxes ? { mailboxes: v.mailboxes } : {},
-        ...v.jobs ? { jobs: v.jobs } : {},
-        ...v.releaseQueue ? { releaseQueue: v.releaseQueue } : {},
-        ...v.maintenance ? { maintenance: v.maintenance } : {},
-        ...v.primaryEpoch !== void 0 ? { primaryEpoch: v.primaryEpoch } : {},
-        ...v.acceptedAuthorityId ? { acceptedAuthorityId: v.acceptedAuthorityId } : {},
-        ...v.authorityTransition ? { authorityTransition: v.authorityTransition } : {},
-        ...v.authorityCounters ? { authorityCounters: v.authorityCounters } : {},
-        ...v.restore ? { restore: v.restore } : {},
-        ...v.restoredClaims ? { restoredClaims: v.restoredClaims } : {},
-        ...v.invalidGenerations ? { invalidGenerations: v.invalidGenerations } : {},
-        returned: v.returned ?? d.returned
-      };
-    };
-    clone = (v) => JSON.parse(JSON.stringify(v));
-    plain = (v) => v === void 0 ? v : clone(v);
-    encoder3 = new TextEncoder();
-    jsonBytes = (v) => encoder3.encode(JSON.stringify(v) ?? "").length;
-    commitBudgets = /* @__PURE__ */ new WeakMap();
-    limitsOf = (s) => ({ ...DEFAULT_LIMITS, ...s.limits ?? {} });
-    ownedBy = (as) => (o) => o.owner === as;
-    EVENT_OVERHEAD = 256;
-    COMMIT_FIXED = 1024;
-    coreJobRetry = (now) => until(now, 1e3);
-    peekId = (s, p) => s.incarnation ? `${p}${s.incarnation}-${s.nextId}` : `${p}${s.nextId}`;
-    newId = (s, p) => {
-      const id = peekId(s, p);
-      s.nextId++;
-      return id;
-    };
-    gidOf = (spaceId, id) => `${spaceId}/${id}`;
-    intervalOf = (s, r) => r.minIntervalMs ? limitsOf(s).notifyIntervalMs : 0;
-    view = (e, spaceId) => ({ id: e.id, ...spaceId ? { gid: gidOf(spaceId, e.id) } : {}, type: e.type, types: [...e.types], fields: clone(e.fields), owner: e.owner, ...e.restoredUnverified ? { restoredUnverified: true } : {} });
-    mayUse = (owner, as) => as === void 0 || owner !== null && owner === as;
-    requireTxn = (s, id, as) => {
-      const t = s.txns[id];
-      if (!t) throw new TransactionError(`transaction ${id} is not active`);
-      if (!mayUse(t.owner, as)) throw new PermissionError(`transaction ${id} belongs to another conversation`);
-    };
-    commitTxn = (s, now, id, as) => {
-      settle(s, now);
-      requireTxn(s, id, as);
-      checkCompletion(s, id);
-      charge(s, s.txns[id].reserved ?? 0);
-      finish(s, id, true, now);
-      serve(s, now);
-    };
-    abortTxn = (s, now, id, as) => {
-      settle(s, now);
-      requireTxn(s, id, as);
-      charge(s, s.txns[id].reserved ?? 0);
-      finish(s, id, false, now);
-      serve(s, now);
-    };
-    active = (s, id, now) => id !== null && (s.txns[id]?.expires ?? -Infinity) > now;
-    MAX_LIST = 1e3;
-    PAGE_OVERHEAD = 96;
-    seqOf = (id) => {
-      const m = /(\d+)$/.exec(id);
-      return m ? Number(m[1]) : 0;
-    };
-    putOp = (e) => ({ op: "put", id: e.id, type: e.type, types: [...e.types], fields: clone(e.fields), expires: e.expires, owner: e.owner, ...e.restoredUnverified ? { restoredUnverified: true } : {} });
-    streamIdOf = (s) => `${s.spaceId ?? "local"}:${s.incarnation ?? "0"}`;
-    revision = (s) => revisionOf(s);
-    SnapshotExpired = class extends Error {
-    };
-    RevisionAhead = class extends Error {
-    };
-    CHANGES_OVERHEAD = 160;
-  }
-});
 
 // src/doc.ts
 import { defineDoc } from "@earendil-works/pi-durable";
-var Space;
-var init_doc = __esm({
-  "src/doc.ts"() {
-    "use strict";
-    init_core();
-    Space = defineDoc({
-      kind: "pi-spaces.space",
-      version: 5,
-      // 5: spaceId and incarnation (named spaces, see spaces.ts)
-      scope: "session",
-      initial: () => initialState(),
-      migrate: (v, from) => migrate(v, from)
-    });
-  }
+var Space = defineDoc({
+  kind: "pi-spaces.space",
+  version: 5,
+  // 5: spaceId and incarnation (named spaces, see spaces.ts)
+  scope: "session",
+  initial: () => initialState(),
+  migrate: (v, from) => migrate(v, from)
 });
 
 // src/spaces.ts
-var spaces_exports = {};
-__export(spaces_exports, {
-  DEFAULT_ALIAS: () => DEFAULT_ALIAS,
-  NamedSpace: () => NamedSpace,
-  Registry: () => Registry,
-  UnknownSpaceError: () => UnknownSpaceError,
-  createSpace: () => createSpace,
-  hostKey: () => hostKey,
-  listSpaces: () => listSpaces,
-  newIncarnation: () => newIncarnation,
-  resolveSpaceId: () => resolveSpaceId,
-  snapshotSpace: () => snapshotSpace,
-  spaceDoc: () => spaceDoc
-});
 import { randomBytes as randomBytes3, randomUUID } from "node:crypto";
 import { defineDoc as defineDoc2, defineDocFamily } from "@earendil-works/pi-durable";
+var DEFAULT_ALIAS = "default";
+var ALIAS = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var Registry = defineDoc2({
+  kind: "pi-spaces.registry",
+  version: 1,
+  scope: "session",
+  initial: () => ({ hostId: null, defaultSpaceId: null, spaces: {}, aliases: {} })
+});
+var NamedSpace = defineDocFamily({
+  kind: "pi-spaces.named-space",
+  version: 5,
+  scope: "session",
+  family: true,
+  initial: () => initialState(),
+  migrate: (v, from) => migrate(v, from)
+});
+var UnknownSpaceError = class extends Error {
+};
+var newIncarnation = () => randomBytes3(4).toString("hex");
+var newSpaceId = () => `sp-${randomUUID()}`;
 async function registry(tx, now) {
   const r = await tx.doc(Registry);
   if (r.hostId === null) r.hostId = `host-${randomUUID()}`;
@@ -1468,6 +1370,7 @@ async function resolveSpaceId(tx, space, now) {
   if (id === void 0) throw new UnknownSpaceError(`unknown space: ${space}`);
   return id;
 }
+var touched = /* @__PURE__ */ new WeakMap();
 function openDocument(tx, id, d) {
   let seen = touched.get(tx);
   if (!seen) {
@@ -1516,37 +1419,66 @@ async function snapshotSpace(host, spaceId, ctx) {
   if (r && !r.spaces[spaceId]) return void 0;
   return host.snapshot(NamedSpace, spaceId, ctx);
 }
-var DEFAULT_ALIAS, ALIAS, Registry, NamedSpace, UnknownSpaceError, newIncarnation, newSpaceId, touched;
-var init_spaces = __esm({
-  "src/spaces.ts"() {
-    "use strict";
-    init_core();
-    init_doc();
-    DEFAULT_ALIAS = "default";
-    ALIAS = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-    Registry = defineDoc2({
-      kind: "pi-spaces.registry",
-      version: 1,
-      scope: "session",
-      initial: () => ({ hostId: null, defaultSpaceId: null, spaces: {}, aliases: {} })
-    });
-    NamedSpace = defineDocFamily({
-      kind: "pi-spaces.named-space",
-      version: 5,
-      scope: "session",
-      family: true,
-      initial: () => initialState(),
-      migrate: (v, from) => migrate(v, from)
-    });
-    UnknownSpaceError = class extends Error {
-    };
-    newIncarnation = () => randomBytes3(4).toString("hex");
-    newSpaceId = () => `sp-${randomUUID()}`;
-    touched = /* @__PURE__ */ new WeakMap();
-  }
-});
 
 // src/meter.ts
+var COUNTERS = ["writes", "reads", "takes", "misses", "events", "failures", "retries"];
+var SLOTS = 300;
+var Meter = class {
+  totals = /* @__PURE__ */ new Map();
+  ring = /* @__PURE__ */ new Map();
+  started;
+  now;
+  constructor(now = Date.now) {
+    this.now = now;
+    this.started = now();
+  }
+  inc(name, n = 1) {
+    const t = Math.floor(this.now() / 1e3);
+    this.totals.set(name, (this.totals.get(name) ?? 0) + n);
+    let r = this.ring.get(name);
+    if (!r) this.ring.set(name, r = Array.from({ length: SLOTS }, () => ({ t: -1, c: 0 })));
+    const b = r[t % SLOTS];
+    if (b.t !== t) {
+      b.t = t;
+      b.c = 0;
+    }
+    b.c += n;
+  }
+  total(name) {
+    return this.totals.get(name) ?? 0;
+  }
+  /**
+   * Events per second over the last `windowSec` completed seconds (at most SLOTS - 1). The running second is left out:
+   * it is only partly over, and counting it as a full second under-reports (by up to 1/windowSec, and a 1 s window
+   * would read ~0 at every second's start). The price is up to 1 s of lag. Divides by the time those seconds actually
+   * covered since the meter started, so a fresh meter does not under-report either.
+   */
+  rate(name, windowSec = 10) {
+    const r = this.ring.get(name);
+    if (!r) return 0;
+    const t = Math.floor(this.now() / 1e3);
+    const w = Math.min(Math.max(1, Math.floor(Number.isFinite(windowSec) ? windowSec : 10)), SLOTS - 1);
+    const coveredMs = t * 1e3 - Math.max((t - w) * 1e3, this.started);
+    if (coveredMs <= 0) return 0;
+    let sum = 0;
+    for (const b of r) if (b.t >= t - w && b.t < t) sum += b.c;
+    return sum / (coveredMs / 1e3);
+  }
+  snapshot(windowSec = 10) {
+    const totals = {}, rates = {};
+    for (const c of COUNTERS) {
+      totals[c] = this.total(c);
+      rates[c] = this.rate(c, windowSec);
+    }
+    return { totals, rates, windowSec };
+  }
+  reset() {
+    this.totals.clear();
+    this.ring.clear();
+    this.started = this.now();
+  }
+};
+var meter = new Meter();
 function formatStatus(l) {
   const g = l.gauges, r = l.meter.rates;
   const f = (n) => n >= 100 ? Math.round(n).toString() : n.toFixed(1);
@@ -1600,75 +1532,10 @@ function watchLive(harness, ctx, cb, o = {}) {
     clearInterval(timer);
   };
 }
-var COUNTERS, SLOTS, Meter, meter;
-var init_meter = __esm({
-  "src/meter.ts"() {
-    "use strict";
-    init_doc();
-    init_core();
-    COUNTERS = ["writes", "reads", "takes", "misses", "events", "failures", "retries"];
-    SLOTS = 300;
-    Meter = class {
-      totals = /* @__PURE__ */ new Map();
-      ring = /* @__PURE__ */ new Map();
-      started;
-      now;
-      constructor(now = Date.now) {
-        this.now = now;
-        this.started = now();
-      }
-      inc(name, n = 1) {
-        const t = Math.floor(this.now() / 1e3);
-        this.totals.set(name, (this.totals.get(name) ?? 0) + n);
-        let r = this.ring.get(name);
-        if (!r) this.ring.set(name, r = Array.from({ length: SLOTS }, () => ({ t: -1, c: 0 })));
-        const b = r[t % SLOTS];
-        if (b.t !== t) {
-          b.t = t;
-          b.c = 0;
-        }
-        b.c += n;
-      }
-      total(name) {
-        return this.totals.get(name) ?? 0;
-      }
-      /**
-       * Events per second over the last `windowSec` completed seconds (at most SLOTS - 1). The running second is left out:
-       * it is only partly over, and counting it as a full second under-reports (by up to 1/windowSec, and a 1 s window
-       * would read ~0 at every second's start). The price is up to 1 s of lag. Divides by the time those seconds actually
-       * covered since the meter started, so a fresh meter does not under-report either.
-       */
-      rate(name, windowSec = 10) {
-        const r = this.ring.get(name);
-        if (!r) return 0;
-        const t = Math.floor(this.now() / 1e3);
-        const w = Math.min(Math.max(1, Math.floor(Number.isFinite(windowSec) ? windowSec : 10)), SLOTS - 1);
-        const coveredMs = t * 1e3 - Math.max((t - w) * 1e3, this.started);
-        if (coveredMs <= 0) return 0;
-        let sum = 0;
-        for (const b of r) if (b.t >= t - w && b.t < t) sum += b.c;
-        return sum / (coveredMs / 1e3);
-      }
-      snapshot(windowSec = 10) {
-        const totals = {}, rates = {};
-        for (const c of COUNTERS) {
-          totals[c] = this.total(c);
-          rates[c] = this.rate(c, windowSec);
-        }
-        return { totals, rates, windowSec };
-      }
-      reset() {
-        this.totals.clear();
-        this.ring.clear();
-        this.started = this.now();
-      }
-    };
-    meter = new Meter();
-  }
-});
 
 // src/snapshot.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
+var hosts = /* @__PURE__ */ new WeakMap();
 function snapshotPage(host, state, now, tmpl2, o, owner) {
   let cache = hosts.get(host);
   if (!cache) {
@@ -1692,9 +1559,9 @@ function snapshotPage(host, state, now, tmpl2, o, owner) {
   const fresh = record2 === void 0;
   if (!record2) {
     const items = list(state, now, tmpl2, o.txn ?? null, Number.MAX_SAFE_INTEGER, owner);
-    const bytes3 = encodedBytes(items);
-    if (bytes3 > limits.maxSnapshotBytes) throw new ResourceExhausted("the snapshot exceeds maxSnapshotBytes");
-    record2 = { token: `ss${randomBytes4(16).toString("hex")}`, streamId, query, owner, rev: revision(state), expires: until(now, limits.snapshotTtlMs), bytes: bytes3, items };
+    const bytes = encodedBytes(items);
+    if (bytes > limits.maxSnapshotBytes) throw new ResourceExhausted("the snapshot exceeds maxSnapshotBytes");
+    record2 = { token: `ss${randomBytes4(16).toString("hex")}`, streamId, query, owner, rev: revision(state), expires: until(now, limits.snapshotTtlMs), bytes, items };
   }
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > record2.items.length) throw new IllegalArgumentError("invalid snapshot position");
   const budget = o.maxBytes ?? limits.maxFrameBytes;
@@ -1712,917 +1579,413 @@ function snapshotPage(host, state, now, tmpl2, o, owner) {
   }
   return plain(page);
 }
-var hosts;
-var init_snapshot = __esm({
-  "src/snapshot.ts"() {
-    "use strict";
-    init_core();
-    init_canonical();
-    init_paging();
-    hosts = /* @__PURE__ */ new WeakMap();
-  }
-});
 
 // src/client.ts
-import { awaitWithContext } from "@earendil-works/chord/context";
-var view2, WAKE_DEBOUNCE_MS, PiSpaces, canonicalPrincipal, maintenanceSignature;
-var init_client = __esm({
-  "src/client.ts"() {
-    "use strict";
-    init_core();
-    init_doc();
-    init_spaces();
-    init_claims();
-    init_meter();
-    init_snapshot();
-    init_mailbox();
-    init_core();
-    view2 = view;
-    WAKE_DEBOUNCE_MS = 20;
-    PiSpaces = class {
-      host;
-      ctx;
-      now;
-      meter;
-      as;
-      space;
-      options;
-      /** `as`: the conversation acting (tools pass theirs). It owns what it creates and may only touch its own
-       * transactions and leases. Omitted (host code): unrestricted. */
-      constructor(host, ctx, now = Date.now, meter2 = meter, as, o = {}) {
-        this.meter = meter2;
-        this.host = host;
-        this.ctx = ctx;
-        this.now = now;
-        this.as = as;
-        this.space = o.space === "default" ? void 0 : o.space;
-        this.options = o;
-      }
-      /** This client's space document inside a commit (registers the default space on first use). */
-      doc(tx) {
-        return spaceDoc(tx, this.space, this.now());
-      }
-      /** Committed state for snapshot reads. The default space reads its document directly, even before registration. */
-      async snap() {
-        if (this.space === void 0) return this.host.snapshot(Space, this.ctx);
-        const id = await this.idOf();
-        const r = await this.host.snapshot(Registry, this.ctx);
-        return id === r?.defaultSpaceId ? this.host.snapshot(Space, this.ctx) : this.host.snapshot(NamedSpace, id, this.ctx);
-      }
-      async idOf() {
-        const r = await this.host.snapshot(Registry, this.ctx);
-        const id = r && this.space !== void 0 ? r.aliases[this.space] ?? (r.spaces[this.space] ? this.space : void 0) : void 0;
-        if (id === void 0) throw new UnknownSpaceError(`unknown space: ${this.space}`);
-        return id;
-      }
-      async watch() {
-        if (this.space === void 0) return this.host.watchDoc(Space, this.ctx);
-        const r = await this.host.snapshot(Registry, this.ctx);
-        const id = await this.idOf();
-        return id === r?.defaultSpaceId ? this.host.watchDoc(Space, this.ctx) : this.host.watchDoc(NamedSpace, id, this.ctx);
-      }
-      async configuration() {
-        const s = await this.snap();
-        return { spaceId: s?.spaceId, limits: limitsOf(s ?? initialState()) };
-      }
-      async write(entry, txn = null, lease = ANY, o = {}) {
-        const r = await this.mutate("write", { entry, txn, lease }, o.request, (s, now) => write(s, now, entry, txn, lease, this.as));
-        if (r.fresh) this.meter.inc("writes");
-        return r.value;
-      }
-      /**
-       * An immediate mutation, optionally under a request identity: claim check, effect and stored result in one commit.
-       * `fresh` is false for a replay (the stored result, nothing executed).
-       */
-      async mutate(method, args, request, fn) {
-        await this.maintain();
-        return this.host.commit(async (tx) => {
+var view2 = view;
+var WAKE_DEBOUNCE_MS = 20;
+var PiSpaces = class {
+  host;
+  ctx;
+  now;
+  meter;
+  as;
+  space;
+  options;
+  /** `as`: the conversation acting (tools pass theirs). It owns what it creates and may only touch its own
+   * transactions and leases. Omitted (host code): unrestricted. */
+  constructor(host, ctx, now = Date.now, meter2 = meter, as, o = {}) {
+    this.meter = meter2;
+    this.host = host;
+    this.ctx = ctx;
+    this.now = now;
+    this.as = as;
+    this.space = o.space === "default" ? void 0 : o.space;
+    this.options = o;
+  }
+  /** This client's space document inside a commit (registers the default space on first use). */
+  doc(tx) {
+    return spaceDoc(tx, this.space, this.now());
+  }
+  /** Committed state for snapshot reads. The default space reads its document directly, even before registration. */
+  async snap() {
+    if (this.space === void 0) return this.host.snapshot(Space, this.ctx);
+    const id = await this.idOf();
+    const r = await this.host.snapshot(Registry, this.ctx);
+    return id === r?.defaultSpaceId ? this.host.snapshot(Space, this.ctx) : this.host.snapshot(NamedSpace, id, this.ctx);
+  }
+  async idOf() {
+    const r = await this.host.snapshot(Registry, this.ctx);
+    const id = r && this.space !== void 0 ? r.aliases[this.space] ?? (r.spaces[this.space] ? this.space : void 0) : void 0;
+    if (id === void 0) throw new UnknownSpaceError(`unknown space: ${this.space}`);
+    return id;
+  }
+  async watch() {
+    if (this.space === void 0) return this.host.watchDoc(Space, this.ctx);
+    const r = await this.host.snapshot(Registry, this.ctx);
+    const id = await this.idOf();
+    return id === r?.defaultSpaceId ? this.host.watchDoc(Space, this.ctx) : this.host.watchDoc(NamedSpace, id, this.ctx);
+  }
+  async configuration() {
+    const s = await this.snap();
+    return { spaceId: s?.spaceId, limits: limitsOf(s ?? initialState()) };
+  }
+  async write(entry, txn = null, lease = ANY, o = {}) {
+    const r = await this.mutate("write", { entry, txn, lease }, o.request, (s, now) => write(s, now, entry, txn, lease, this.as));
+    if (r.fresh) this.meter.inc("writes");
+    return r.value;
+  }
+  /**
+   * An immediate mutation, optionally under a request identity: claim check, effect and stored result in one commit.
+   * `fresh` is false for a replay (the stored result, nothing executed).
+   */
+  async mutate(method, args, request, fn) {
+    await this.maintain();
+    return this.host.commit(async (tx) => {
+      const s = await this.doc(tx);
+      const now = this.now();
+      if (!request) return { value: fn(s, now), fresh: true };
+      const limits = limitsOf(s);
+      const resultBound = method === "cancelOperation" ? limits.maxEntryBytes + 4 * limits.maxTypeChars * limits.maxTypes + 8192 : 1024;
+      const ad = admit(s, now, request, method, plain(args), FOREVER, resultBound);
+      if (ad.kind === "done") return { value: plain(ad.result), fresh: false };
+      if (ad.kind === "cancelled") throw new OperationCancelled(`request ${request.requestId} was cancelled`);
+      const value = fn(s, now);
+      decide(s, now, ad.key, { state: "done", result: plain(value ?? null) });
+      return { value, fresh: true };
+    }, this.ctx);
+  }
+  /** A new request generation for `principal`, in this space. Request ids are admitted while it is open. */
+  issueGeneration(principal) {
+    return this.host.commit(async (tx) => issueGeneration(await this.doc(tx), this.now(), principal, { key: await hostKey(tx, this.now()), authorityId: this.options.authorityId }), this.ctx);
+  }
+  /** State of a known request, read without a commit. An unknown id is RequestExpired, never a new operation. */
+  async pollOperation(target) {
+    const s = await this.snap();
+    if (!s) throw new RequestExpired(`request ${target.requestId} is unknown`);
+    const v = lookup(s, target, this.now());
+    if (v.state !== "pending") return v;
+    return this.host.commit(async (tx) => {
+      const d = await this.doc(tx);
+      settle(d, this.now());
+      return plain(lookup(d, target, this.now()));
+    }, this.ctx);
+  }
+  /** Cancel a pending request (a blocked call then ends with OperationCancelled); a decided one is returned as is. */
+  async cancelOperation(target, o = {}) {
+    const r = await this.mutate("cancelOperation", { target }, o.request, (s, now) => cancelRequest(s, now, target));
+    return r.value;
+  }
+  read(tmpl2, timeout, o = {}) {
+    return this.op(tmpl2, timeout, o, false, false);
+  }
+  readIfExists(tmpl2, timeout, o = {}) {
+    return this.op(tmpl2, timeout, o, false, true);
+  }
+  take(tmpl2, timeout, o = {}) {
+    return this.op(tmpl2, timeout, o, true, false);
+  }
+  takeIfExists(tmpl2, timeout, o = {}) {
+    return this.op(tmpl2, timeout, o, true, true);
+  }
+  /** `target` is the conversation that receives the events; without one they would have nobody to go to. */
+  async notify(tmpl2, o) {
+    if (o.target == null || o.target === "") throw new IllegalArgumentError("notify needs a target conversation");
+    const args = { tmpl: tmpl2, target: o.target, txn: o.txn ?? null, lease: o.lease ?? ANY, handback: o.handback ?? null };
+    return (await this.mutate("notify", args, o.request, (s, now) => notify(s, now, tmpl2, o.txn ?? null, o.lease ?? ANY, o.handback ?? null, o.target, this.as, this.options.consumer))).value;
+  }
+  /** Park a read/take for a conversation. The space delivers the entry (or a timeout) to it as input later.
+   * `timeout` may be FOREVER: the wait stays until served or cancelled, across restarts. */
+  async wait(tmpl2, o) {
+    if (o.target == null || o.target === "") throw new IllegalArgumentError("wait needs a target conversation");
+    const w = { template: tmpl2, take: o.take ?? true, target: o.target, timeout: o.timeout, ...o.txnLeaseMs === void 0 ? {} : { txnLeaseMs: o.txnLeaseMs }, handback: o.handback ?? null };
+    return (await this.mutate("wait", w, o.request, (s, now) => addWaiter(s, now, { ...w, ...this.as === void 0 ? {} : { as: this.as }, consumer: this.options.consumer }))).value;
+  }
+  async events(principal, o = {}, validate) {
+    if (this.options.consumer && canonicalPrincipal(principal) !== canonicalPrincipal(this.options.consumer)) throw new PermissionError("another consumer's mailbox");
+    await this.maintain();
+    return this.host.commit(async (tx) => {
+      const s = await this.doc(tx);
+      settle(s, this.now());
+      const p = mailboxPage(s, principal, this.now(), o);
+      validate?.(p);
+      return p;
+    }, this.ctx);
+  }
+  async ack(principal, mailboxEpoch, upTo, o = {}) {
+    if (this.options.consumer && canonicalPrincipal(principal) !== canonicalPrincipal(this.options.consumer)) throw new PermissionError("another consumer's mailbox");
+    return (await this.mutate("ack", { mailboxEpoch, upTo, principal }, o.request, (s) => ackMailbox(s, principal, mailboxEpoch, upTo))).value;
+  }
+  /** Quotas for conversations in this space (host code only; stored in the document). */
+  setLimits(l) {
+    if (this.as !== void 0) throw new IllegalArgumentError("only host code may change limits");
+    return this.host.commit(async (tx) => setLimits(await this.doc(tx), l, this.now()), this.ctx);
+  }
+  /**
+   * Every entry a `read` with this template would currently see (oldest first, at most `limit`,
+   * unbounded unless a limit is supplied). A snapshot read: no commit, no lock, nothing is removed and nobody is woken, so it suits dashboards.
+   */
+  async readAll(tmpl2 = null, o = {}) {
+    const s = await this.snap();
+    const out = s ? list(s, this.now(), tmpl2, o.txn ?? null, o.limit, this.as) : [];
+    this.meter.inc("reads");
+    return out;
+  }
+  /** Like `readAll`, one page limited by encoded bytes (core.listPage). Pass `next` of a page as `after` to continue. */
+  async readPage(tmpl2 = null, o = {}) {
+    if (!(await this.snap())?.spaceId) await this.host.commit(async (tx) => {
+      await this.doc(tx);
+    }, this.ctx);
+    const s = await this.snap();
+    const page = snapshotPage(this.host, s ?? initialState(), this.now(), tmpl2, o, this.as);
+    this.meter.inc("reads");
+    return page;
+  }
+  /** The commit batches after `afterRev` (core.changes): limited by bytes, ends between batches, `more` says if there is newer. */
+  async changes(afterRev, o = {}) {
+    const s = await this.snap();
+    return changes(s ?? initialState(), afterRev, o);
+  }
+  /** Revision of the newest domain or internal-state commit (0: none yet), with the stream it belongs to. */
+  async revision() {
+    const s = await this.snap() ?? initialState();
+    return { rev: revision(s), streamId: streamIdOf(s) };
+  }
+  /** Number of entries a `read` with this template would currently see. No commit, no waiting. */
+  async count(tmpl2 = null, txn = null) {
+    const s = await this.snap();
+    return s ? count(s, this.now(), tmpl2, txn, this.as) : 0;
+  }
+  /** Point-in-time gauges: visible entries (total and per type), locked, uncommitted, transactions, waiters, ... */
+  async stats() {
+    const s = await this.snap();
+    return stats(s ?? initialState(), this.now());
+  }
+  /** Service gauges and revision from one immutable storage snapshot. */
+  async countWithRevision(tmpl2 = null, txn = null) {
+    const s = await this.snap() ?? initialState();
+    return { value: count(s, this.now(), tmpl2, txn, this.as), rev: revision(s), streamId: streamIdOf(s) };
+  }
+  async statsWithRevision() {
+    const s = await this.snap() ?? initialState();
+    return { stats: stats(s, this.now()), rev: revision(s), streamId: streamIdOf(s) };
+  }
+  /** A frozen canonical copy. JavaSpaces' snapshot is a serialization cache; this keeps the contract only. */
+  snapshot(entry) {
+    return { entry: Object.freeze(structuredClone(entry)) };
+  }
+  async createTransaction(lease = ANY, o = {}) {
+    return (await this.mutate("txn.begin", { lease }, o.request, (s, now) => createTxn(s, now, lease, this.as))).value;
+  }
+  setCompletionProfiles(profiles) {
+    if (this.as !== void 0) throw new PermissionError("only host code may configure completion profiles");
+    return this.host.commit(async (tx) => setCompletionProfiles(await this.doc(tx), profiles, this.now()), this.ctx);
+  }
+  async commit(txn, o = {}) {
+    await this.mutate("txn.commit", { txn }, o.request, (s, now) => commitTxn(s, now, txn, this.as));
+  }
+  async abort(txn, o = {}) {
+    await this.mutate("txn.abort", { txn }, o.request, (s, now) => abortTxn(s, now, txn, this.as));
+  }
+  async renew(leaseId, ms2, o = {}) {
+    return (await this.mutate("lease.renew", { leaseId, ms: ms2 }, o.request, (s, now) => renew(s, now, leaseId, ms2, this.as))).value;
+  }
+  async cancel(leaseId, o = {}) {
+    await this.mutate("lease.cancel", { leaseId }, o.request, (s, now) => cancel(s, now, leaseId, this.as));
+  }
+  /**
+   * Debounce: after a change wakes a blocked op, wait a moment (jittered) before probing again, so a burst of writes
+   * costs one round instead of one per write and many waiters do not all probe in the same instant.
+   */
+  calmDown() {
+    const ms2 = WAKE_DEBOUNCE_MS + Math.random() * WAKE_DEBOUNCE_MS;
+    let t;
+    return awaitWithContext(new Promise((res) => {
+      t = setTimeout(res, ms2);
+    }), this.ctx).finally(() => clearTimeout(t));
+  }
+  /** `timeout` may be FOREVER. Long waits sleep in timer-sized chunks; every wake-up re-probes, so nothing is lost. */
+  async op(tmpl2, timeout, o, take, ifExists) {
+    if (o.request) return this.durableOperation(tmpl2, timeout, o, take, ifExists);
+    let deadline = o.deadline ?? deadlineOf(this.now(), timeout);
+    const txn = o.txn ?? null;
+    await this.host.commit(async (tx) => {
+      await this.doc(tx);
+    }, this.ctx);
+    const watch = await this.watch();
+    let dirty = false;
+    let poke = () => {
+    };
+    watch?.start(async () => {
+      dirty = true;
+      poke();
+    });
+    let timer;
+    try {
+      for (; ; ) {
+        dirty = false;
+        const r = await this.host.commit(async (tx) => {
+          const prior = o.once ? await o.once.get(tx) : void 0;
+          if (prior !== void 0) return { status: "replay", value: plain(prior) };
           const s = await this.doc(tx);
           const now = this.now();
-          this.options.authorization?.check();
-          if (!request) return { value: fn(s, now), fresh: true };
-          const limits = limitsOf(s);
-          const resultBound = method === "cancelOperation" ? limits.maxEntryBytes + 4 * limits.maxTypeChars * limits.maxTypes + 8192 : 1024;
-          const ad = admit(s, now, request, method, plain(args), FOREVER, resultBound);
-          if (ad.kind === "done") return { value: plain(ad.result), fresh: false };
-          if (ad.kind === "cancelled") throw new OperationCancelled(`request ${request.requestId} was cancelled`);
-          const value = fn(s, now);
-          decide(s, now, ad.key, { state: "done", result: plain(value ?? null) });
-          return { value, fresh: true };
+          const dl = deadline;
+          const p = probe(s, now, tmpl2, txn, take, this.as);
+          const miss = p.status !== "found" && (p.status === "none" && ifExists || dl <= now);
+          const outcome = p.status === "found" ? view2(p.entry, s.spaceId) : null;
+          if (o.once && (p.status === "found" || miss)) await o.once.set(tx, outcome);
+          return { ...p, miss, next: nextExpiry(s), spaceId: s.spaceId, deadline: dl };
         }, this.ctx);
-      }
-      /** A new request generation for `principal`, in this space. Request ids are admitted while it is open. */
-      issueGeneration(principal) {
-        return this.host.commit(async (tx) => {
-          const s = await this.doc(tx), key = await hostKey(tx, this.now());
-          this.options.authorization?.check();
-          return issueGeneration(s, this.now(), principal, { key, authorityId: this.options.authorityId });
-        }, this.ctx);
-      }
-      /** State of a known request, read without a commit. An unknown id is RequestExpired, never a new operation. */
-      async pollOperation(target) {
-        const s = await this.snap();
-        if (!s) throw new RequestExpired(`request ${target.requestId} is unknown`);
-        const v = lookup(s, target, this.now());
-        if (v.state !== "pending" || v.restoredHistory) return v;
-        return this.host.commit(async (tx) => {
-          const d = await this.doc(tx);
-          this.options.authorization?.check();
-          this.authorizePending(d, target);
-          settle(d, this.now());
-          return plain(lookup(d, target, this.now()));
-        }, this.ctx);
-      }
-      /** Cancel a pending request (a blocked call then ends with OperationCancelled); a decided one is returned as is. */
-      async cancelOperation(target, o = {}) {
-        const r = await this.mutate("cancelOperation", { target }, o.request, (s, now) => cancelRequest(s, now, target));
-        return r.value;
-      }
-      read(tmpl2, timeout, o = {}) {
-        return this.op(tmpl2, timeout, o, false, false);
-      }
-      readIfExists(tmpl2, timeout, o = {}) {
-        return this.op(tmpl2, timeout, o, false, true);
-      }
-      take(tmpl2, timeout, o = {}) {
-        return this.op(tmpl2, timeout, o, true, false);
-      }
-      takeIfExists(tmpl2, timeout, o = {}) {
-        return this.op(tmpl2, timeout, o, true, true);
-      }
-      /** `target` is the conversation that receives the events; without one they would have nobody to go to. */
-      async notify(tmpl2, o) {
-        if (o.target == null || o.target === "") throw new IllegalArgumentError("notify needs a target conversation");
-        const args = { tmpl: tmpl2, target: o.target, txn: o.txn ?? null, lease: o.lease ?? ANY, handback: o.handback ?? null };
-        return (await this.mutate("notify", args, o.request, (s, now) => notify(s, now, tmpl2, o.txn ?? null, o.lease ?? ANY, o.handback ?? null, o.target, this.as, this.options.consumer))).value;
-      }
-      /** Park a read/take for a conversation. The space delivers the entry (or a timeout) to it as input later.
-       * `timeout` may be FOREVER: the wait stays until served or cancelled, across restarts. */
-      async wait(tmpl2, o) {
-        if (o.target == null || o.target === "") throw new IllegalArgumentError("wait needs a target conversation");
-        const w = { template: tmpl2, take: o.take ?? true, target: o.target, timeout: o.timeout, ...o.txnLeaseMs === void 0 ? {} : { txnLeaseMs: o.txnLeaseMs }, handback: o.handback ?? null };
-        return (await this.mutate("wait", w, o.request, (s, now) => addWaiter(s, now, { ...w, ...this.as === void 0 ? {} : { as: this.as }, consumer: this.options.consumer, ...this.options.authorization ? { authorizedUntil: this.options.authorization.validUntil } : {} }))).value;
-      }
-      async events(principal, o = {}, validate) {
-        if (this.options.consumer && canonicalPrincipal(principal) !== canonicalPrincipal(this.options.consumer)) throw new PermissionError("another consumer's mailbox");
-        await this.maintain();
-        return this.host.commit(async (tx) => {
-          const s = await this.doc(tx);
-          this.options.authorization?.check();
-          const authorization = this.options.authorization;
-          if (authorization) {
-            for (const w of s.waiters) if (w.consumer && canonicalPrincipal(w.consumer) === canonicalPrincipal(principal) && authorization.canExecutePending(w.take ? "take" : "read", w.template)) {
-              w.authorizedUntil = authorization.validUntil;
-              touch2(s, this.now());
-            }
-          }
-          settle(s, this.now());
-          const p = mailboxPage(s, principal, this.now(), o);
-          validate?.(p);
-          return p;
-        }, this.ctx);
-      }
-      async ack(principal, mailboxEpoch, upTo, o = {}) {
-        if (this.options.consumer && canonicalPrincipal(principal) !== canonicalPrincipal(this.options.consumer)) throw new PermissionError("another consumer's mailbox");
-        return (await this.mutate("ack", { mailboxEpoch, upTo, principal }, o.request, (s) => ackMailbox(s, principal, mailboxEpoch, upTo))).value;
-      }
-      /** Quotas for conversations in this space (host code only; stored in the document). */
-      setLimits(l) {
-        if (this.as !== void 0) throw new IllegalArgumentError("only host code may change limits");
-        return this.host.commit(async (tx) => setLimits(await this.doc(tx), l, this.now()), this.ctx);
-      }
-      /**
-       * Every entry a `read` with this template would currently see (oldest first, at most `limit`,
-       * unbounded unless a limit is supplied). A snapshot read: no commit, no lock, nothing is removed and nobody is woken, so it suits dashboards.
-       */
-      async readAll(tmpl2 = null, o = {}) {
-        const s = await this.snap();
-        const out = s ? list(s, this.now(), tmpl2, o.txn ?? null, o.limit, this.as) : [];
-        this.meter.inc("reads");
-        return out;
-      }
-      /** Like `readAll`, one page limited by encoded bytes (core.listPage). Pass `next` of a page as `after` to continue. */
-      async readPage(tmpl2 = null, o = {}) {
-        if (!(await this.snap())?.spaceId) await this.host.commit(async (tx) => {
-          await this.doc(tx);
-        }, this.ctx);
-        const s = await this.snap();
-        const page = snapshotPage(this.host, s ?? initialState(), this.now(), tmpl2, o, this.as);
-        this.meter.inc("reads");
-        return page;
-      }
-      /** The commit batches after `afterRev` (core.changes): limited by bytes, ends between batches, `more` says if there is newer. */
-      async changes(afterRev, o = {}) {
-        const s = await this.snap();
-        return changes(s ?? initialState(), afterRev, o);
-      }
-      /** Revision of the newest domain or internal-state commit (0: none yet), with the stream it belongs to. */
-      async revision() {
-        const s = await this.snap() ?? initialState();
-        return { rev: revision(s), streamId: streamIdOf(s) };
-      }
-      /** Number of entries a `read` with this template would currently see. No commit, no waiting. */
-      async count(tmpl2 = null, txn = null) {
-        const s = await this.snap();
-        return s ? count(s, this.now(), tmpl2, txn, this.as) : 0;
-      }
-      /** Point-in-time gauges: visible entries (total and per type), locked, uncommitted, transactions, waiters, ... */
-      async stats() {
-        const s = await this.snap();
-        return stats(s ?? initialState(), this.now());
-      }
-      /** Service gauges and revision from one immutable storage snapshot. */
-      async countWithRevision(tmpl2 = null, txn = null) {
-        const s = await this.snap() ?? initialState();
-        return { value: count(s, this.now(), tmpl2, txn, this.as), rev: revision(s), streamId: streamIdOf(s) };
-      }
-      async statsWithRevision() {
-        const s = await this.snap() ?? initialState();
-        return { stats: stats(s, this.now()), rev: revision(s), streamId: streamIdOf(s) };
-      }
-      /** A frozen canonical copy. JavaSpaces' snapshot is a serialization cache; this keeps the contract only. */
-      snapshot(entry) {
-        return { entry: Object.freeze(structuredClone(entry)) };
-      }
-      async createTransaction(lease = ANY, o = {}) {
-        return (await this.mutate("txn.begin", { lease }, o.request, (s, now) => createTxn(s, now, lease, this.as))).value;
-      }
-      setCompletionProfiles(profiles) {
-        if (this.as !== void 0) throw new PermissionError("only host code may configure completion profiles");
-        return this.host.commit(async (tx) => setCompletionProfiles(await this.doc(tx), profiles, this.now()), this.ctx);
-      }
-      checkTransactionRights(s, txn) {
-        const authorization = this.options.authorization;
-        if (!authorization) return;
-        for (const e of s.entries) {
-          const methods = [...e.writtenUnder === txn ? ["write"] : [], ...e.takenBy === txn ? ["take"] : [], ...e.readBy.includes(txn) ? ["read"] : []];
-          for (const method of methods) if (!e.types.some((type) => authorization.canExecutePending(method, { type }))) throw new PermissionError(`current grant cannot ${method} transaction entry ${e.id}`);
+        if (r.status === "replay") return r.value;
+        deadline = r.deadline;
+        if (r.status === "found") {
+          this.meter.inc(take ? "takes" : "reads");
+          return view2(r.entry, r.spaceId);
         }
-      }
-      async commit(txn, o = {}) {
-        await this.mutate("txn.commit", { txn }, o.request, (s, now) => {
-          this.checkTransactionRights(s, txn);
-          commitTxn(s, now, txn, this.as);
-        });
-      }
-      async abort(txn, o = {}) {
-        await this.mutate("txn.abort", { txn }, o.request, (s, now) => abortTxn(s, now, txn, this.as));
-      }
-      async renew(leaseId, ms2, o = {}) {
-        return (await this.mutate("lease.renew", { leaseId, ms: ms2 }, o.request, (s, now) => {
-          const authorization = this.options.authorization;
-          if (authorization) {
-            if (s.txns[leaseId]) this.checkTransactionRights(s, leaseId);
-            const entry = s.entries.find((e) => e.id === leaseId), registration = s.regs.find((r) => r.id === leaseId), waiter = s.waiters.find((w) => w.id === leaseId);
-            if (entry && !entry.types.some((type) => authorization.canExecutePending("write", { type })) || registration && !authorization.canExecutePending("notify", registration.template) || waiter && !authorization.canExecutePending(waiter.take ? "take" : "read", waiter.template)) throw new PermissionError("current grant cannot renew the original lease operation");
-          }
-          return renew(s, now, leaseId, ms2, this.as);
-        })).value;
-      }
-      async cancel(leaseId, o = {}) {
-        await this.mutate("lease.cancel", { leaseId }, o.request, (s, now) => cancel(s, now, leaseId, this.as));
-      }
-      /**
-       * Debounce: after a change wakes a blocked op, wait a moment (jittered) before probing again, so a burst of writes
-       * costs one round instead of one per write and many waiters do not all probe in the same instant.
-       */
-      calmDown() {
-        const ms2 = WAKE_DEBOUNCE_MS + Math.random() * WAKE_DEBOUNCE_MS;
-        let t;
-        return awaitWithContext(new Promise((res) => {
-          t = setTimeout(res, ms2);
-        }), this.ctx).finally(() => clearTimeout(t));
-      }
-      /** `timeout` may be FOREVER. Long waits sleep in timer-sized chunks; every wake-up re-probes, so nothing is lost. */
-      async op(tmpl2, timeout, o, take, ifExists) {
-        if (o.request) return this.durableOperation(tmpl2, timeout, o, take, ifExists);
-        let deadline = o.deadline ?? deadlineOf(this.now(), timeout);
-        const txn = o.txn ?? null;
-        await this.host.commit(async (tx) => {
-          await this.doc(tx);
-        }, this.ctx);
-        const watch = await this.watch();
-        let dirty = false;
-        let poke = () => {
-        };
-        watch?.start(async () => {
-          dirty = true;
-          poke();
-        });
-        let timer;
-        try {
-          for (; ; ) {
-            dirty = false;
-            const r = await this.host.commit(async (tx) => {
-              const prior = o.once ? await o.once.get(tx) : void 0;
-              if (prior !== void 0) return { status: "replay", value: plain(prior) };
-              const s = await this.doc(tx);
-              const now = this.now();
-              const dl = deadline;
-              const p = probe(s, now, tmpl2, txn, take, this.as);
-              const miss = p.status !== "found" && (p.status === "none" && ifExists || dl <= now);
-              const outcome = p.status === "found" ? view2(p.entry, s.spaceId) : null;
-              if (o.once && (p.status === "found" || miss)) await o.once.set(tx, outcome);
-              return { ...p, miss, next: nextExpiry(s), spaceId: s.spaceId, deadline: dl };
-            }, this.ctx);
-            if (r.status === "replay") return r.value;
-            deadline = r.deadline;
-            if (r.status === "found") {
-              this.meter.inc(take ? "takes" : "reads");
-              return view2(r.entry, r.spaceId);
-            }
-            if (r.miss) {
-              this.meter.inc("misses");
-              return null;
-            }
-            const left = deadline - this.now();
-            if (left <= 0) continue;
-            if (dirty) {
-              await this.calmDown();
-              continue;
-            }
-            const wake = timerDelay(Math.min(left, r.next - this.now()));
-            await awaitWithContext(new Promise((res) => {
-              poke = res;
-              timer = setTimeout(res, wake);
-            }), this.ctx);
-            clearTimeout(timer);
-            if (dirty) await this.calmDown();
-          }
-        } finally {
-          clearTimeout(timer);
-          await watch?.stop();
+        if (r.miss) {
+          this.meter.inc("misses");
+          return null;
         }
+        const left = deadline - this.now();
+        if (left <= 0) continue;
+        if (dirty) {
+          await this.calmDown();
+          continue;
+        }
+        const wake = timerDelay(Math.min(left, r.next - this.now()));
+        await awaitWithContext(new Promise((res) => {
+          poke = res;
+          timer = setTimeout(res, wake);
+        }), this.ctx);
+        clearTimeout(timer);
+        if (dirty) await this.calmDown();
       }
-      /** Admit, probe and persist pending work before acknowledging it. Replays always check the original domain hash. */
-      async beginOperation(tmpl2, timeout, o, take, ifExists) {
-        const method = `${take ? "take" : "read"}${ifExists ? "IfExists" : ""}`;
-        const args = { tmpl: tmpl2, timeout, deadline: o.deadline ?? null, txn: o.txn ?? null };
-        await this.maintain();
-        return this.host.commit(async (tx) => {
-          const s = await this.doc(tx), now = this.now();
-          this.options.authorization?.check();
-          const existing = s.rpc?.claims[keyOf(s, o.request)];
-          if (!existing) {
-            const n = Object.values(s.rpc?.claims ?? {}).filter((c) => c.state === "pending" && canonicalPrincipal(c.principal) === canonicalPrincipal(o.request.principal)).length;
-            if (n >= (this.options.maxPending ?? 32)) throw new ResourceExhausted("too many pending operations for this principal");
-            const peerCount = Object.values(s.rpc?.claims ?? {}).filter((c) => c.state === "pending" && c.principal.peerId === o.request.principal.peerId).length;
-            if (peerCount >= (this.options.maxPendingPeer ?? 128)) throw new ResourceExhausted("too many pending operations for this peer");
-          }
-          const lim = limitsOf(s);
-          const bound = lim.maxEntryBytes + 4 * lim.maxTypeChars * lim.maxTypes + 4096;
-          const ad = admit(s, now, o.request, method, plain(args), o.deadline ?? deadlineOf(now, timeout), bound);
-          if (ad.kind === "pending") {
-            this.authorizePending(s, o.request);
-            settle(s, now);
-            return plain(lookup(s, o.request, now));
-          }
-          if (ad.kind === "fresh") {
-            if (o.deadline !== void 0 && o.deadline < now) {
-              decide(s, now, ad.key, { state: "done", result: null });
-              return plain(lookup(s, o.request, now));
-            }
-            const p = probe(s, now, tmpl2, o.txn ?? null, take, this.as);
-            const miss = p.status !== "found" && (ad.deadline <= now || ifExists && p.status === "none");
-            const result = p.status === "found" ? view(p.entry, s.spaceId) : null;
-            if (p.status === "found" || miss) {
-              if (o.resultBudget !== void 0 && Buffer.byteLength(JSON.stringify(result)) > o.resultBudget) throw new ResponseBudgetTooSmall(Buffer.byteLength(JSON.stringify(result)));
-              decide(s, now, ad.key, { state: "done", result });
-            } else {
-              parkOperation(s, ad.key, tmpl2, take, o.txn ?? null, ad.deadline, ifExists, this.as);
-              this.authorizePending(s, o.request);
-            }
-          }
+    } finally {
+      clearTimeout(timer);
+      await watch?.stop();
+    }
+  }
+  /** Admit, probe and persist pending work before acknowledging it. Replays always check the original domain hash. */
+  async beginOperation(tmpl2, timeout, o, take, ifExists) {
+    const method = `${take ? "take" : "read"}${ifExists ? "IfExists" : ""}`;
+    const args = { tmpl: tmpl2, timeout, deadline: o.deadline ?? null, txn: o.txn ?? null };
+    await this.maintain();
+    return this.host.commit(async (tx) => {
+      const s = await this.doc(tx), now = this.now();
+      const existing = s.rpc?.claims[keyOf(s, o.request)];
+      if (!existing) {
+        const n = Object.values(s.rpc?.claims ?? {}).filter((c) => c.state === "pending" && canonicalPrincipal(c.principal) === canonicalPrincipal(o.request.principal)).length;
+        if (n >= (this.options.maxPending ?? 32)) throw new ResourceExhausted("too many pending operations for this principal");
+        const peerCount = Object.values(s.rpc?.claims ?? {}).filter((c) => c.state === "pending" && c.principal.peerId === o.request.principal.peerId).length;
+        if (peerCount >= (this.options.maxPendingPeer ?? 128)) throw new ResourceExhausted("too many pending operations for this peer");
+      }
+      const lim = limitsOf(s);
+      const bound = lim.maxEntryBytes + 4 * lim.maxTypeChars * lim.maxTypes + 4096;
+      const ad = admit(s, now, o.request, method, plain(args), o.deadline ?? deadlineOf(now, timeout), bound);
+      if (ad.kind === "pending") {
+        settle(s, now);
+        return plain(lookup(s, o.request, now));
+      }
+      if (ad.kind === "fresh") {
+        if (o.deadline !== void 0 && o.deadline < now) {
+          decide(s, now, ad.key, { state: "done", result: null });
           return plain(lookup(s, o.request, now));
-        }, this.ctx);
-      }
-      authorizePending(s, request) {
-        const a = this.options.authorization;
-        if (!a) return;
-        const key = keyOf(s, request);
-        for (const w of s.waiters) if (w.claimKey === key && a.canExecutePending(w.take ? "take" : "read", w.template)) {
-          w.authorizedUntil = a.validUntil;
-          touch2(s, this.now());
         }
+        const p = probe(s, now, tmpl2, o.txn ?? null, take, this.as);
+        const miss = p.status !== "found" && (ad.deadline <= now || ifExists && p.status === "none");
+        const result = p.status === "found" ? view(p.entry, s.spaceId) : null;
+        if (p.status === "found" || miss) {
+          if (o.resultBudget !== void 0 && Buffer.byteLength(JSON.stringify(result)) > o.resultBudget) throw new ResponseBudgetTooSmall(Buffer.byteLength(JSON.stringify(result)));
+          decide(s, now, ad.key, { state: "done", result });
+        } else parkOperation(s, ad.key, tmpl2, take, o.txn ?? null, ad.deadline, ifExists, this.as);
       }
-      async durableOperation(tmpl2, timeout, o, take, ifExists) {
-        let value = await this.beginOperation(tmpl2, timeout, o, take, ifExists);
-        const watch = await this.watch();
-        let wake = () => {
-        }, dirty = false;
-        watch?.start(async () => {
-          dirty = true;
-          wake();
-        });
-        let timer;
-        try {
-          for (; ; ) {
-            if (value.resultExpired) throw new ResultExpired("the operation's retained result expired");
-            if (value.error) throw value.error.code === "CompletionViolation" ? new CompletionViolation(value.error.message) : new TransactionError(value.error.message);
-            if (value.state === "cancelled") throw new OperationCancelled("the operation was cancelled");
-            if (value.state === "done") {
-              this.meter.inc(value.result === null ? "misses" : take ? "takes" : "reads");
-              return value.result ?? null;
-            }
-            if (!dirty) await awaitWithContext(new Promise((res) => {
-              wake = res;
-              timer = setTimeout(res, timerDelay(Math.min(1e3, value.deadline - this.now())));
-            }), this.ctx);
-            clearTimeout(timer);
-            dirty = false;
-            value = await this.pollOperation(o.request);
-          }
-        } finally {
-          clearTimeout(timer);
-          await watch?.stop();
-        }
-      }
-      /** Drain due work in separate bounded commits before admitting another domain mutation. */
-      async maintain() {
-        for (; ; ) {
-          const prior = await this.snap();
-          if (!prior || !needsMaintenance(prior, this.now())) return;
-          const signature = maintenanceSignature(prior);
-          const outcome = await this.host.commit(async (tx) => {
-            const s = await this.doc(tx);
-            settle(s, this.now());
-            return { more: needsMaintenance(s, this.now()), signature: maintenanceSignature(s) };
-          }, this.ctx);
-          if (outcome.more && outcome.signature === signature) throw new ResourceExhausted("a maintenance item cannot fit the configured commit budget");
-        }
-      }
-    };
-    canonicalPrincipal = (p) => JSON.stringify([p.peerId, p.agentId ?? null]);
-    maintenanceSignature = (s) => JSON.stringify([s.entries.length, Object.keys(s.txns).length, s.regs.length, s.waiters.length, revision(s), s.jobs?.map((j) => [j.id, j.cursor, j.retryAt ?? 0]), s.releaseQueue, Object.values(s.mailboxes?.boxes ?? {}).map((b) => [b.epoch, b.next, b.acked])]);
+      return plain(lookup(s, o.request, now));
+    }, this.ctx);
   }
-});
+  async durableOperation(tmpl2, timeout, o, take, ifExists) {
+    let value = await this.beginOperation(tmpl2, timeout, o, take, ifExists);
+    const watch = await this.watch();
+    let wake = () => {
+    }, dirty = false;
+    watch?.start(async () => {
+      dirty = true;
+      wake();
+    });
+    let timer;
+    try {
+      for (; ; ) {
+        if (value.resultExpired) throw new ResultExpired("the operation's retained result expired");
+        if (value.error) throw value.error.code === "CompletionViolation" ? new CompletionViolation(value.error.message) : new TransactionError(value.error.message);
+        if (value.state === "cancelled") throw new OperationCancelled("the operation was cancelled");
+        if (value.state === "done") {
+          this.meter.inc(value.result === null ? "misses" : take ? "takes" : "reads");
+          return value.result ?? null;
+        }
+        if (!dirty) await awaitWithContext(new Promise((res) => {
+          wake = res;
+          timer = setTimeout(res, timerDelay(Math.min(1e3, value.deadline - this.now())));
+        }), this.ctx);
+        clearTimeout(timer);
+        dirty = false;
+        value = await this.pollOperation(o.request);
+      }
+    } finally {
+      clearTimeout(timer);
+      await watch?.stop();
+    }
+  }
+  /** Drain due work in separate bounded commits before admitting another domain mutation. */
+  async maintain() {
+    for (; ; ) {
+      const prior = await this.snap();
+      if (!prior || !needsMaintenance(prior, this.now())) return;
+      const signature = maintenanceSignature(prior);
+      const outcome = await this.host.commit(async (tx) => {
+        const s = await this.doc(tx);
+        settle(s, this.now());
+        return { more: needsMaintenance(s, this.now()), signature: maintenanceSignature(s) };
+      }, this.ctx);
+      if (outcome.more && outcome.signature === signature) throw new ResourceExhausted("a maintenance item cannot fit the configured commit budget");
+    }
+  }
+};
+var canonicalPrincipal = (p) => JSON.stringify([p.peerId, p.agentId ?? null]);
+var maintenanceSignature = (s) => JSON.stringify([s.entries.length, Object.keys(s.txns).length, s.regs.length, s.waiters.length, revision(s), s.jobs?.map((j) => [j.id, j.cursor, j.retryAt ?? 0]), s.releaseQueue, Object.values(s.mailboxes?.boxes ?? {}).map((b) => [b.epoch, b.next, b.acked])]);
 
-// src/service.ts
-import { awaitWithContext as awaitWithContext2 } from "@earendil-works/chord/context";
-var PROTOCOL_VERSION, METHODS, MUTATING, StaticIdentity, DEFAULT_POLICY, Bad, Denied, fail, isObj, str, int, optInt, template, duration, principalKey, SpaceService, UnsupportedProtocol;
-var init_service = __esm({
-  "src/service.ts"() {
-    "use strict";
-    init_core();
-    init_claims();
-    init_client();
-    init_spaces();
-    init_paging();
-    init_mailbox();
-    PROTOCOL_VERSION = 1;
-    METHODS = ["hello", "generation", "write", "read", "take", "pollOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"];
-    MUTATING = ["write", "read", "take", "cancelOperation", "txn", "lease", "wait", "notify", "ack"];
-    StaticIdentity = class {
-      table;
-      constructor(table) {
-        this.table = table;
-      }
-      authenticate(conn) {
-        return (conn.peerId !== void 0 ? this.table[conn.peerId] : void 0) ?? null;
-      }
-    };
-    DEFAULT_POLICY = {
-      roles: {
-        admin: { methods: "*" },
-        member: { methods: ["hello", "generation", "write", "read", "take", "pollOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"] },
-        resolution: { methods: ["hello", "pollOperation", "cancelOperation", "txn", "lease"] },
-        observer: { methods: ["hello", "generation", "read", "pollOperation", "cancelOperation", "readAll", "count", "stats", "changes", "notify", "events", "ack"] },
-        // own read and notify results, never a write
-        unpaired: { methods: ["hello", "generation"] }
-        // a device in the enrollment group: nothing but its own pairing (enroll.ts handles `enroll` and `enrollStatus` before the service)
-      }
-    };
-    Bad = class extends Error {
-    };
-    Denied = class extends Error {
-    };
-    fail = (code, message, extra = {}) => ({ ok: false, error: { code, message, ...extra } });
-    isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-    str = (v, what) => {
-      if (typeof v !== "string" || v === "") throw new Bad(`${what} must be a non-empty string`);
-      return v;
-    };
-    int = (v, what, min = 0) => {
-      if (typeof v !== "number" || !Number.isInteger(v) || v < min) throw new Bad(`${what} must be an integer >= ${min}`);
-      return v;
-    };
-    optInt = (v, what, min = 0) => v === void 0 || v === null ? void 0 : int(v, what, min);
-    template = (v) => {
-      if (v === void 0 || v === null) return null;
-      if (!isObj(v)) throw new Bad("template must be an object or null");
-      if (v.type !== void 0 && v.type !== null && typeof v.type !== "string") throw new Bad("template.type must be a string");
-      if (v.fields !== void 0 && !isObj(v.fields)) throw new Bad("template.fields must be an object");
-      if (v.id !== void 0 && v.id !== null && typeof v.id !== "string") throw new Bad("template.id must be a string");
-      return v;
-    };
-    duration = (v, what, dflt) => {
-      if (v === void 0 || v === null) return dflt;
-      if (v === "forever") return FOREVER;
-      return int(v, what, 0);
-    };
-    principalKey = (p) => p.agentId ? `${p.peerId}/${p.agentId}` : p.peerId;
-    SpaceService = class {
-      o;
-      policy;
-      now;
-      rates = /* @__PURE__ */ new Map();
-      constructor(o) {
-        this.o = { maxPollMs: 25e3, maxPendingPerPrincipal: 32, maxPendingPerPeer: 128, maxCallsPerWindow: 1024, rateWindowMs: 1e3, authorityId: "local", primaryEpoch: 0, ...o };
-        this.o.maxPollMs = Math.min(this.o.maxPollMs, 25e3);
-        for (const value of [this.o.maxPendingPerPrincipal, this.o.maxPendingPerPeer, this.o.maxCallsPerWindow, this.o.rateWindowMs]) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError("service limits must be positive integers");
-        this.policy = o.policy ?? DEFAULT_POLICY;
-        this.now = o.now ?? Date.now;
-      }
-      /** Decode, check the frame size, dispatch, encode. The size limit is the frame budget of the space (4.2). */
-      async handleText(text2, conn, maxFrameBytes = DEFAULT_LIMITS.maxFrameBytes) {
-        if (new TextEncoder().encode(text2).length > maxFrameBytes) return JSON.stringify(fail("ResourceExhausted", `a call may take at most ${maxFrameBytes} bytes`));
-        let call;
-        try {
-          call = JSON.parse(text2);
-        } catch {
-          return JSON.stringify(fail("BadRequest", "the call is not JSON"));
-        }
-        const reply2 = await this.handle(call, conn, maxFrameBytes, Buffer.byteLength(text2));
-        const textReply = JSON.stringify(reply2);
-        if (encodedBytes(reply2) > maxFrameBytes) return JSON.stringify(fail("ResourceExhausted", "the transport frame cannot carry this response"));
-        return textReply;
-      }
-      async handle(call, conn, transportFrameBytes = DEFAULT_LIMITS.maxFrameBytes, rawBytes) {
-        let responseFrame = transportFrameBytes;
-        try {
-          if (!isObj(call) || typeof call.method !== "string") throw new Bad("a call is an object with a method");
-          if (!METHODS.includes(call.method)) return fail("UnsupportedMethod", `unknown method ${call.method}`);
-          const method = call.method;
-          if (call.args !== void 0 && !isObj(call.args)) throw new Bad("args must be an object");
-          const args = call.args ?? {};
-          const authenticated = await this.o.identity.authenticate(conn);
-          if (!authenticated) return fail("Unauthenticated", "the connection has no known identity");
-          const id = { ...authenticated, roles: [...authenticated.roles] };
-          this.rate(id.principal.peerId);
-          const authorization = await this.o.authorize?.(call, id, conn);
-          if (authorization) id.roles = authorization.roles;
-          const grant2 = this.allowed(id, method);
-          const frame2 = call.frame;
-          if (frame2 !== void 0) {
-            if (!isObj(frame2)) throw new Bad("frame must be an object");
-            if (frame2.authorityId !== void 0 && frame2.authorityId !== this.o.authorityId) return fail("AuthorityMismatch", `this host is authority ${this.o.authorityId}`);
-            const epoch2 = await this.o.epochForSpace?.(call.space) ?? this.o.primaryEpoch;
-            if (frame2.primaryEpoch !== void 0 && frame2.primaryEpoch !== epoch2) return fail("StaleEpoch", `the primary epoch is ${epoch2}`);
-          }
-          let request;
-          if (MUTATING.includes(method)) {
-            const r = call.request;
-            if (!isObj(r)) throw new Bad(`${method} needs a request {generation, requestId}`);
-            request = { principal: id.principal, generation: str(r.generation, "request.generation"), requestId: str(r.requestId, "request.requestId") };
-          }
-          const space = call.space === void 0 ? void 0 : str(call.space, "space");
-          const client = new PiSpaces(this.o.host, this.o.ctx, this.now, void 0, principalId(id.principal), { space: space === DEFAULT_ALIAS ? void 0 : space, authorityId: this.o.authorityId, maxPending: this.o.maxPendingPerPrincipal, maxPendingPeer: this.o.maxPendingPerPeer, consumer: id.principal, authorization });
-          const frameBytes = Math.min(transportFrameBytes, (await client.configuration()).limits.maxFrameBytes);
-          responseFrame = frameBytes;
-          if ((rawBytes ?? encodedBytes(call)) > frameBytes) throw new ResourceExhausted("the request exceeds the space frame limit");
-          const result = await this.dispatch(method, args, { id, request, client, space, grant: grant2, frameBytes });
-          const reply2 = { ok: true, result };
-          if (encodedBytes(reply2) > frameBytes) throw new ResourceExhausted("the configured frame cannot carry the result; use a compatible transport frame");
-          return reply2;
-        } catch (e) {
-          if (e instanceof ResponseBudgetTooSmall && e.requiredBytes > responseFrame - 21) return fail("ResourceExhausted", "the configured frame cannot hold the next whole element");
-          return this.error(e);
-        }
-      }
-      rate(peer) {
-        const now = this.now();
-        for (const [key, value] of this.rates) if (value.at + this.o.rateWindowMs <= now) this.rates.delete(key);
-        let r = this.rates.get(peer);
-        if (!r) {
-          if (this.rates.size >= 1e4) throw new ResourceExhausted("the rate table is full");
-          r = { at: now, calls: 0 };
-          this.rates.set(peer, r);
-        }
-        if (++r.calls > this.o.maxCallsPerWindow) throw new ResourceExhausted("the peer exceeded its call rate");
-      }
-      // ---- rights
-      /** The union of what the principal's roles allow for this method; throws Denied when none does. */
-      allowed(id, method) {
-        let types = /* @__PURE__ */ new Set();
-        let any = false;
-        for (const name of id.roles) {
-          const r = this.policy.roles[name];
-          if (!r || !(r.methods === "*" || r.methods.includes(method))) continue;
-          any = true;
-          if (r.types === void 0) types = "*";
-          else if (types !== "*") for (const t of r.types) types.add(t);
-        }
-        if (!any) throw new Denied(`${method} is not allowed for your roles`);
-        return { types };
-      }
-      checkTypes(grant2, types, what) {
-        if (grant2.types === "*") return;
-        if (!types || types.length === 0 || !types.some((t) => grant2.types.has(t))) throw new Denied(`${what} is outside the types your roles allow`);
-      }
-      // ---- methods
-      async dispatch(method, a, c) {
-        const { client, request, grant: grant2 } = c;
-        switch (method) {
-          case "hello":
-            return this.hello(a, c);
-          case "generation": {
-            const g = await client.issueGeneration(c.id.principal);
-            return { generation: g.generation, admitUntil: g.admitUntil };
-          }
-          case "write": {
-            if (!isObj(a.entry)) throw new Bad("entry is required");
-            const type = str(a.entry.type, "entry.type");
-            const types = a.entry.types === void 0 ? void 0 : Array.isArray(a.entry.types) && a.entry.types.every((t) => typeof t === "string") ? a.entry.types : (() => {
-              throw new Bad("entry.types must be strings");
-            })();
-            if (!isObj(a.entry.fields)) throw new Bad("entry.fields must be an object");
-            this.checkTypes(grant2, [type, ...types ?? []], `type ${type}`);
-            const lease = await client.write({ type, ...types ? { types } : {}, fields: a.entry.fields }, a.txn ?? null, duration(a.leaseMs, "leaseMs", ANY), { request });
-            return lease;
-          }
-          case "read":
-          case "take":
-            return this.readTake(method, a, c);
-          case "pollOperation":
-            return this.poll(a, c);
-          case "cancelOperation": {
-            const t = this.target(a.targetRequest, c.id);
-            return await client.cancelOperation(t, { request });
-          }
-          case "readAll": {
-            const t = template(a.template);
-            if (grant2.types !== "*") this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this template");
-            const p = await client.readPage(t, { maxBytes: Math.min(a.maxBytes === void 0 ? c.frameBytes : int(a.maxBytes, "maxBytes", 1), c.frameBytes - 21), ...a.token === void 0 ? {} : { token: str(a.token, "token") }, after: a.cursor ?? null, txn: a.txn ?? null });
-            return p;
-          }
-          case "count": {
-            const t = template(a.template);
-            if (grant2.types !== "*") this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this template");
-            return await client.countWithRevision(t, a.txn ?? null);
-          }
-          case "stats": {
-            if (grant2.types !== "*") throw new Denied("aggregate stats need a role without type restrictions");
-            return await client.statsWithRevision();
-          }
-          case "txn": {
-            const action = str(a.action, "action");
-            if (action === "begin") return await client.createTransaction(duration(a.leaseMs, "leaseMs", ANY), { request });
-            const id = str(a.id, "id");
-            if (action === "commit") {
-              await client.commit(id, { request });
-              return { state: "committed" };
-            }
-            if (action === "abort") {
-              await client.abort(id, { request });
-              return { state: "aborted" };
-            }
-            throw new Bad("action must be begin, commit or abort");
-          }
-          case "lease": {
-            const action = str(a.action, "action");
-            const id = str(a.id, "id");
-            if (action === "renew") return { expires: await client.renew(id, duration(a.ms, "ms", ANY), { request }) };
-            if (action === "cancel") {
-              await client.cancel(id, { request });
-              return { state: "cancelled" };
-            }
-            throw new Bad("action must be renew or cancel");
-          }
-          case "changes":
-            return this.changes(a, c);
-          case "notify": {
-            const t = template(a.template);
-            this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this subscription");
-            this.checkConsumer(a.consumer, c.id);
-            return await client.notify(t, { target: principalId(c.id.principal), lease: duration(a.leaseMs, "leaseMs", ANY), txn: a.txn ?? null, handback: a.handback ?? null, request });
-          }
-          case "wait": {
-            const t = template(a.template);
-            this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this wait");
-            this.checkConsumer(a.consumer, c.id);
-            if (a.take !== void 0 && typeof a.take !== "boolean") throw new Bad("take must be boolean");
-            const operationGrant = this.allowed(c.id, a.take === false ? "read" : "take");
-            this.checkTypes(operationGrant, t?.type ? [t.type] : void 0, "this wait operation");
-            const id = await client.wait(t, { target: principalId(c.id.principal), timeout: duration(a.timeoutMs, "timeoutMs", NO_WAIT), take: a.take !== false, txnLeaseMs: duration(a.txnLeaseMs, "txnLeaseMs", ANY), handback: a.handback ?? null, request });
-            return { id };
-          }
-          case "events": {
-            this.checkConsumer(a.consumer, c.id);
-            const end = this.now() + Math.min(optInt(a.waitMs, "waitMs") ?? 0, this.o.maxPollMs);
-            for (; ; ) {
-              const p = await client.events(c.id.principal, { ...a.mailboxEpoch === void 0 ? {} : { mailboxEpoch: str(a.mailboxEpoch, "mailboxEpoch") }, after: optInt(a.after, "after"), maxBytes: Math.min(a.maxBytes === void 0 ? c.frameBytes : int(a.maxBytes, "maxBytes", 1), c.frameBytes - 21) }, (p2) => {
-                for (const item of p2.events) if (item.event.entry) this.checkTypes(grant2, item.event.entry.types, "this mailbox event");
-              });
-              if (p.events.length || p.gap || this.now() >= end) return p;
-              await awaitWithContext2(new Promise((r) => setTimeout(r, Math.min(50, Math.max(1, end - this.now())))), this.o.ctx);
-            }
-          }
-          case "ack":
-            this.checkConsumer(a.consumer, c.id);
-            return await client.ack(c.id.principal, str(a.mailboxEpoch, "mailboxEpoch"), int(a.upTo, "upTo"), { request });
-          default:
-            throw new Bad(`${method} is not implemented`);
-        }
-      }
-      checkConsumer(v, id) {
-        if (v !== void 0 && (!isObj(v) || principalId(v) !== principalId(id.principal))) throw new Denied("a consumer must be your authenticated principal");
-      }
-      async hello(a, c) {
-        if (a.protocol !== PROTOCOL_VERSION) throw new UnsupportedProtocol(`this host speaks protocol ${PROTOCOL_VERSION}`);
-        const infos = await listSpaces(this.o.host, this.o.ctx);
-        let info = infos.find((i) => i.alias === (c.space ?? DEFAULT_ALIAS) || i.spaceId === c.space);
-        if (!info && (c.space === void 0 || c.space === DEFAULT_ALIAS)) {
-          await this.o.host.commit(async (tx) => {
-            await spaceDoc(tx, void 0, this.now());
-          }, this.o.ctx);
-          info = (await listSpaces(this.o.host, this.o.ctx)).find((i) => i.alias === DEFAULT_ALIAS);
-        }
-        if (!info) throw new UnknownSpaceError(`unknown space: ${c.space}`);
-        const s = await snapshotSpace(this.o.host, info.spaceId, this.o.ctx);
-        const lim = limitsOf(s ?? initialState());
-        return {
-          protocol: PROTOCOL_VERSION,
-          hostId: this.o.hostId ?? (await this.o.host.snapshot(Registry, this.o.ctx)).hostId,
-          spaceId: info.spaceId,
-          alias: info.alias,
-          incarnation: info.incarnation,
-          streamId: streamIdOf(s ?? initialState()),
-          rev: revision(s ?? initialState()),
-          authorityId: this.o.authorityId,
-          primaryEpoch: await this.o.epochForSpace?.(info.spaceId) ?? this.o.primaryEpoch,
-          role: "single",
-          principal: principalKey(c.id.principal),
-          roles: c.id.roles,
-          features: [...METHODS],
-          limits: { maxFrameBytes: Math.min(lim.maxFrameBytes, c.frameBytes), maxCommitBytes: lim.maxCommitBytes, maxEventBytes: lim.maxEventBytes, maxEntryBytes: lim.maxEntryBytes, maxPollMs: this.o.maxPollMs, maxPendingPerPrincipal: this.o.maxPendingPerPrincipal, maxPendingPerPeer: this.o.maxPendingPerPeer },
-          capabilities: { snapshotPagination: true, mailboxes: true, completionProfiles: true, transactions: true, blockingTake: true, mode: "single" }
-        };
-      }
-      target(v, id) {
-        if (!isObj(v)) throw new Bad("targetRequest is required");
-        return { principal: id.principal, generation: str(v.generation, "targetRequest.generation"), requestId: str(v.requestId, "targetRequest.requestId") };
-      }
-      /** read/take: `done` with the entry or null, or `pending` while the operation keeps running on the host. */
-      async readTake(method, a, c) {
-        const { client, request, grant: grant2 } = c;
-        const t = template(a.template);
-        if (grant2.types !== "*") this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this template");
-        const timeout = duration(a.timeoutMs, "timeoutMs", NO_WAIT);
-        const waitMs = Math.min(optInt(a.waitMs, "waitMs", 0) ?? this.o.maxPollMs, this.o.maxPollMs);
-        let view3 = await client.beginOperation(t, timeout, { txn: a.txn ?? null, request, resultBudget: c.frameBytes - 64, ...a.deadline === void 0 ? {} : { deadline: int(a.deadline, "deadline") } }, method === "take", a.ifExists === true);
-        if (view3.state === "pending" && waitMs > 0) view3 = await this.poll({ targetRequest: { generation: request.generation, requestId: request.requestId }, waitMs }, c);
-        if (view3.resultExpired) throw new ResultExpired("the stored result has expired");
-        if (view3.error) throw view3.error.code === "CompletionViolation" ? new CompletionViolation(view3.error.message) : new TransactionError(view3.error.message);
-        if (view3.state === "cancelled") throw new OperationCancelled("the operation was cancelled");
-        return view3.state === "done" ? { state: "done", entry: view3.result ?? null } : { state: "pending", deadline: view3.deadline };
-      }
-      /** The state of an own request; waits up to `waitMs` (at most maxPollMs) for it to leave `pending`. Never extends a deadline. */
-      async poll(a, c) {
-        const t = this.target(a.targetRequest, c.id);
-        const waitMs = Math.min(optInt(a.waitMs, "waitMs", 0) ?? 0, this.o.maxPollMs);
-        const end = this.now() + waitMs;
-        for (; ; ) {
-          const v = await c.client.pollOperation(t);
-          if (v.result && isObj(v.result) && Array.isArray(v.result.types)) this.checkTypes(this.allowed(c.id, "pollOperation"), v.result.types, "this retained result");
-          if (v.state !== "pending" || v.restoredHistory || this.now() >= end) return v;
-          await awaitWithContext2(new Promise((res) => setTimeout(res, Math.min(50, Math.max(1, end - this.now())))), this.o.ctx);
-        }
-      }
-      /** Commit batches after a revision; `resync` tells the client to read pages again (history dropped or another stream). */
-      async changes(a, c) {
-        if (c.grant.types !== "*") throw new Denied("the change stream carries every type; it needs a role without type limits");
-        const after = int(a.afterRev, "afterRev", 0);
-        const waitMs = Math.min(optInt(a.waitMs, "waitMs", 0) ?? 0, this.o.maxPollMs);
-        const maxBytes = Math.min(a.maxBytes === void 0 ? c.frameBytes : int(a.maxBytes, "maxBytes", 1), c.frameBytes - 21);
-        const end = this.now() + waitMs;
-        for (; ; ) {
-          let r;
-          try {
-            r = await c.client.changes(after, maxBytes === void 0 ? {} : { maxBytes });
-          } catch (e) {
-            if (e instanceof SnapshotExpired || e instanceof RevisionAhead) return { resync: true, reason: e instanceof SnapshotExpired ? "history dropped" : "ahead of this stream" };
-            throw e;
-          }
-          if (a.streamId !== void 0 && a.streamId !== r.streamId) return { resync: true, reason: "another stream", streamId: r.streamId };
-          if (r.batches.length > 0 || this.now() >= end) return r;
-          await awaitWithContext2(new Promise((res) => setTimeout(res, Math.min(50, Math.max(1, end - this.now())))), this.o.ctx);
-        }
-      }
-      // ---- errors
-      error(e) {
-        if (e instanceof Bad) return fail("BadRequest", e.message);
-        if (e instanceof Denied || e instanceof PermissionError) return fail("PermissionDenied", e.message);
-        if (e instanceof UnsupportedProtocol) return fail("UnsupportedProtocol", e.message);
-        if (e instanceof UnknownSpaceError) return fail("UnknownSpace", e.message);
-        if (e instanceof RequestConflict) return fail("RequestConflict", e.message);
-        if (e instanceof RequestExpired) return fail("RequestExpired", e.message);
-        if (e instanceof ResultExpired) return fail("ResultExpired", e.message);
-        if (e instanceof IncarnationChanged) return fail("IncarnationChanged", e.message);
-        if (e instanceof OperationCancelled) return fail("OperationCancelled", e.message);
-        if (e instanceof ResponseBudgetTooSmall) return fail("ResponseBudgetTooSmall", e.message, { requiredBytes: e.requiredBytes });
-        if (e instanceof LimitError) return fail("ResourceExhausted", e.message);
-        if (e instanceof SnapshotExpired) return fail("SnapshotExpired", e.message);
-        if (e instanceof RevisionAhead) return fail("RevisionAhead", e.message);
-        if (e instanceof CompletionViolation) return fail("CompletionViolation", e.message);
-        if (e instanceof MailboxEpochMismatch) return fail("MailboxEpochMismatch", e.message);
-        if (e instanceof InvalidAck) return fail("InvalidAck", e.message);
-        if (e instanceof TransactionError || e instanceof UnknownLeaseError) return fail("TransactionError", e.message);
-        if (e instanceof IllegalArgumentError || e instanceof TypeError) return fail("BadRequest", e.message);
-        return fail("Internal", e instanceof Error ? e.message : String(e));
-      }
-    };
-    UnsupportedProtocol = class extends Error {
-    };
-  }
-});
-
-// src/grants.ts
-import { randomBytes as randomBytes5, verify } from "node:crypto";
-import { createPublicKey as createPublicKey2 } from "node:crypto";
-function verifyDetached(algorithm, publicKey, message, signature) {
-  try {
-    const raw = Buffer.from(publicKey, "base64"), key = createPublicKey2({ key: algorithm === "ed25519" ? Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), raw]) : raw, format: "der", type: "spki" });
-    return verify(algorithm === "ed25519" ? null : "sha256", message, key, Buffer.from(signature, "base64"));
-  } catch {
-    return false;
-  }
-}
-var bytes, RESOLUTION, GrantDenied, GrantAuthority, GrantVerifier;
-var init_grants = __esm({
-  "src/grants.ts"() {
-    "use strict";
-    init_canonical();
-    init_service();
-    init_core();
-    bytes = (g) => Buffer.from("pi-spaces/grant/v1\n" + canonicalJson(g));
-    RESOLUTION = /* @__PURE__ */ new Set(["hello", "pollOperation", "cancelOperation", "txn", "lease", "rotationStatus"]);
-    GrantDenied = class extends PermissionError {
-    };
-    GrantAuthority = class {
-      o;
-      constructor(o) {
-        this.o = o;
-        if (!Number.isSafeInteger(o.ttlMs ?? 6e4) || (o.ttlMs ?? 6e4) < 1 || (o.ttlMs ?? 6e4) > 6e4) throw new IllegalArgumentError("grant TTL must be 1..60000 ms");
-      }
-      async issue(conn, purpose = "effect") {
-        if (purpose !== "effect" && purpose !== "resolution") throw new GrantDenied("invalid grant purpose");
-        const id = await this.o.refreshIdentity(conn);
-        if (!id) throw new GrantDenied("no current overlay identity");
-        const proof = conn.state?.proof;
-        let roles = [...id.roles], scope = ["*"];
-        if (proof) {
-          const key = await this.o.keys.find(id.principal.peerId, proof.keyId);
-          if (!key || key.state !== "active") throw new GrantDenied("the app key is not active");
-          roles = roles.filter((r) => key.roles.includes(r));
-          scope = key.scope ?? [];
-        } else {
-          if (purpose === "resolution") throw new GrantDenied("resolution needs a still-active app key");
-          if (this.o.allowAOnly && !await this.o.allowAOnly()) {
-            if (!roles.includes("unpaired")) throw new GrantDenied("A-only rights remain disabled after recovery");
-            roles = ["unpaired"];
-            scope = ["control"];
-          }
-        }
-        if (purpose === "effect" && !roles.length) throw new GrantDenied("no current effect rights");
-        const now = (this.o.now ?? Date.now)();
-        const grant2 = { id: randomBytes5(16).toString("hex"), authorityId: this.o.authorityId, issuerHostId: this.o.hostId, principal: id.principal, ...proof ? { keyId: proof.keyId } : {}, scope, roles, issuedAt: now, expiresAt: now + (this.o.ttlMs ?? 6e4), purpose };
-        return { grant: grant2, algorithm: this.o.signer.algorithm, signature: Buffer.from(await this.o.signer.sign(bytes(grant2))).toString("base64") };
-      }
-    };
-    GrantVerifier = class {
-      o;
-      constructor(o) {
-        this.o = o;
-        if ((o.uncertaintyMs ?? 2e3) < 0) throw new IllegalArgumentError("invalid clock uncertainty");
-      }
-      check(token, id, call, conn) {
-        const t = token, g = t?.grant;
-        if (!g || t.algorithm !== this.o.algorithm || typeof t.signature !== "string") throw new GrantDenied("a signed control grant is required");
-        if (!verifyDetached(this.o.algorithm, this.o.publicKey, bytes(g), t.signature)) throw new GrantDenied("invalid grant signature");
-        const now = (this.o.now ?? Date.now)(), margin = this.o.uncertaintyMs ?? 2e3;
-        if (g.authorityId !== this.o.authorityId || g.issuerHostId !== this.o.issuerHostId) throw new GrantDenied("grant authority or issuer mismatch");
-        if (canonicalJson(g.principal) !== canonicalJson(id.principal)) throw new GrantDenied("grant belongs to another principal");
-        if (conn && g.keyId !== conn.state?.proof?.keyId) throw new GrantDenied("grant belongs to another app key");
-        if (!Number.isSafeInteger(g.issuedAt) || !Number.isSafeInteger(g.expiresAt) || g.expiresAt <= g.issuedAt || g.expiresAt - g.issuedAt > 6e4 || g.issuedAt > now + margin || now + margin >= g.expiresAt) throw new GrantDenied("grant expired or has invalid timestamps");
-        if (!Array.isArray(g.roles) || !g.roles.every((r) => typeof r === "string") || !Array.isArray(g.scope) || !g.scope.every((s) => typeof s === "string")) throw new GrantDenied("invalid grant roles or scope");
-        const space = call.space ?? "default";
-        const ownKeyOperation = !!conn && !!g.keyId && ["rotationChallenge", "rotationGeneration", "rotateKey", "rotationStatus"].includes(String(call.method));
-        if (!ownKeyOperation && !g.scope.includes("*") && !g.scope.includes(space)) throw new GrantDenied("space outside grant scope");
-        if (g.purpose === "resolution" && (!RESOLUTION.has(call.method) || call.method === "txn" && call.args?.action !== "abort" || call.method === "lease" && call.args?.action !== "cancel")) throw new GrantDenied("resolution grants cannot create effects");
-        if (g.purpose !== "effect" && g.purpose !== "resolution") throw new GrantDenied("invalid grant purpose");
-        return { validUntil: g.expiresAt - margin, roles: g.purpose === "resolution" ? ["resolution"] : id.roles.filter((r) => g.roles.includes(r)), canExecutePending: (method, template2) => g.purpose === "effect" && id.roles.filter((r) => g.roles.includes(r)).some((role) => {
-          const r = (this.o.policy ?? DEFAULT_POLICY).roles[role], m = method.startsWith("take") ? "take" : method.startsWith("read") ? "read" : method;
-          return r && (r.methods === "*" || r.methods.includes(m)) && (!r.types || !!template2?.type && r.types.includes(template2.type));
-        }), check: () => {
-          if ((this.o.now ?? Date.now)() + margin >= g.expiresAt) throw new GrantDenied("grant expired before commit");
-        } };
-      }
-    };
-  }
-});
+// src/enroll.ts
+import { createHash as createHash2, randomBytes as randomBytes6 } from "node:crypto";
 
 // src/auth.ts
-import { createPublicKey as createPublicKey3, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes7, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes as randomBytes5, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
+var AUTH_PROTOCOL = 1;
+var CHALLENGE_TTL_MS = 3e4;
+var MemoryKeyDirectory = class {
+  keys = /* @__PURE__ */ new Map();
+  add(rec) {
+    this.keys.set(`${rec.peerId}
+${rec.keyId}`, { ...rec, roles: [...rec.roles] });
+  }
+  revoke(peerId, keyId) {
+    const k = this.keys.get(`${peerId}
+${keyId}`);
+    if (k) k.state = "revoked";
+  }
+  async find(peerId, keyId) {
+    const k = this.keys.get(`${peerId}
+${keyId}`);
+    return k ? { ...k, roles: [...k.roles] } : null;
+  }
+};
+var ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+var publicKeyObject = (algorithm, publicKey) => {
+  const raw = Buffer.from(publicKey, "base64");
+  if (algorithm === "ed25519") {
+    if (raw.length !== 32) throw new Error("an Ed25519 public key is 32 bytes");
+    return createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, raw]), format: "der", type: "spki" });
+  }
+  return createPublicKey({ key: raw, format: "der", type: "spki" });
+};
+var DOMAIN = "pi-spaces/auth/v1\n";
+var signedBytes = (challenge) => Buffer.from(DOMAIN + canonicalJson(challenge), "utf8");
 function verifySignature(rec, challenge, signature) {
   try {
     const key = publicKeyObject(rec.algorithm, rec.publicKey);
@@ -2634,134 +1997,112 @@ function verifySignature(rec, challenge, signature) {
 }
 function generateKey(algorithm, keyId) {
   if (algorithm === "ed25519") {
-    const { publicKey: publicKey2, privateKey: privateKey2 } = generateKeyPairSync2("ed25519");
+    const { publicKey: publicKey2, privateKey: privateKey2 } = generateKeyPairSync("ed25519");
     const raw = publicKey2.export({ format: "der", type: "spki" }).subarray(ED25519_SPKI_PREFIX.length);
     const pub2 = Buffer.from(raw).toString("base64");
     return { publicKey: pub2, signer: { keyId, algorithm, publicKey: pub2, sign: (d) => cryptoSign(null, Buffer.from(d), privateKey2) } };
   }
-  const { publicKey, privateKey } = generateKeyPairSync2("ec", { namedCurve: "P-256" });
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const pub = Buffer.from(publicKey.export({ format: "der", type: "spki" })).toString("base64");
   return { publicKey: pub, signer: { keyId, algorithm, publicKey: pub, sign: (d) => cryptoSign("sha256", Buffer.from(d), privateKey) } };
 }
-var AUTH_PROTOCOL, CHALLENGE_TTL_MS, MemoryKeyDirectory, ED25519_SPKI_PREFIX, publicKeyObject, DOMAIN, signedBytes, DEFAULT_PRIVILEGED, reply, bad, stateOf, ProvingService;
-var init_auth = __esm({
-  "src/auth.ts"() {
-    "use strict";
-    init_canonical();
-    AUTH_PROTOCOL = 1;
-    CHALLENGE_TTL_MS = 3e4;
-    MemoryKeyDirectory = class {
-      keys = /* @__PURE__ */ new Map();
-      add(rec) {
-        this.keys.set(`${rec.peerId}
-${rec.keyId}`, { ...rec, roles: [...rec.roles] });
-      }
-      revoke(peerId, keyId) {
-        const k = this.keys.get(`${peerId}
-${keyId}`);
-        if (k) k.state = "revoked";
-      }
-      async find(peerId, keyId) {
-        const k = this.keys.get(`${peerId}
-${keyId}`);
-        return k ? { ...k, roles: [...k.roles] } : null;
-      }
-    };
-    ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-    publicKeyObject = (algorithm, publicKey) => {
-      const raw = Buffer.from(publicKey, "base64");
-      if (algorithm === "ed25519") {
-        if (raw.length !== 32) throw new Error("an Ed25519 public key is 32 bytes");
-        return createPublicKey3({ key: Buffer.concat([ED25519_SPKI_PREFIX, raw]), format: "der", type: "spki" });
-      }
-      return createPublicKey3({ key: raw, format: "der", type: "spki" });
-    };
-    DOMAIN = "pi-spaces/auth/v1\n";
-    signedBytes = (challenge) => Buffer.from(DOMAIN + canonicalJson(challenge), "utf8");
-    DEFAULT_PRIVILEGED = ["admin", "router", "replicator", "supervisor", "host"];
-    reply = (r) => r;
-    bad = (code, message) => reply({ ok: false, error: { code, message } });
-    stateOf = (conn) => conn.state ??= {};
-    ProvingService = class {
-      inner;
-      o;
-      constructor(inner, o) {
-        this.inner = inner;
-        this.o = { maxFailures: 5, ...o };
-      }
-      async handleText(text2, conn, maxFrameBytes) {
-        let call;
-        try {
-          call = JSON.parse(text2);
-        } catch {
-          return this.inner.handleText(text2, conn, maxFrameBytes);
-        }
-        const method = call?.method;
-        if (method === "challenge" || method === "prove") return JSON.stringify(await this.proof(call, conn));
-        return this.annotate(await this.inner.handleText(text2, conn, maxFrameBytes), conn);
-      }
-      async handle(call, conn) {
-        const method = call?.method;
-        if (method === "challenge" || method === "prove") return this.proof(call, conn);
-        const r = await this.inner.handle(call, conn);
-        return JSON.parse(this.annotate(JSON.stringify(r), conn));
-      }
-      /** A refusal because roles are withheld is ProofRequired: the client can fix it by proving. */
-      annotate(text2, conn) {
-        const st = stateOf(conn);
-        if (st.proof) return text2;
-        const A = conn.credentials?.roles ?? [];
-        const privileged = this.o.privilegedRoles ?? DEFAULT_PRIVILEGED;
-        if (!A.some((r) => privileged.includes(r))) return text2;
-        try {
-          const r = JSON.parse(text2);
-          if (!r.ok && r.error.code === "PermissionDenied") return JSON.stringify({ ok: false, error: { ...r.error, code: "ProofRequired", message: "a proof of your app key is required for this: call challenge, then prove" } });
-        } catch {
-        }
-        return text2;
-      }
-      async proof(call, conn) {
-        const now = (this.o.now ?? Date.now)();
-        const st = stateOf(conn);
-        const peerId = conn.peerId;
-        if (!peerId) return bad("Unauthenticated", "the connection has no known peer");
-        const args = call.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args : {};
-        if (call.method === "challenge") {
-          if (args.protocol !== AUTH_PROTOCOL) return bad("BadRequest", `this host speaks auth protocol ${AUTH_PROTOCOL}`);
-          const value = { gateHostId: this.o.gateHostId, observedPeerId: peerId, connNonce: randomBytes7(32).toString("hex"), protocol: AUTH_PROTOCOL, issuedAt: now };
-          st.challenge = { value, used: false };
-          return { ok: true, result: { ...value, expiresAt: now + CHALLENGE_TTL_MS } };
-        }
-        const fail2 = (message) => {
-          st.failures = (st.failures ?? 0) + 1;
-          if (st.challenge) st.challenge.used = true;
-          return bad("PermissionDenied", message);
-        };
-        if ((st.failures ?? 0) >= this.o.maxFailures) return bad("PermissionDenied", "too many wrong proofs on this connection");
-        const ch = st.challenge;
-        if (!ch || ch.used) return fail2("no open challenge: call challenge first");
-        if (typeof args.keyId !== "string" || typeof args.signature !== "string" || args.challenge === void 0) return fail2("prove needs keyId, signature and the challenge");
-        if (canonicalJson(args.challenge) !== canonicalJson(ch.value)) return fail2("this is not the challenge issued on this connection");
-        if (now - ch.value.issuedAt > CHALLENGE_TTL_MS || now < ch.value.issuedAt) return fail2("the challenge has expired");
-        const key = await this.o.keys.find(peerId, args.keyId);
-        if (!key || key.peerId !== peerId) return fail2("unknown key for this peer");
-        if (key.state !== "active") return fail2("the key is revoked");
-        if (!verifySignature(key, ch.value, args.signature)) return fail2("the signature does not match");
-        ch.used = true;
-        st.proof = { keyId: key.keyId, principal: key.principal, roles: [...key.roles], ...key.scope ? { scope: [...key.scope] } : {}, at: now };
-        return { ok: true, result: { keyId: key.keyId, principal: key.principal, roles: key.roles } };
-      }
-    };
+var DEFAULT_PRIVILEGED = ["admin", "router", "replicator", "supervisor", "host"];
+var reply = (r) => r;
+var bad = (code, message) => reply({ ok: false, error: { code, message } });
+var stateOf = (conn) => conn.state ??= {};
+var ProvingService = class {
+  inner;
+  o;
+  constructor(inner, o) {
+    this.inner = inner;
+    this.o = { maxFailures: 5, ...o };
   }
-});
+  async handleText(text2, conn, maxFrameBytes) {
+    let call;
+    try {
+      call = JSON.parse(text2);
+    } catch {
+      return this.inner.handleText(text2, conn, maxFrameBytes);
+    }
+    const method = call?.method;
+    if (method === "challenge" || method === "prove") return JSON.stringify(await this.proof(call, conn));
+    return this.annotate(await this.inner.handleText(text2, conn, maxFrameBytes), conn);
+  }
+  async handle(call, conn) {
+    const method = call?.method;
+    if (method === "challenge" || method === "prove") return this.proof(call, conn);
+    const r = await this.inner.handle(call, conn);
+    return JSON.parse(this.annotate(JSON.stringify(r), conn));
+  }
+  /** A refusal because roles are withheld is ProofRequired: the client can fix it by proving. */
+  annotate(text2, conn) {
+    const st = stateOf(conn);
+    if (st.proof) return text2;
+    const A = conn.credentials?.roles ?? [];
+    const privileged = this.o.privilegedRoles ?? DEFAULT_PRIVILEGED;
+    if (!A.some((r) => privileged.includes(r))) return text2;
+    try {
+      const r = JSON.parse(text2);
+      if (!r.ok && r.error.code === "PermissionDenied") return JSON.stringify({ ok: false, error: { ...r.error, code: "ProofRequired", message: "a proof of your app key is required for this: call challenge, then prove" } });
+    } catch {
+    }
+    return text2;
+  }
+  async proof(call, conn) {
+    const now = (this.o.now ?? Date.now)();
+    const st = stateOf(conn);
+    const peerId = conn.peerId;
+    if (!peerId) return bad("Unauthenticated", "the connection has no known peer");
+    const args = call.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args : {};
+    if (call.method === "challenge") {
+      if (args.protocol !== AUTH_PROTOCOL) return bad("BadRequest", `this host speaks auth protocol ${AUTH_PROTOCOL}`);
+      const value = { gateHostId: this.o.gateHostId, observedPeerId: peerId, connNonce: randomBytes5(32).toString("hex"), protocol: AUTH_PROTOCOL, issuedAt: now };
+      st.challenge = { value, used: false };
+      return { ok: true, result: { ...value, expiresAt: now + CHALLENGE_TTL_MS } };
+    }
+    const fail2 = (message) => {
+      st.failures = (st.failures ?? 0) + 1;
+      if (st.challenge) st.challenge.used = true;
+      return bad("PermissionDenied", message);
+    };
+    if ((st.failures ?? 0) >= this.o.maxFailures) return bad("PermissionDenied", "too many wrong proofs on this connection");
+    const ch = st.challenge;
+    if (!ch || ch.used) return fail2("no open challenge: call challenge first");
+    if (typeof args.keyId !== "string" || typeof args.signature !== "string" || args.challenge === void 0) return fail2("prove needs keyId, signature and the challenge");
+    if (canonicalJson(args.challenge) !== canonicalJson(ch.value)) return fail2("this is not the challenge issued on this connection");
+    if (now - ch.value.issuedAt > CHALLENGE_TTL_MS || now < ch.value.issuedAt) return fail2("the challenge has expired");
+    const key = await this.o.keys.find(peerId, args.keyId);
+    if (!key || key.peerId !== peerId) return fail2("unknown key for this peer");
+    if (key.state !== "active") return fail2("the key is revoked");
+    if (!verifySignature(key, ch.value, args.signature)) return fail2("the signature does not match");
+    ch.used = true;
+    st.proof = { keyId: key.keyId, principal: key.principal, roles: [...key.roles], at: now };
+    return { ok: true, result: { keyId: key.keyId, principal: key.principal, roles: key.roles } };
+  }
+};
 
 // src/enroll.ts
-import { createHash as createHash5, randomBytes as randomBytes8 } from "node:crypto";
+var CONTROL_SPACE = "control";
+var ENROLL_TTL_MS = 5 * 6e4;
+var MAX_FAILED_ATTEMPTS = 3;
+var ATTEMPT_INTERVAL_MS = 6e4;
+var UNPAIRED_ROLE = "unpaired";
+var ENROLLABLE_ROLES = ["host", "member", "observer"];
+var BootstrapClosed = class extends Error {
+};
+var EnrollError = class extends Error {
+};
+var newEnrollToken = () => randomBytes6(32).toString("base64url");
+var hashToken = (token) => createHash2("sha256").update(token, "utf8").digest("hex");
+var enrollQr = (o) => JSON.stringify({ v: 1, endpoint: o.endpoint, space: o.controlSpaceId, token: o.token });
+var keyFingerprint = (publicKey) => createHash2("sha256").update(Buffer.from(publicKey, "base64")).digest("hex").slice(0, 32);
 async function control(host, ctx, now) {
   const known = (await listSpaces(host, ctx)).find((i) => i.alias === CONTROL_SPACE);
   if (known) return known;
   return host.commit((tx) => createSpace(tx, CONTROL_SPACE, now), ctx);
 }
+var fieldsOf = (e) => e.fields;
+var asEnroll = (e) => fieldsOf(e);
 function putEnroll(s, now, rec) {
   write(s, now, { type: "Enroll", fields: rec }, null, FOREVER);
 }
@@ -2769,40 +2110,18 @@ function takeEnroll(s, now, tokenHash) {
   const p = probe(s, now, { type: "Enroll", fields: { tokenHash } }, null, true);
   return p.status === "found" ? asEnroll(p.entry) : void 0;
 }
+var findEnroll = (s, now, tokenHash) => {
+  const l = list(s, now, { type: "Enroll", fields: { tokenHash } });
+  return l[0] ? asEnroll(l[0]) : void 0;
+};
+var checkHash = (h) => {
+  if (!/^[0-9a-f]{64}$/.test(h)) throw new IllegalArgumentError("tokenHash must be the SHA-256 of the token in hex");
+};
 async function createEnroll(host, ctx, o) {
-  validateCreateEnroll(o);
-  return writeEnroll(host, ctx, { ...o, bootstrap: false });
-}
-function validateCreateEnroll(o) {
   checkHash(o.tokenHash);
   if (!ENROLLABLE_ROLES.includes(o.role)) throw new IllegalArgumentError(`createEnroll hands out ${ENROLLABLE_ROLES.join(", ")}; an admin is paired through the bootstrap token`);
   if (!o.allowedPeerId) throw new IllegalArgumentError("a token is bound to the peer id of the device (from the management API)");
-}
-function createEnrollIn(s, now, o) {
-  validateCreateEnroll(o);
-  const have = findEnroll(s, now, o.tokenHash);
-  if (have) return plain(have);
-  const rec = { tokenHash: o.tokenHash, role: o.role, scope: o.scope ?? [], allowedPeerId: o.allowedPeerId, expiresAt: now + Math.min(o.ttlMs ?? ENROLL_TTL_MS, ENROLL_TTL_MS), attempts: 0, bootstrap: false, state: "open" };
-  putEnroll(s, now, rec);
-  return rec;
-}
-function revokePeerKeysIn(s, now, peerId) {
-  let n = 0;
-  for (const e of list(s, now, { type: "PeerKey", fields: { peerId } })) {
-    const f = e.fields;
-    if (f.state !== "active") continue;
-    const p = probe(s, now, { id: e.id }, null, true);
-    if (p.status !== "found") continue;
-    write(s, now, { type: "PeerKey", fields: { ...plain(p.entry.fields), state: "revoked" } }, null, FOREVER);
-    n++;
-  }
-  return n;
-}
-function hasAdminKey(s, now, peerId) {
-  return list(s, now, { type: "PeerKey", fields: { peerId } }).some((e) => {
-    const f = e.fields;
-    return f.state === "active" && f.roles.includes("admin");
-  });
+  return writeEnroll(host, ctx, { ...o, bootstrap: false });
 }
 async function writeEnroll(host, ctx, o) {
   const now = (o.now ?? Date.now)();
@@ -2837,6 +2156,23 @@ async function bootstrapEnroll(host, ctx, o) {
     return rec;
   }, ctx);
 }
+var SpaceKeyDirectory = class {
+  host;
+  ctx;
+  now;
+  constructor(host, ctx, now = Date.now) {
+    this.host = host;
+    this.ctx = ctx;
+    this.now = now;
+  }
+  async find(peerId, keyId) {
+    const info = (await listSpaces(this.host, this.ctx)).find((i) => i.alias === CONTROL_SPACE);
+    const s = info ? await snapshotSpace(this.host, info.spaceId, this.ctx) : void 0;
+    if (!s) return null;
+    const e = list(s, this.now(), { type: "PeerKey", fields: { peerId, keyId } })[0];
+    return e ? { ...fieldsOf(e), roles: [...fieldsOf(e).roles] } : null;
+  }
+};
 async function revokePeerKey(host, ctx, peerId, keyId, now = Date.now) {
   const t = now();
   const info = await control(host, ctx, t);
@@ -2848,6 +2184,149 @@ async function revokePeerKey(host, ctx, peerId, keyId, now = Date.now) {
     return true;
   }, ctx);
 }
+var refuse = (message = "enrollment refused") => ({ ok: false, error: { code: "PermissionDenied", message } });
+var EnrollmentService = class {
+  inner;
+  o;
+  lastAttempt = /* @__PURE__ */ new Map();
+  constructor(inner, o) {
+    this.inner = inner;
+    this.o = o;
+  }
+  async handleText(text2, conn, maxFrameBytes) {
+    let call;
+    try {
+      call = JSON.parse(text2);
+    } catch {
+      return this.inner.handleText(text2, conn, maxFrameBytes);
+    }
+    const m = call?.method;
+    if (m === "enroll" || m === "enrollStatus") return JSON.stringify(await this.handle(call, conn));
+    return this.inner.handleText(text2, conn, maxFrameBytes);
+  }
+  async handle(call, conn) {
+    const m = call?.method;
+    if (m !== "enroll" && m !== "enrollStatus") return this.inner.handle(call, conn);
+    const roles = conn.credentials?.roles ?? [];
+    if (!conn.peerId || !roles.includes(UNPAIRED_ROLE)) return refuse("only an unpaired peer may enroll");
+    try {
+      return m === "enroll" ? await this.enroll(call, conn) : await this.status(call, conn);
+    } catch (e) {
+      return refuse(e instanceof EnrollError ? e.message : "enrollment refused");
+    }
+  }
+  event(peerId, outcome, keyId) {
+    try {
+      this.o.onEvent?.({ peerId, outcome, ...keyId ? { keyId } : {} });
+    } catch {
+    }
+  }
+  async enroll(call, conn) {
+    const now = (this.o.now ?? Date.now)();
+    const peerId = conn.peerId;
+    const a = call.args ?? {};
+    const r = call.request;
+    if (typeof a.token !== "string" || typeof a.publicKey !== "string" || typeof a.signature !== "string" || typeof a.algorithm !== "string" || !r || typeof r.generation !== "string" || typeof r.requestId !== "string") throw new EnrollError("enrollment refused");
+    const tokenHash = hashToken(a.token);
+    const algorithm = a.algorithm;
+    if (algorithm !== "ed25519" && algorithm !== "ecdsa-p256") throw new EnrollError("enrollment refused");
+    const ref = { principal: { peerId }, generation: r.generation, requestId: r.requestId };
+    const challenge = this.consumeChallenge(conn, a.challenge, now);
+    const info = await control(this.o.host, this.o.ctx, now);
+    const outcome = await this.o.host.commit(async (tx) => {
+      const s = await spaceDoc(tx, info.spaceId, now);
+      let exists = false;
+      try {
+        lookup(s, ref, now);
+        exists = true;
+      } catch {
+        exists = false;
+      }
+      if (exists) {
+        const ad2 = admit(s, now, ref, "enroll", { tokenHash, publicKey: a.publicKey }, FOREVER);
+        if (ad2.kind === "done") return { replay: plain(ad2.result) };
+        throw new EnrollError("enrollment refused");
+      }
+      const last = this.lastAttempt.get(peerId);
+      if (last !== void 0 && now - last < ATTEMPT_INTERVAL_MS) return { ok: false, reason: "rate-limited" };
+      this.lastAttempt.set(peerId, now);
+      for (const [k, t] of this.lastAttempt) if (now - t >= ATTEMPT_INTERVAL_MS) this.lastAttempt.delete(k);
+      const taken = takeEnroll(s, now, tokenHash);
+      if (!taken) return { ok: false, reason: "unknown-token" };
+      const restore = (rec) => putEnroll(s, now, rec);
+      if (taken.state !== "open") {
+        restore(taken);
+        return { ok: false, reason: "too-many-attempts" };
+      }
+      if (taken.allowedPeerId !== peerId) {
+        restore(taken);
+        return { ok: false, reason: "wrong-peer" };
+      }
+      if (now >= taken.expiresAt) {
+        restore({ ...taken, state: "invalid" });
+        return { ok: false, reason: "expired" };
+      }
+      if (taken.attempts >= MAX_FAILED_ATTEMPTS) {
+        restore({ ...taken, state: "invalid" });
+        return { ok: false, reason: "too-many-attempts" };
+      }
+      const failed = (reason) => {
+        const attempts = taken.attempts + 1;
+        restore({ ...taken, attempts, state: attempts >= MAX_FAILED_ATTEMPTS ? "invalid" : "open" });
+        return { ok: false, reason };
+      };
+      if (!challenge) return failed("bad-challenge");
+      if (!validKey(algorithm, a.publicKey)) return failed("bad-key");
+      if (!verifySignature({ algorithm, publicKey: a.publicKey }, challenge, a.signature)) return failed("bad-signature");
+      const keyId = keyFingerprint(a.publicKey);
+      restore({ ...taken, state: "consumed" });
+      write(s, now, { type: "PeerKey", fields: { peerId, keyId, principal: `enrolled:${peerId}`, algorithm, publicKey: a.publicKey, roles: [taken.role], state: "active" } }, null, FOREVER);
+      if (taken.bootstrap) {
+        probe(s, now, { type: "Bootstrap" }, null, true);
+        write(s, now, { type: "Bootstrap", fields: { state: "closed" } }, null, FOREVER);
+      }
+      const result = { keyId, role: taken.role, peerId, scope: taken.scope };
+      const ad = admit(s, now, ref, "enroll", { tokenHash, publicKey: a.publicKey }, FOREVER);
+      if (ad.kind === "fresh" || ad.kind === "pending") decide(s, now, ad.key, { state: "done", result });
+      return { ok: true, keyId, role: taken.role, peerId, scope: taken.scope };
+    }, this.o.ctx);
+    if ("replay" in outcome) {
+      this.event(peerId, "replayed");
+      return { ok: true, result: outcome.replay };
+    }
+    if (!outcome.ok) {
+      this.event(peerId, outcome.reason);
+      return outcome.reason === "rate-limited" ? { ok: false, error: { code: "ResourceExhausted", message: "one enrollment attempt per minute" } } : refuse();
+    }
+    this.event(peerId, "enrolled", outcome.keyId);
+    return { ok: true, result: { keyId: outcome.keyId, role: outcome.role, peerId: outcome.peerId, scope: outcome.scope } };
+  }
+  /** The challenge of this connection (issued by the layer-B service) as the new key must have signed it; used once. */
+  consumeChallenge(conn, claimed, now) {
+    const st = conn.state ??= {};
+    const ch = st.challenge;
+    if (!ch || ch.used || claimed === void 0) return void 0;
+    ch.used = true;
+    if (canonicalJson(claimed) !== canonicalJson(ch.value)) return void 0;
+    if (now - ch.value.issuedAt > CHALLENGE_TTL_MS || now < ch.value.issuedAt) return void 0;
+    return ch.value;
+  }
+  /** The peer's own enrollment result, by its request identity. */
+  async status(call, conn) {
+    const r = call.args?.targetRequest;
+    if (!r || typeof r.generation !== "string" || typeof r.requestId !== "string") throw new EnrollError("enrollment refused");
+    const now = (this.o.now ?? Date.now)();
+    const info = (await listSpaces(this.o.host, this.o.ctx)).find((i) => i.alias === CONTROL_SPACE);
+    const s = info ? await snapshotSpace(this.o.host, info.spaceId, this.o.ctx) : void 0;
+    if (!s) return { ok: true, result: { state: "unknown" } };
+    try {
+      const v = lookup(s, { principal: { peerId: conn.peerId }, generation: r.generation, requestId: r.requestId }, now);
+      return { ok: true, result: { state: v.state, ...v.state === "done" ? { result: v.result ?? {} } : {} } };
+    } catch {
+      return { ok: true, result: { state: "unknown" } };
+    }
+  }
+};
 function validKey(algorithm, publicKey) {
   try {
     const raw = Buffer.from(publicKey, "base64");
@@ -2858,416 +2337,10 @@ function validKey(algorithm, publicKey) {
     return false;
   }
 }
-var CONTROL_SPACE, ENROLL_TTL_MS, MAX_FAILED_ATTEMPTS, ATTEMPT_INTERVAL_MS, UNPAIRED_ROLE, ENROLLABLE_ROLES, BootstrapClosed, EnrollError, newEnrollToken, hashToken, enrollQr, keyFingerprint, fieldsOf, asEnroll, findEnroll, checkHash, SpaceKeyDirectory, refuse, EnrollmentService;
-var init_enroll = __esm({
-  "src/enroll.ts"() {
-    "use strict";
-    init_core();
-    init_claims();
-    init_canonical();
-    init_spaces();
-    init_auth();
-    CONTROL_SPACE = "control";
-    ENROLL_TTL_MS = 5 * 6e4;
-    MAX_FAILED_ATTEMPTS = 3;
-    ATTEMPT_INTERVAL_MS = 6e4;
-    UNPAIRED_ROLE = "unpaired";
-    ENROLLABLE_ROLES = ["host", "member", "observer"];
-    BootstrapClosed = class extends Error {
-    };
-    EnrollError = class extends Error {
-    };
-    newEnrollToken = () => randomBytes8(32).toString("base64url");
-    hashToken = (token) => createHash5("sha256").update(token, "utf8").digest("hex");
-    enrollQr = (o) => JSON.stringify({ v: 1, endpoint: o.endpoint, space: o.controlSpaceId, token: o.token });
-    keyFingerprint = (publicKey) => createHash5("sha256").update(Buffer.from(publicKey, "base64")).digest("hex").slice(0, 32);
-    fieldsOf = (e) => e.fields;
-    asEnroll = (e) => fieldsOf(e);
-    findEnroll = (s, now, tokenHash) => {
-      const l = list(s, now, { type: "Enroll", fields: { tokenHash } });
-      return l[0] ? asEnroll(l[0]) : void 0;
-    };
-    checkHash = (h) => {
-      if (!/^[0-9a-f]{64}$/.test(h)) throw new IllegalArgumentError("tokenHash must be the SHA-256 of the token in hex");
-    };
-    SpaceKeyDirectory = class {
-      host;
-      ctx;
-      now;
-      constructor(host, ctx, now = Date.now) {
-        this.host = host;
-        this.ctx = ctx;
-        this.now = now;
-      }
-      async find(peerId, keyId) {
-        const info = (await listSpaces(this.host, this.ctx)).find((i) => i.alias === CONTROL_SPACE);
-        const s = info ? await snapshotSpace(this.host, info.spaceId, this.ctx) : void 0;
-        if (!s) return null;
-        const e = list(s, this.now(), { type: "PeerKey", fields: { peerId, keyId } })[0];
-        return e ? { ...fieldsOf(e), roles: [...fieldsOf(e).roles] } : null;
-      }
-    };
-    refuse = (message = "enrollment refused") => ({ ok: false, error: { code: "PermissionDenied", message } });
-    EnrollmentService = class {
-      inner;
-      o;
-      lastAttempt = /* @__PURE__ */ new Map();
-      constructor(inner, o) {
-        this.inner = inner;
-        this.o = o;
-      }
-      async handleText(text2, conn, maxFrameBytes) {
-        let call;
-        try {
-          call = JSON.parse(text2);
-        } catch {
-          return this.inner.handleText(text2, conn, maxFrameBytes);
-        }
-        const m = call?.method;
-        if (m === "enroll" || m === "enrollStatus") return JSON.stringify(await this.handle(call, conn));
-        return this.inner.handleText(text2, conn, maxFrameBytes);
-      }
-      async handle(call, conn) {
-        const m = call?.method;
-        if (m !== "enroll" && m !== "enrollStatus") return this.inner.handle(call, conn);
-        const roles = conn.credentials?.roles ?? [];
-        if (!conn.peerId) return refuse();
-        const unpaired = roles.includes(UNPAIRED_ROLE);
-        if (!unpaired) {
-          const proof = conn.state?.proof;
-          const key = proof && await this.o.keys?.find(conn.peerId, proof.keyId);
-          if (!key || key.state !== "active") return refuse("paired enrollment resolution requires a current app-key proof");
-        }
-        try {
-          return m === "enroll" ? await this.enroll(call, conn, !unpaired) : await this.status(call, conn);
-        } catch (e) {
-          return refuse(e instanceof EnrollError ? e.message : "enrollment refused");
-        }
-      }
-      event(peerId, outcome, keyId) {
-        try {
-          this.o.onEvent?.({ peerId, outcome, ...keyId ? { keyId } : {} });
-        } catch {
-        }
-      }
-      async enroll(call, conn, replayOnly = false) {
-        const now = (this.o.now ?? Date.now)();
-        const peerId = conn.peerId;
-        const a = call.args ?? {};
-        const r = call.request;
-        if (typeof a.token !== "string" || typeof a.publicKey !== "string" || typeof a.signature !== "string" || typeof a.algorithm !== "string" || !r || typeof r.generation !== "string" || typeof r.requestId !== "string") throw new EnrollError("enrollment refused");
-        const tokenHash = hashToken(a.token);
-        const algorithm = a.algorithm;
-        if (algorithm !== "ed25519" && algorithm !== "ecdsa-p256") throw new EnrollError("enrollment refused");
-        const ref = { principal: { peerId }, generation: r.generation, requestId: r.requestId };
-        const challenge = this.consumeChallenge(conn, a.challenge, now);
-        const info = await control(this.o.host, this.o.ctx, now);
-        const outcome = await this.o.host.commit(async (tx) => {
-          const s = await spaceDoc(tx, info.spaceId, now);
-          let exists = false;
-          try {
-            lookup(s, ref, now);
-            exists = true;
-          } catch {
-            exists = false;
-          }
-          if (exists) {
-            const ad2 = admit(s, now, ref, "enroll", { tokenHash, publicKey: a.publicKey }, FOREVER);
-            if (ad2.kind === "done") return { replay: plain(ad2.result) };
-            throw new EnrollError("enrollment refused");
-          }
-          if (replayOnly) throw new EnrollError("paired peers may only resolve existing enrollment requests");
-          const last = this.lastAttempt.get(peerId);
-          if (last !== void 0 && now - last < ATTEMPT_INTERVAL_MS) return { ok: false, reason: "rate-limited" };
-          this.lastAttempt.set(peerId, now);
-          for (const [k, t] of this.lastAttempt) if (now - t >= ATTEMPT_INTERVAL_MS) this.lastAttempt.delete(k);
-          const taken = takeEnroll(s, now, tokenHash);
-          if (!taken) return { ok: false, reason: "unknown-token" };
-          const restore = (rec) => putEnroll(s, now, rec);
-          if (taken.state !== "open") {
-            restore(taken);
-            return { ok: false, reason: "too-many-attempts" };
-          }
-          if (taken.allowedPeerId !== peerId) {
-            restore(taken);
-            return { ok: false, reason: "wrong-peer" };
-          }
-          if (now >= taken.expiresAt) {
-            restore({ ...taken, state: "invalid" });
-            return { ok: false, reason: "expired" };
-          }
-          if (taken.attempts >= MAX_FAILED_ATTEMPTS) {
-            restore({ ...taken, state: "invalid" });
-            return { ok: false, reason: "too-many-attempts" };
-          }
-          const failed = (reason) => {
-            const attempts = taken.attempts + 1;
-            restore({ ...taken, attempts, state: attempts >= MAX_FAILED_ATTEMPTS ? "invalid" : "open" });
-            return { ok: false, reason };
-          };
-          if (!challenge) return failed("bad-challenge");
-          if (!validKey(algorithm, a.publicKey)) return failed("bad-key");
-          if (!verifySignature({ algorithm, publicKey: a.publicKey }, challenge, a.signature)) return failed("bad-signature");
-          const keyId = keyFingerprint(a.publicKey);
-          restore({ ...taken, state: "consumed" });
-          write(s, now, { type: "PeerKey", fields: { peerId, keyId, principal: `enrolled:${peerId}`, algorithm, publicKey: a.publicKey, roles: [taken.role], scope: taken.scope, state: "active" } }, null, FOREVER);
-          if (taken.bootstrap) {
-            probe(s, now, { type: "Bootstrap" }, null, true);
-            write(s, now, { type: "Bootstrap", fields: { state: "closed" } }, null, FOREVER);
-          }
-          const result = { keyId, role: taken.role, peerId, scope: taken.scope };
-          const ad = admit(s, now, ref, "enroll", { tokenHash, publicKey: a.publicKey }, FOREVER);
-          if (ad.kind === "fresh" || ad.kind === "pending") decide(s, now, ad.key, { state: "done", result });
-          return { ok: true, keyId, role: taken.role, peerId, scope: taken.scope };
-        }, this.o.ctx);
-        if ("replay" in outcome) {
-          this.event(peerId, "replayed");
-          return { ok: true, result: outcome.replay };
-        }
-        if (!outcome.ok) {
-          this.event(peerId, outcome.reason);
-          return outcome.reason === "rate-limited" ? { ok: false, error: { code: "ResourceExhausted", message: "one enrollment attempt per minute" } } : refuse();
-        }
-        this.event(peerId, "enrolled", outcome.keyId);
-        return { ok: true, result: { keyId: outcome.keyId, role: outcome.role, peerId: outcome.peerId, scope: outcome.scope } };
-      }
-      /** The challenge of this connection (issued by the layer-B service) as the new key must have signed it; used once. */
-      consumeChallenge(conn, claimed, now) {
-        const st = conn.state ??= {};
-        const ch = st.challenge;
-        if (!ch || ch.used || claimed === void 0) return void 0;
-        ch.used = true;
-        if (canonicalJson(claimed) !== canonicalJson(ch.value)) return void 0;
-        if (now - ch.value.issuedAt > CHALLENGE_TTL_MS || now < ch.value.issuedAt) return void 0;
-        return ch.value;
-      }
-      /** The peer's own enrollment result, by its request identity. */
-      async status(call, conn) {
-        const r = call.args?.targetRequest;
-        if (!r || typeof r.generation !== "string" || typeof r.requestId !== "string") throw new EnrollError("enrollment refused");
-        const now = (this.o.now ?? Date.now)();
-        const info = (await listSpaces(this.o.host, this.o.ctx)).find((i) => i.alias === CONTROL_SPACE);
-        const s = info ? await snapshotSpace(this.o.host, info.spaceId, this.o.ctx) : void 0;
-        if (!s) return { ok: true, result: { state: "unknown" } };
-        try {
-          const v = lookup(s, { principal: { peerId: conn.peerId }, generation: r.generation, requestId: r.requestId }, now);
-          if (v.method !== "enroll") return { ok: true, result: { state: "unknown" } };
-          return { ok: true, result: { state: v.state, ...v.state === "done" ? { result: v.result ?? {} } : {} } };
-        } catch {
-          return { ok: true, result: { state: "unknown" } };
-        }
-      }
-    };
-  }
-});
-
-// src/rotation.ts
-var rotation_exports = {};
-__export(rotation_exports, {
-  RotationService: () => RotationService,
-  createRotationChallenge: () => createRotationChallenge,
-  rotateKeyIn: () => rotateKeyIn,
-  rotationBytes: () => rotationBytes
-});
-import { randomBytes as randomBytes9 } from "node:crypto";
-async function createRotationChallenge(host, ctx, peerId, oldKeyId, algorithm, publicKey, now = Date.now(), check = () => {
-}) {
-  if (!["ed25519", "ecdsa-p256"].includes(algorithm) || Buffer.byteLength(publicKey) > 1024) throw new IllegalArgumentError("invalid replacement key");
-  return host.commit(async (tx) => {
-    const s = await spaceDoc(tx, CONTROL_SPACE, now);
-    check();
-    const old = list(s, now, { type: "PeerKey", fields: { peerId, keyId: oldKeyId, state: "active" } })[0];
-    if (!old) throw new PermissionError("rotation needs an active old key");
-    if (count(s, now, { type: "Rotation", fields: { peerId } }) >= 3) throw new ResourceExhausted("too many open rotation challenges");
-    const challenge = { nonce: randomBytes9(32).toString("hex"), peerId, oldKeyId, newKeyId: keyFingerprint(publicKey), newAlgorithm: algorithm, newPublicKey: publicKey, issuedAt: now, expiresAt: now + 3e4 };
-    if (challenge.newKeyId === oldKeyId) throw new IllegalArgumentError("replacement key must differ");
-    write(s, now, { type: "Rotation", fields: { ...challenge, state: "open" } }, null, 3e4);
-    return challenge;
-  }, ctx);
-}
-function rotateKeyIn(s, now, o, requestedBy) {
-  const c = o.challenge;
-  if (!c || requestedBy !== c.peerId || c.issuedAt > now || now >= c.expiresAt) throw new PermissionError("rotation challenge owner or expiry mismatch");
-  const pending = list(s, now, { type: "Rotation", fields: { nonce: c.nonce, state: "open" } })[0];
-  if (!pending || canonicalJson(Object.fromEntries(Object.entries(pending.fields).filter(([k]) => k !== "state"))) !== canonicalJson(c)) throw new PermissionError("unknown, used or changed rotation challenge");
-  const old = list(s, now, { type: "PeerKey", fields: { peerId: c.peerId, keyId: c.oldKeyId, state: "active" } })[0];
-  if (!old || !verifyDetached(old.fields.algorithm, old.fields.publicKey, rotationBytes(c), o.oldSignature) || !verifyDetached(c.newAlgorithm, c.newPublicKey, rotationBytes(c), o.newSignature)) throw new PermissionError("rotation requires valid signatures from both keys");
-  if (count(s, now, { type: "PeerKey", fields: { peerId: c.peerId, keyId: c.newKeyId } })) throw new PermissionError("replacement key already exists");
-  const cost = Buffer.byteLength(JSON.stringify(old.fields)) * 2 + Buffer.byteLength(JSON.stringify(c)) + 1024;
-  if (cost > limitsOf(s).maxCommitBytes) throw new ResourceExhausted("rotation exceeds the atomic commit budget");
-  probe(s, now, { id: pending.id }, null, true);
-  probe(s, now, { id: old.id }, null, true);
-  write(s, now, { type: "PeerKey", fields: { ...old.fields, state: "revoked" } }, null, FOREVER);
-  write(s, now, { type: "PeerKey", fields: { ...old.fields, keyId: c.newKeyId, algorithm: c.newAlgorithm, publicKey: c.newPublicKey, state: "active" } }, null, FOREVER);
-  return { peerId: c.peerId, oldKeyId: c.oldKeyId, newKeyId: c.newKeyId };
-}
-var rotationBytes, RotationService;
-var init_rotation = __esm({
-  "src/rotation.ts"() {
-    "use strict";
-    init_client();
-    init_enroll();
-    init_spaces();
-    init_canonical();
-    init_grants();
-    init_core();
-    init_claims();
-    init_mailbox();
-    rotationBytes = (c) => Buffer.from("pi-spaces/rotate/v1\n" + canonicalJson(c));
-    RotationService = class {
-      inner;
-      o;
-      constructor(inner, o) {
-        this.inner = inner;
-        this.o = o;
-      }
-      async handleText(t, conn, max = 256 * 1024) {
-        if (Buffer.byteLength(t) > max) return JSON.stringify({ ok: false, error: { code: "ResourceExhausted", message: "rotation frame too large" } });
-        let c;
-        try {
-          c = JSON.parse(t);
-        } catch {
-          return this.inner.handleText(t, conn, max);
-        }
-        return ["rotationChallenge", "rotationGeneration", "rotateKey", "rotationStatus"].includes(c?.method) ? JSON.stringify(await this.handle(c, conn)) : this.inner.handleText(t, conn, max);
-      }
-      async handle(c, conn) {
-        const call = c;
-        if (!["rotationChallenge", "rotationGeneration", "rotateKey", "rotationStatus"].includes(call?.method)) return this.inner.handle(c, conn);
-        try {
-          const id = await this.o.identity.authenticate(conn), proof = conn.state?.proof;
-          if (!id || !proof) throw new PermissionError("rotation requires a proven app key");
-          const key = await this.o.keys.find(id.principal.peerId, proof.keyId);
-          if (!key || key.state !== "active") throw new PermissionError("the app key is no longer active");
-          const authorization = this.o.verifier.check(call.frame?.grant, id, { ...call, space: CONTROL_SPACE }, conn);
-          authorization.check();
-          const a = call.args ?? {}, now = (this.o.now ?? Date.now)();
-          if (call.method === "rotationGeneration") return { ok: true, result: await new PiSpaces(this.o.host, this.o.ctx, this.o.now, void 0, void 0, { space: CONTROL_SPACE, authorization }).issueGeneration(id.principal) };
-          if (call.method === "rotationChallenge") return { ok: true, result: await createRotationChallenge(this.o.host, this.o.ctx, id.principal.peerId, proof.keyId, a.algorithm, a.publicKey, now, authorization.check) };
-          if (call.method === "rotationStatus") {
-            const state = await this.o.host.snapshot((await Promise.resolve().then(() => (init_spaces(), spaces_exports))).Registry, this.o.ctx);
-            const controlId = state?.aliases[CONTROL_SPACE];
-            const s = controlId ? await (await Promise.resolve().then(() => (init_spaces(), spaces_exports))).snapshotSpace(this.o.host, controlId, this.o.ctx) : void 0;
-            const entry = s ? list(s, now, { type: "Result", fields: { commandId: a.commandId, requestedBy: id.principal.peerId } })[0] : void 0;
-            return { ok: true, result: entry ? entry.fields : { state: "pending" } };
-          }
-          if (!a.challenge || a.challenge.peerId !== id.principal.peerId || a.challenge.oldKeyId !== proof.keyId) throw new PermissionError("rotation challenge belongs to another key");
-          const r = call.request;
-          if (!r?.generation || !r.requestId) throw new IllegalArgumentError("rotateKey requires a request identity");
-          const result = await this.o.host.commit(async (tx) => {
-            const s = await spaceDoc(tx, CONTROL_SPACE, now);
-            authorization.check();
-            const args = { challenge: a.challenge, oldSignature: a.oldSignature, newSignature: a.newSignature };
-            const admitted = admit(s, now, { principal: id.principal, ...r }, "rotateKey", args, FOREVER);
-            if (admitted.kind === "done") return admitted.result;
-            if (admitted.kind === "cancelled") throw new OperationCancelled("rotation was cancelled");
-            const preview = plain(s);
-            beginCommit(preview);
-            rotateKeyIn(preview, now, args, id.principal.peerId);
-            const commandId = `rotate:${id.principal.peerId}:${a.challenge.nonce}`;
-            write(s, now, { type: "Command", fields: { commandId, kind: "rotateKey", args } }, null, 6e4, principalId(id.principal));
-            const out = { state: "accepted", commandId };
-            decide(s, now, admitted.key, { state: "done", result: out });
-            return out;
-          }, this.o.ctx);
-          return { ok: true, result };
-        } catch (e) {
-          return { ok: false, error: { code: e instanceof ResourceExhausted ? "ResourceExhausted" : "PermissionDenied", message: e instanceof Error ? e.message : String(e) } };
-        }
-      }
-    };
-  }
-});
-
-// src/index.ts
-init_client();
-init_spaces();
-init_core();
-init_meter();
-init_client();
-import { Type } from "@earendil-works/pi-ai";
-import { defineDoc as defineDoc6, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
-
-// src/keys.ts
-import { createHash as createHash2, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-function privateFile(path) {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const s = fstatSync(fd), current = lstatSync(path);
-    if (!s.isFile() || current.isSymbolicLink() || s.ino !== current.ino || s.dev !== current.dev || s.nlink !== 1 || process.getuid && s.uid !== process.getuid() || (s.mode & 63) !== 0) throw new Error("provisioned file must be a regular private file (0600)");
-    return readFileSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-function provisionFileSigner(path, algorithm = "ed25519") {
-  if (!["ed25519", "ecdsa-p256"].includes(algorithm)) throw new Error("unsupported key algorithm");
-  const pair = algorithm === "ed25519" ? generateKeyPairSync("ed25519") : generateKeyPairSync("ec", { namedCurve: "P-256" });
-  mkdirSync(dirname(path), { recursive: true, mode: 448 });
-  writeFileSync(path, JSON.stringify({ algorithm, privateKey: pair.privateKey.export({ format: "pem", type: "pkcs8" }) }) + "\n", { flag: "wx", mode: 384 });
-  return loadFileSigner(path);
-}
-function loadFileSigner(path) {
-  const record2 = JSON.parse(privateFile(path).toString("utf8"));
-  if (!["ed25519", "ecdsa-p256"].includes(record2.algorithm) || typeof record2.privateKey !== "string") throw new Error("invalid provisioned key");
-  const key = createPrivateKey(record2.privateKey), algorithm = record2.algorithm;
-  if (algorithm === "ed25519" ? key.asymmetricKeyType !== "ed25519" : key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") throw new Error("key algorithm mismatch");
-  const der = createPublicKey(key).export({ format: "der", type: "spki" });
-  const publicKey = Buffer.from(algorithm === "ed25519" ? der.subarray(12) : der).toString("base64");
-  return { algorithm, publicKey, keyId: createHash2("sha256").update(Buffer.from(publicKey, "base64")).digest("hex").slice(0, 32), sign: (data) => sign(algorithm === "ed25519" ? null : "sha256", Buffer.from(data), key) };
-}
-
-// src/recovery-register.ts
-init_canonical();
-import { DatabaseSync } from "node:sqlite";
-import { chmodSync, lstatSync as lstatSync2, mkdirSync as mkdirSync2 } from "node:fs";
-import { dirname as dirname2 } from "node:path";
-var RegisterConflict = class extends Error {
-};
-var SqliteRecoveryRegister = class {
-  db;
-  constructor(path) {
-    mkdirSync2(dirname2(path), { recursive: true, mode: 448 });
-    try {
-      if (lstatSync2(path).isSymbolicLink()) throw new Error("register must not be a symlink");
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-    this.db = new DatabaseSync(path);
-    chmodSync(path, 384);
-    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, version INTEGER NOT NULL, value TEXT NOT NULL)");
-  }
-  async get(key) {
-    const r = this.db.prepare("SELECT version,value FROM records WHERE key=?").get(key);
-    return r ? { version: r.version, value: JSON.parse(r.value) } : null;
-  }
-  async compareAndSet(key, expected, value) {
-    if (!key || expected !== null && (!Number.isSafeInteger(expected) || expected < 1)) throw new RegisterConflict("invalid register key/version");
-    const encoded = canonicalJson(value);
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const prior = this.db.prepare("SELECT version FROM records WHERE key=?").get(key);
-      if ((prior?.version ?? null) !== expected) throw new RegisterConflict("register version changed");
-      const version = (expected ?? 0) + 1;
-      this.db.prepare("INSERT INTO records(key,version,value) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET version=excluded.version,value=excluded.value").run(key, version, encoded);
-      this.db.exec("COMMIT");
-      return { version, value: JSON.parse(encoded) };
-    } catch (e) {
-      this.db.exec("ROLLBACK");
-      throw e;
-    }
-  }
-  close() {
-    this.db.close();
-  }
-};
 
 // src/socket.ts
-init_core();
 import net from "node:net";
-import { chmodSync as chmodSync2, lstatSync as lstatSync3, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, unlinkSync } from "node:fs";
 var HEADER = 8;
 var FrameReader = class {
   buf = Buffer.alloc(0);
@@ -3276,8 +2349,8 @@ var FrameReader = class {
     this.max = max;
   }
   push(chunk, onFrame) {
-    const bytes3 = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    this.buf = this.buf.length === 0 ? bytes3 : Buffer.concat([this.buf, bytes3]);
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    this.buf = this.buf.length === 0 ? bytes : Buffer.concat([this.buf, bytes]);
     for (; ; ) {
       if (this.buf.length < HEADER) return;
       const n = this.buf.readUInt32BE(0);
@@ -3353,8 +2426,8 @@ async function serveSpace(service, o) {
       server.listen(o.listen.path, () => {
         try {
           const path = o.listen.path;
-          chmodSync2(path, 384);
-          owned = lstatSync3(path);
+          chmodSync(path, 384);
+          owned = lstatSync(path);
           resolve();
         } catch (e) {
           server.close();
@@ -3371,7 +2444,7 @@ async function serveSpace(service, o) {
       await new Promise((r) => server.close(() => r()));
       if ("path" in o.listen) {
         try {
-          const current = lstatSync3(o.listen.path);
+          const current = lstatSync(o.listen.path);
           if (owned && current.dev === owned.dev && current.ino === owned.ino) unlinkSync(o.listen.path);
         } catch (e) {
           if (e.code !== "ENOENT") throw e;
@@ -3383,7 +2456,7 @@ async function serveSpace(service, o) {
 async function prepareSocketPath(path) {
   let old;
   try {
-    old = lstatSync3(path);
+    old = lstatSync(path);
   } catch (e) {
     if (e.code === "ENOENT") return;
     throw e;
@@ -3410,7 +2483,7 @@ async function prepareSocketPath(path) {
   });
   if (!stale) throw new Error(`a server is already listening at ${path}`);
   try {
-    const current = lstatSync3(path);
+    const current = lstatSync(path);
     if (!current.isSocket() || current.ino !== old.ino || current.dev !== old.dev) throw new Error("socket path changed during stale-file check");
     unlinkSync(path);
   } catch (e) {
@@ -3500,455 +2573,7 @@ function socketTransport(target, o = {}) {
   };
 }
 
-// src/register-service.ts
-import { mkdirSync as mkdirSync3, lstatSync as lstatSync4 } from "node:fs";
-import { dirname as dirname3 } from "node:path";
-async function serveRegister(register, path, o = {}) {
-  mkdirSync3(dirname3(path), { recursive: true, mode: 448 });
-  const parent = lstatSync4(dirname3(path));
-  if (!parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 63) !== 0) throw new Error("register socket directory must be private");
-  return serveSpace({ async handleText(text2) {
-    try {
-      const c = JSON.parse(text2);
-      if (typeof c.key !== "string" || !c.key || c.key.length > 512) throw new Error("invalid register key");
-      if (c.method === "get") return JSON.stringify({ ok: true, result: await register.get(c.key) });
-      if (c.method !== "compareAndSet" || !o.writable) return JSON.stringify({ ok: false, error: { code: "PermissionDenied", message: "this register endpoint is read-only" } });
-      return JSON.stringify({ ok: true, result: await register.compareAndSet(c.key, c.expectedVersion, c.value) });
-    } catch (e) {
-      return JSON.stringify({ ok: false, error: { code: e instanceof RegisterConflict ? "RequestConflict" : "BadRequest", message: e instanceof Error ? e.message : String(e) } });
-    }
-  } }, { listen: { path }, maxFrameBytes: o.maxFrameBytes ?? 256 * 1024 });
-}
-var SocketRecoveryRegister = class {
-  transport;
-  writable;
-  timeoutMs;
-  constructor(path, o = {}) {
-    this.transport = socketTransport({ path });
-    this.writable = o.writable ?? false;
-    this.timeoutMs = o.timeoutMs ?? 4e3;
-  }
-  async call(c) {
-    let timer;
-    try {
-      const reply2 = JSON.parse(await Promise.race([this.transport.request(JSON.stringify(c)), new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("independent register timed out")), this.timeoutMs);
-      })]));
-      if (!reply2.ok) {
-        if (reply2.error?.code === "RequestConflict") throw new RegisterConflict(reply2.error.message);
-        throw new Error(reply2.error?.message ?? "register unavailable");
-      }
-      return reply2.result;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  get(key) {
-    return this.call({ method: "get", key });
-  }
-  compareAndSet(key, expectedVersion, value) {
-    if (!this.writable) return Promise.reject(new Error("member register access is read-only"));
-    return this.call({ method: "compareAndSet", key, expectedVersion, value });
-  }
-  close() {
-    this.transport.close();
-  }
-};
-
-// src/recovery-service.ts
-init_grants();
-init_canonical();
-import { randomUUID as randomUUID3 } from "node:crypto";
-import { mkdirSync as mkdirSync4, lstatSync as lstatSync5 } from "node:fs";
-import { dirname as dirname4 } from "node:path";
-
-// src/recovery.ts
-init_canonical();
-init_grants();
-import { randomUUID as randomUUID2 } from "node:crypto";
-var signed = (t) => Buffer.from("pi-spaces/recovery-authority/v1\n" + canonicalJson(t));
-var RecoveryBlocked = class extends Error {
-};
-var RecoveryCoordinator = class {
-  register;
-  signer;
-  constructor(register, signer) {
-    this.register = register;
-    this.signer = signer;
-  }
-  async reserve(o, verifyFence) {
-    const key = `authority:${o.controlSpaceId}`;
-    const current = await this.register.get(key);
-    if (!current) throw new RecoveryBlocked("authority register has not been provisioned");
-    const known = current.value.lineage[o.expectedAuthorityId];
-    let transition;
-    if (known) {
-      if (Object.keys(o).some((k) => known[k] !== o[k])) throw new RegisterConflict("another successor decision already exists for this authority");
-      transition = known;
-    } else {
-      if (current.value.authorityId !== o.expectedAuthorityId || current.value.state !== "active") throw new RegisterConflict("expected authority is not active");
-      const proof = await verifyFence(current.value.hostId);
-      if (!proof.restartLocked || proof.hostId !== current.value.hostId) throw new RecoveryBlocked("independently verified fencing with restart lock is required");
-      transition = { ...o, newAuthorityId: `a-${randomUUID2()}` };
-      await this.register.compareAndSet(key, current.version, { authorityId: transition.newAuthorityId, hostId: transition.targetHostId, supervisorKey: transition.supervisorKey, state: "transitioning", lineage: { ...current.value.lineage, [o.expectedAuthorityId]: transition } });
-    }
-    return { transition, algorithm: this.signer.algorithm, signature: Buffer.from(await this.signer.sign(signed(transition))).toString("base64") };
-  }
-};
-async function installAuthorityTransition(local, external, proof, pinned) {
-  const t = await verifyAuthorityTransition(external, proof, pinned);
-  const key = `installed-authority:${t.controlSpaceId}`, prior = await local.get(key);
-  if (prior?.value.authorityId === t.newAuthorityId && prior.value.recoveryId === t.recoveryId) return t;
-  if (!prior || prior.value.authorityId !== t.expectedAuthorityId) throw new RegisterConflict("member authority changed or was not provisioned");
-  await local.compareAndSet(key, prior.version, { authorityId: t.newAuthorityId, recoveryId: t.recoveryId, supervisorKey: t.supervisorKey, targetHostId: t.targetHostId });
-  return t;
-}
-async function verifyAuthorityTransition(external, proof, pinned) {
-  const t = proof?.transition;
-  if (!t || ![t.recoveryId, t.expectedAuthorityId, t.newAuthorityId, t.controlSpaceId, t.targetHostId, t.supervisorKey].every((v) => typeof v === "string" && v.length > 0 && v.length <= 1024) || t.expectedAuthorityId === t.newAuthorityId) throw new RecoveryBlocked("invalid authority transition identity");
-  if (proof.algorithm !== pinned.algorithm || !verifyDetached(pinned.algorithm, pinned.publicKey, signed(t), proof.signature)) throw new RecoveryBlocked("invalid recovery signature");
-  const authority = await external.get(`authority:${t.controlSpaceId}`);
-  if (!authority || canonicalJson(authority.value.lineage[t.expectedAuthorityId]) !== canonicalJson(t)) throw new RecoveryBlocked("transition is not the unique external successor decision");
-  if (authority.value.authorityId !== t.newAuthorityId) throw new RecoveryBlocked("transition is no longer the current external successor");
-  return t;
-}
-
-// src/recovery-service.ts
-var recoveryBytes = (call) => Buffer.from("pi-spaces/recovery-rpc/v1\n" + canonicalJson(call));
-var SUPERVISOR = /* @__PURE__ */ new Set(["restoreDataSpace", "advanceRestore", "restoreStatus", "releaseRestored", "controlAck"]);
-async function serveRecovery(o) {
-  mkdirSync4(dirname4(o.path), { recursive: true, mode: 448 });
-  const parent = lstatSync5(dirname4(o.path));
-  if (!parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 63) !== 0) throw new Error("recovery socket directory must be private");
-  return serveSpace({ async handleText(text2) {
-    try {
-      const signed2 = JSON.parse(text2), c = signed2.call, now = (o.now ?? Date.now)();
-      if (!c || c.hostId !== o.hostId || typeof c.requestId !== "string" || !c.requestId || c.requestId.length > 256 || typeof c.method !== "string" || !Number.isSafeInteger(c.issuedAt) || !Number.isSafeInteger(c.expiresAt) || c.expiresAt <= c.issuedAt || c.expiresAt - c.issuedAt > 6e4 || c.issuedAt > now + 2e3 || now + 2e3 >= c.expiresAt) throw new RecoveryBlocked("invalid recovery target, request identity or validity window");
-      let role;
-      if (signed2.algorithm === o.operator.algorithm && verifyDetached(signed2.algorithm, o.operator.publicKey, recoveryBytes(c), signed2.signature)) role = "operator";
-      else if (o.supervisor && SUPERVISOR.has(c.method)) {
-        const key = await o.supervisor();
-        if (signed2.algorithm === key.algorithm && verifyDetached(key.algorithm, key.publicKey, recoveryBytes(c), signed2.signature)) role = "supervisor";
-      }
-      if (!role && o.hostKey && c.method === "controlAck") {
-        const key = await o.hostKey(c);
-        if (key && signed2.algorithm === key.algorithm && verifyDetached(key.algorithm, key.publicKey, recoveryBytes(c), signed2.signature)) role = "host";
-      }
-      if (!role) throw new RecoveryBlocked("recovery signature or method is not authorized");
-      return JSON.stringify({ ok: true, result: await o.handle(c, role) });
-    } catch (e) {
-      return JSON.stringify({ ok: false, error: { code: e instanceof RegisterConflict ? "RequestConflict" : "PermissionDenied", message: e instanceof Error ? e.message : String(e) } });
-    }
-  } }, { listen: { path: o.path }, maxFrameBytes: 256 * 1024, maxConnections: 8, maxInflightPerConnection: 4 });
-}
-var RecoveryClient = class {
-  transport;
-  o;
-  constructor(path, o) {
-    this.transport = typeof path === "string" ? socketTransport({ path }) : path;
-    this.o = o;
-  }
-  async call(method, args, requestId = randomUUID3()) {
-    const now = (this.o.now ?? Date.now)(), call = { hostId: this.o.hostId, requestId, method, args, issuedAt: now, expiresAt: now + 6e4 };
-    const envelope = { call, algorithm: this.o.signer.algorithm, signature: Buffer.from(await this.o.signer.sign(recoveryBytes(call))).toString("base64") };
-    let timer;
-    try {
-      const reply2 = JSON.parse(await Promise.race([this.transport.request(JSON.stringify(envelope)), new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new RecoveryBlocked("recovery endpoint timed out; query the same recovery id")), this.o.timeoutMs ?? 1e4);
-      })]));
-      if (!reply2.ok) {
-        if (reply2.error?.code === "RequestConflict") throw new RegisterConflict(reply2.error.message);
-        throw new RecoveryBlocked(reply2.error?.message ?? "recovery endpoint refused the request");
-      }
-      return reply2.result;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  close() {
-    this.transport.close?.();
-  }
-};
-
-// src/recovery-controller.ts
-init_canonical();
-init_spaces();
-import { defineDoc as defineDoc3 } from "@earendil-works/pi-durable";
-import { createHash as createHash4 } from "node:crypto";
-
-// src/restore.ts
-init_core();
-init_canonical();
-import { createHash as createHash3, randomBytes as randomBytes6 } from "node:crypto";
-var snapshotHash = (s) => createHash3("sha256").update(canonicalJson(s)).digest("hex");
-function beginRestore(s, now, o) {
-  if (!o.recoveryId || o.recoveryId.length > 256 || !/^[a-f0-9]{64}$/.test(o.snapshotHash) || !["data", "control"].includes(o.kind) || !Number.isSafeInteger(o.expectedPrimaryEpoch) || o.expectedPrimaryEpoch < 0 || !Number.isSafeInteger(o.expectedPrimaryEpoch + 1)) throw new IllegalArgumentError("invalid restore identity, snapshot hash or epoch");
-  const hash2 = createHash3("sha256").update(canonicalJson(o)).digest("hex");
-  if (s.restore) {
-    if (s.restore.recoveryId === o.recoveryId && s.restore.argumentHash === hash2) return plain(s.restore);
-    if (s.restore.stage !== "completed") throw new PermissionError("a different restore is already installed");
-  }
-  if (!s.spaceId || s.incarnation !== o.expectedDataIncarnation || (s.primaryEpoch ?? 1) !== o.expectedPrimaryEpoch) throw new PermissionError("restore incarnation or epoch precondition failed");
-  const restoration = { recoveryId: o.recoveryId, argumentHash: hash2, snapshotHash: o.snapshotHash, incarnation: randomBytes6(4).toString("hex"), primaryEpoch: o.kind === "control" ? 1 : o.expectedPrimaryEpoch + 1, startedAt: now, waitUntil: now + 62e3, stage: "entries", cursor: 0, kind: o.kind };
-  s.entries = [];
-  s.txns = {};
-  s.regs = [];
-  s.waiters = [];
-  s.outbox = [];
-  s.jobs = [];
-  s.releaseQueue = [];
-  s.mailboxes = { boxes: {} };
-  s.rpc = { generations: {}, claims: {}, bytes: 0, reservedBytes: 0 };
-  s.restoredClaims = {};
-  s.invalidGenerations = {};
-  s.nextId = 1;
-  s.stream = { rev: 0, floor: 0, bytes: 0, log: [] };
-  s.incarnation = restoration.incarnation;
-  s.primaryEpoch = restoration.primaryEpoch;
-  s.restore = restoration;
-  touch2(s, now);
-  return plain(s.restore);
-}
-function restoreBatch(s, now, source) {
-  const r = s.restore;
-  if (!r || r.stage === "completed") throw new PermissionError("no active restore");
-  if (source.spaceId !== s.spaceId || snapshotHash(source) !== r.snapshotHash) throw new PermissionError("snapshot content or space id changed");
-  if (r.stage === "entries") {
-    if (r.kind === "control" && !s.entries.some((e) => e.type === "Bootstrap")) {
-      const marker = initialState();
-      marker.incarnation = r.incarnation;
-      write(marker, now, { type: "Bootstrap", fields: { state: "closed" } }, null, FOREVER);
-      if (!importRestoredEntry(s, now, marker.entries[0])) return plain(r);
-      s.nextId = Math.max(s.nextId, marker.nextId);
-    }
-    for (; r.cursor < source.entries.length; r.cursor++) {
-      const e = source.entries[r.cursor];
-      if (e.writtenUnder !== null || e.expires <= now) continue;
-      const control2 = r.kind === "control";
-      if (control2 && ["Enroll", "Bootstrap", "Command", "RouterLease", "FederationPolicy"].includes(e.type)) continue;
-      const copy2 = plain(e);
-      copy2.takenBy = null;
-      copy2.readBy = [];
-      if (control2 && copy2.type === "PeerKey") copy2.fields.state = "revoked";
-      else if (control2 && copy2.type === "Member") copy2.fields.state = "recoveryBlocked";
-      else if (!control2) copy2.restoredUnverified = true;
-      if (!importRestoredEntry(s, now, copy2)) return plain(r);
-    }
-    r.stage = "claims";
-    r.cursor = 0;
-  }
-  if (r.stage === "claims") {
-    const claims = Object.entries({ ...source.restoredClaims, ...source.rpc?.claims });
-    for (; r.cursor < claims.length; r.cursor++) {
-      const [key, c] = claims[r.cursor];
-      const cost = Buffer.byteLength(JSON.stringify(c)) + Buffer.byteLength(JSON.stringify(key)) + 256;
-      const historyBytes = claimBytes(s) + cost;
-      if (historyBytes > limitsOf(s).maxClaimBytes || overheadBytes(s) + cost + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes) throw new ResourceExhausted("restored history violates current space limits");
-      if (cost + 1024 > limitsOf(s).maxCommitBytes) throw new ResourceExhausted("historical claim does not fit the restore budget");
-      if (!maintenanceStep(s, cost, now, `restore-claim:${r.cursor}`)) return plain(r);
-      const copy2 = plain(c);
-      delete copy2.reservedResultBytes;
-      s.restoredClaims[key] = copy2;
-      touch2(s, now);
-    }
-    r.stage = "generations";
-    r.cursor = 0;
-    touch2(s, now);
-  }
-  if (r.stage === "generations") {
-    const generations = [.../* @__PURE__ */ new Set([...Object.keys(source.invalidGenerations ?? {}), ...Object.keys(source.rpc?.generations ?? {})])];
-    for (; r.cursor < generations.length; r.cursor++) {
-      const id = generations[r.cursor];
-      const cost = Buffer.byteLength(JSON.stringify(id)) + 64, lim = limitsOf(s);
-      if (cost + 1024 > lim.maxCommitBytes || claimBytes(s) + cost > lim.maxClaimBytes || overheadBytes(s) + cost + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > lim.maxDocBytes) throw new ResourceExhausted("restored generation violates current space limits");
-      if (!maintenanceStep(s, cost, now, `restore-generation:${r.cursor}`)) return plain(r);
-      s.invalidGenerations[id] = true;
-      touch2(s, now);
-    }
-    r.stage = "waiting";
-    r.cursor = 0;
-    touch2(s, now);
-  }
-  return plain(r);
-}
-function completeRestore(s, now, recoveryId) {
-  if (s.restore?.recoveryId === recoveryId && s.restore.stage === "completed") return;
-  if (!s.restore || s.restore.recoveryId !== recoveryId || s.restore.stage !== "waiting" || now < s.restore.waitUntil) throw new PermissionError("restore cannot be released before acknowledgement and old grant expiry");
-  s.restore.stage = "completed";
-  touch2(s, now);
-}
-function releaseRestored(s, now, recoveryId, scope) {
-  if (!s.restore || s.restore.recoveryId !== recoveryId || s.restore.stage !== "completed") throw new PermissionError("restored data is not active");
-  if (!scope.type && !scope.runId && !scope.entryIds?.length) throw new IllegalArgumentError("explicit restore release scope required");
-  let count2 = 0;
-  for (const e of s.entries) if (e.restoredUnverified && (!scope.type || e.types.includes(scope.type)) && (!scope.runId || e.fields.runId === scope.runId) && (!scope.entryIds || scope.entryIds.includes(e.id))) {
-    if (!releaseRestoredEntry(s, now, e)) break;
-    count2++;
-  }
-  return count2;
-}
-
-// src/recovery-controller.ts
-init_core();
-var RecoveryJobs = defineDoc3({ kind: "pi-spaces.recovery-jobs", version: 1, scope: "session", initial: () => ({ jobs: {}, releases: {} }) });
-var RecoveryController = class {
-  o;
-  constructor(o) {
-    this.o = o;
-  }
-  reserve(s, record2, now) {
-    const bytes3 = Buffer.byteLength(JSON.stringify(record2)) + 512;
-    if (!maintenanceStep(s, bytes3, now, "recovery-journal")) throw new ResourceExhausted("recovery metadata exceeds the commit budget");
-  }
-  now = () => (this.o.now ?? Date.now)();
-  async job(id) {
-    const job = (await this.o.host.snapshot(RecoveryJobs, this.o.ctx))?.jobs[id];
-    if (!job) throw new RecoveryBlocked("unknown recovery request");
-    return plain(job);
-  }
-  async submit(request) {
-    if (![request.recoveryId, request.space, request.snapshotRef, request.targetHostId, request.expectedDataIncarnation].every((v) => typeof v === "string" && v.length > 0 && v.length <= 512) || request.recoveryId.length > 256 || request.targetHostId !== this.o.hostId || !Number.isSafeInteger(request.expectedPrimaryEpoch) || request.expectedPrimaryEpoch < 0) throw new RecoveryBlocked("invalid recovery request or target");
-    const argsHash = createHash4("sha256").update(canonicalJson(request)).digest("hex");
-    const existing = (await this.o.host.snapshot(RecoveryJobs, this.o.ctx))?.jobs[request.recoveryId];
-    if (existing) {
-      if (existing.argsHash !== argsHash) throw new RegisterConflict("recovery id has different arguments");
-      return plain(existing);
-    }
-    const source = await this.o.loadSnapshot(request.snapshotRef);
-    if (source.spaceId !== request.space) throw new RecoveryBlocked("snapshot belongs to another space");
-    const boot = await this.o.external.get(`boot:${this.o.hostId}`), permit = boot?.value.spaces[request.space];
-    if (!boot || !permit || permit.authorityId !== this.o.authorityId || permit.dataIncarnation !== request.expectedDataIncarnation || (permit.primaryEpoch ?? 1) !== request.expectedPrimaryEpoch || permit.durability === "sync") throw new RecoveryBlocked("restore needs matching single-space boot configuration; sync requires promotion");
-    const placement = await this.o.external.get(`placement:${request.space}`);
-    if (!placement || placement.value.authorityId !== this.o.authorityId || placement.value.incarnation !== request.expectedDataIncarnation || (placement.value.primaryEpoch ?? 1) !== request.expectedPrimaryEpoch || typeof placement.value.hostId !== "string") throw new RecoveryBlocked("independent placement disagrees with expected source");
-    const sourceHostId = placement.value.hostId, proof = await this.o.verifyFence(sourceHostId);
-    if (!proof.restartLocked || proof.hostId !== sourceHostId) throw new RecoveryBlocked("independent fencing with restart lock required");
-    const transitionKey = `data-transition:${request.space}`, prior = await this.o.external.get(transitionKey);
-    if (prior && prior.value.argsHash !== argsHash && prior.value.state !== "completed") throw new RegisterConflict("another space transition is active");
-    const job = { request, sourceHostId, argsHash, snapshotHash: snapshotHash(source), state: "blocked", priorPermit: plain(permit) };
-    const target = await snapshotSpace(this.o.host, request.space, this.o.ctx);
-    if (!target || target.incarnation !== request.expectedDataIncarnation || (target.primaryEpoch ?? 1) !== request.expectedPrimaryEpoch) throw new RecoveryBlocked("target space is not provisioned with the expected tuple");
-    if (Buffer.byteLength(JSON.stringify(job)) + 1536 > limitsOf(target).maxCommitBytes) throw new ResourceExhausted("recovery journal cannot fit the current commit budget");
-    if (prior?.value.argsHash !== argsHash) await this.o.external.compareAndSet(transitionKey, prior?.version ?? null, { argsHash, recoveryId: request.recoveryId, expectedDataIncarnation: request.expectedDataIncarnation, targetHostId: request.targetHostId, sourceHostId, authorityId: this.o.authorityId, state: "restoring" });
-    if (permit.state !== "revoked") await this.o.external.compareAndSet(`boot:${this.o.hostId}`, boot.version, { ...boot.value, spaces: { ...boot.value.spaces, [request.space]: { ...permit, state: "revoked" } } });
-    await this.o.host.commit(async (tx) => {
-      const s = await spaceDoc(tx, request.space, this.now());
-      this.reserve(s, job, this.now());
-      const jobs = await tx.doc(RecoveryJobs);
-      const old = jobs.jobs[request.recoveryId];
-      if (old && old.argsHash !== argsHash) throw new RegisterConflict("recovery id conflict");
-      jobs.jobs[request.recoveryId] ??= job;
-    }, this.o.ctx);
-    return this.job(request.recoveryId);
-  }
-  async advance(id) {
-    const job = await this.job(id), now = this.now();
-    if (job.state === "completed") return job;
-    const transitionBefore = await this.o.external.get(`data-transition:${job.request.space}`);
-    if (!transitionBefore || transitionBefore.value.argsHash !== job.argsHash) throw new RecoveryBlocked("independent transition changed or is unavailable");
-    const proof = await this.o.verifyFence(job.sourceHostId);
-    if (!proof.restartLocked || proof.hostId !== job.sourceHostId) throw new RecoveryBlocked("source host fencing no longer verified");
-    if (["blocked", "importing"].includes(job.state)) {
-      const source = await this.o.loadSnapshot(job.request.snapshotRef);
-      if (snapshotHash(source) !== job.snapshotHash) throw new RecoveryBlocked("snapshot changed during recovery");
-      await this.o.host.commit(async (tx) => {
-        const jobs = await tx.doc(RecoveryJobs), current2 = jobs.jobs[id];
-        if (!["blocked", "importing"].includes(current2.state)) return;
-        const s2 = await spaceDoc(tx, job.request.space, now);
-        this.reserve(s2, current2, now);
-        if (current2.state === "blocked") {
-          const restored = beginRestore(s2, now, { recoveryId: id, expectedDataIncarnation: job.request.expectedDataIncarnation, expectedPrimaryEpoch: job.request.expectedPrimaryEpoch, snapshotHash: job.snapshotHash, kind: "data" });
-          (await tx.doc(Registry)).spaces[job.request.space].incarnation = restored.incarnation;
-          current2.incarnation = restored.incarnation;
-          current2.primaryEpoch = restored.primaryEpoch;
-          current2.state = "importing";
-        }
-        const before = `${s2.restore.stage}:${s2.restore.cursor}`;
-        const state = restoreBatch(s2, now, source);
-        if (`${state.stage}:${state.cursor}` === before) throw new ResourceExhausted("next restore item cannot fit together with the recovery journal; increase the administrative commit budget");
-        if (state.stage === "waiting") current2.state = "waiting";
-      }, this.o.ctx);
-      return this.job(id);
-    }
-    const s = await snapshotSpace(this.o.host, job.request.space, this.o.ctx);
-    if (!s?.restore || s.restore.recoveryId !== id || s.incarnation !== job.incarnation || s.primaryEpoch !== job.primaryEpoch || !job.incarnation || job.primaryEpoch === void 0) throw new RecoveryBlocked("restore state was lost or changed");
-    const published = await this.o.external.get(`data-transition:${job.request.space}`);
-    if (!published || published.value.argsHash !== job.argsHash || published.value.incarnation && (published.value.incarnation !== job.incarnation || published.value.primaryEpoch !== job.primaryEpoch)) throw new RecoveryBlocked("published recovery tuple changed");
-    if (!published.value.incarnation) await this.o.external.compareAndSet(`data-transition:${job.request.space}`, published.version, { ...published.value, incarnation: job.incarnation, primaryEpoch: job.primaryEpoch });
-    const ack = await this.o.acknowledgeControl(job);
-    if (ack.recoveryId !== id || ack.space !== job.request.space || ack.incarnation !== job.incarnation || ack.primaryEpoch !== job.primaryEpoch || ack.authorityId !== this.o.authorityId) throw new RecoveryBlocked("control acknowledgement disagrees with restored tuple");
-    if (now < s.restore.waitUntil) return job;
-    await this.o.host.commit(async (tx) => {
-      const state = await spaceDoc(tx, job.request.space, now);
-      this.reserve(state, job, now);
-      (await tx.doc(RecoveryJobs)).jobs[id].state = "installing";
-      completeRestore(state, now, id);
-    }, this.o.ctx);
-    const permit = { ...job.priorPermit, state: "active", dataIncarnation: job.incarnation, primaryEpoch: job.primaryEpoch, transitionId: id };
-    const localKey = `installed:${this.o.hostId}:${job.request.space}`, local = await this.o.installed.get(localKey);
-    if (canonicalJson(local?.value ?? null) !== canonicalJson(permit)) await this.o.installed.compareAndSet(localKey, local?.version ?? null, permit);
-    const boot = await this.o.external.get(`boot:${this.o.hostId}`);
-    if (!boot || boot.value.state !== "active") throw new RecoveryBlocked("host remains fenced or quarantined");
-    const current = boot.value.spaces[job.request.space];
-    if (current?.transitionId === id && current.state === "active" && canonicalJson(current) !== canonicalJson(permit)) throw new RecoveryBlocked("external active tuple disagrees with restored tuple");
-    if (current?.transitionId !== id || current.state !== "active") {
-      if (!current || current.dataIncarnation !== job.request.expectedDataIncarnation || current.state !== "revoked") throw new RecoveryBlocked("external space tuple changed during restore");
-      await this.o.external.compareAndSet(`boot:${this.o.hostId}`, boot.version, { ...boot.value, spaces: { ...boot.value.spaces, [job.request.space]: permit } });
-    }
-    const transition = await this.o.external.get(`data-transition:${job.request.space}`);
-    if (!transition || transition.value.argsHash !== job.argsHash) throw new RecoveryBlocked("external recovery transition changed");
-    if (transition.value.state !== "completed") await this.o.external.compareAndSet(`data-transition:${job.request.space}`, transition.version, { ...transition.value, state: "completed", incarnation: job.incarnation, primaryEpoch: job.primaryEpoch });
-    const placement = await this.o.external.get(`placement:${job.request.space}`);
-    if (!placement || placement.value.authorityId !== this.o.authorityId || ![job.request.expectedDataIncarnation, job.incarnation].includes(placement.value.incarnation)) throw new RecoveryBlocked("independent placement changed during restore");
-    if (placement.value.incarnation !== job.incarnation) await this.o.external.compareAndSet(`placement:${job.request.space}`, placement.version, { ...placement.value, hostId: this.o.hostId, incarnation: job.incarnation, primaryEpoch: job.primaryEpoch, recoveryId: id });
-    await this.o.host.commit(async (tx) => {
-      this.reserve(await spaceDoc(tx, job.request.space, now), job, now);
-      (await tx.doc(RecoveryJobs)).jobs[id].state = "completed";
-    }, this.o.ctx);
-    return this.job(id);
-  }
-  async status(id) {
-    return this.job(id);
-  }
-  async release(request) {
-    if (!request.scope || typeof request.scope !== "object" || Array.isArray(request.scope) || request.scope.type !== void 0 && (typeof request.scope.type !== "string" || !request.scope.type) || request.scope.runId !== void 0 && (typeof request.scope.runId !== "string" || !request.scope.runId) || request.scope.entryIds !== void 0 && (!Array.isArray(request.scope.entryIds) || request.scope.entryIds.length > 1e4 || !request.scope.entryIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 512))) throw new RecoveryBlocked("invalid restore release scope");
-    if (typeof request.commandId !== "string" || !request.commandId || request.commandId.length > 256) throw new RecoveryBlocked("invalid release command identity");
-    const job = await this.job(request.recoveryId);
-    if (job.state !== "completed") throw new RecoveryBlocked("restore has not completed");
-    const bootKey = `boot:${this.o.hostId}`, localKey = `installed:${this.o.hostId}:${job.request.space}`;
-    const boot = await this.o.external.get(bootKey), local = await this.o.installed.get(localKey), permit = boot?.value.spaces[job.request.space];
-    if (!local || boot?.value.state !== "active" || !permit || permit.state !== "active" || permit.authorityId !== this.o.authorityId || permit.dataIncarnation !== job.incarnation || permit.primaryEpoch !== job.primaryEpoch || canonicalJson(permit) !== canonicalJson(local?.value ?? null)) throw new RecoveryBlocked("release requires matching current external and local boot authorization");
-    const hash2 = createHash4("sha256").update(canonicalJson(request)).digest("hex");
-    return this.o.host.commit(async (tx) => {
-      const jobs = await tx.doc(RecoveryJobs), prior = jobs.releases[request.commandId];
-      if (prior && prior.hash !== hash2) throw new RegisterConflict("release command has different arguments");
-      if (prior?.completed) return { count: prior.count, completed: true };
-      const s = await spaceDoc(tx, job.request.space, this.now());
-      this.reserve(s, { commandId: request.commandId, hash: hash2, count: prior?.count ?? 0, completed: false }, this.now());
-      const count2 = releaseRestored(s, this.now(), request.recoveryId, request.scope);
-      const remaining = s.entries.some((e) => e.restoredUnverified && (!request.scope.type || e.types.includes(request.scope.type)) && (!request.scope.runId || e.fields.runId === request.scope.runId) && (!request.scope.entryIds || request.scope.entryIds.includes(e.id)));
-      const record2 = { hash: hash2, count: (prior?.count ?? 0) + count2, completed: !remaining };
-      jobs.releases[request.commandId] = record2;
-      if ((await this.o.external.get(bootKey))?.version !== boot.version || (await this.o.installed.get(localKey))?.version !== local.version) throw new RecoveryBlocked("boot authorization changed during release");
-      return { count: record2.count, completed: record2.completed };
-    }, this.o.ctx);
-  }
-};
-function dataRecoveryHandler(controller) {
-  return async (call) => {
-    const args = call.args;
-    if (!args || typeof args !== "object" || Array.isArray(args)) throw new RecoveryBlocked("recovery arguments must be an object");
-    if (call.method === "restoreDataSpace") return await controller.submit(args);
-    if (["advanceRestore", "restoreStatus"].includes(call.method)) {
-      if (typeof args.recoveryId !== "string" || !args.recoveryId) throw new RecoveryBlocked("recovery identity required");
-      return await (call.method === "advanceRestore" ? controller.advance(args.recoveryId) : controller.status(args.recoveryId));
-    }
-    if (call.method === "releaseRestored") return await controller.release(args);
-    throw new RecoveryBlocked("method is not supported by the data recovery endpoint");
-  };
-}
-
 // src/gate.ts
-init_auth();
 var DirectoryDown = class extends Error {
 };
 var bare = (ip) => ip.replace(/^::ffff:/i, "");
@@ -4141,16 +2766,396 @@ async function startGate(service, o) {
   };
 }
 
-// src/configured-runtime.ts
-init_grants();
-init_enroll();
+// src/pi-server.ts
+function withSpaceService(base, space, trustedConnection) {
+  return {
+    async attachClient(presentation, context) {
+      const original = await base.attachClient(presentation, context);
+      const conn = await trustedConnection();
+      return {
+        async invokeService(call, ...rest) {
+          if (call.serviceId !== "space") return original.invokeService(call, ...rest);
+          const arg = call.args[0];
+          if (!arg || typeof arg !== "object" || Array.isArray(arg) || arg.method !== call.member) return { ok: false, error: { code: "BadRequest", message: "space member and encoded method must agree" } };
+          return space.handle(arg, conn);
+        },
+        release: (...rest) => original.release(...rest)
+      };
+    }
+  };
+}
+function piServerTransport(invoke) {
+  return {
+    async request(text2) {
+      const call = JSON.parse(text2);
+      return JSON.stringify(await invoke({ serviceId: "space", member: call.method, args: [call] }));
+    }
+  };
+}
+
+// src/service.ts
+import { awaitWithContext as awaitWithContext2 } from "@earendil-works/chord/context";
+var PROTOCOL_VERSION = 1;
+var METHODS = ["hello", "generation", "write", "read", "take", "pollOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"];
+var MUTATING = ["write", "read", "take", "cancelOperation", "txn", "lease", "wait", "notify", "ack"];
+var StaticIdentity = class {
+  table;
+  constructor(table) {
+    this.table = table;
+  }
+  authenticate(conn) {
+    return (conn.peerId !== void 0 ? this.table[conn.peerId] : void 0) ?? null;
+  }
+};
+var DEFAULT_POLICY = {
+  roles: {
+    admin: { methods: "*" },
+    member: { methods: ["hello", "generation", "write", "read", "take", "pollOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"] },
+    observer: { methods: ["hello", "generation", "read", "pollOperation", "cancelOperation", "readAll", "count", "stats", "changes", "notify", "events", "ack"] },
+    // own read and notify results, never a write
+    unpaired: { methods: ["hello", "generation"] }
+    // a device in the enrollment group: nothing but its own pairing (enroll.ts handles `enroll` and `enrollStatus` before the service)
+  }
+};
+var Bad = class extends Error {
+};
+var Denied = class extends Error {
+};
+var fail = (code, message, extra = {}) => ({ ok: false, error: { code, message, ...extra } });
+var isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+var str = (v, what) => {
+  if (typeof v !== "string" || v === "") throw new Bad(`${what} must be a non-empty string`);
+  return v;
+};
+var int = (v, what, min = 0) => {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < min) throw new Bad(`${what} must be an integer >= ${min}`);
+  return v;
+};
+var optInt = (v, what, min = 0) => v === void 0 || v === null ? void 0 : int(v, what, min);
+var template = (v) => {
+  if (v === void 0 || v === null) return null;
+  if (!isObj(v)) throw new Bad("template must be an object or null");
+  if (v.type !== void 0 && v.type !== null && typeof v.type !== "string") throw new Bad("template.type must be a string");
+  if (v.fields !== void 0 && !isObj(v.fields)) throw new Bad("template.fields must be an object");
+  if (v.id !== void 0 && v.id !== null && typeof v.id !== "string") throw new Bad("template.id must be a string");
+  return v;
+};
+var duration = (v, what, dflt) => {
+  if (v === void 0 || v === null) return dflt;
+  if (v === "forever") return FOREVER;
+  return int(v, what, 0);
+};
+var principalKey = (p) => p.agentId ? `${p.peerId}/${p.agentId}` : p.peerId;
+var SpaceService = class {
+  o;
+  policy;
+  now;
+  rates = /* @__PURE__ */ new Map();
+  constructor(o) {
+    this.o = { maxPollMs: 25e3, maxPendingPerPrincipal: 32, maxPendingPerPeer: 128, maxCallsPerWindow: 1024, rateWindowMs: 1e3, authorityId: "local", primaryEpoch: 0, ...o };
+    this.o.maxPollMs = Math.min(this.o.maxPollMs, 25e3);
+    for (const value of [this.o.maxPendingPerPrincipal, this.o.maxPendingPerPeer, this.o.maxCallsPerWindow, this.o.rateWindowMs]) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError("service limits must be positive integers");
+    this.policy = o.policy ?? DEFAULT_POLICY;
+    this.now = o.now ?? Date.now;
+  }
+  /** Decode, check the frame size, dispatch, encode. The size limit is the frame budget of the space (4.2). */
+  async handleText(text2, conn, maxFrameBytes = DEFAULT_LIMITS.maxFrameBytes) {
+    if (new TextEncoder().encode(text2).length > maxFrameBytes) return JSON.stringify(fail("ResourceExhausted", `a call may take at most ${maxFrameBytes} bytes`));
+    let call;
+    try {
+      call = JSON.parse(text2);
+    } catch {
+      return JSON.stringify(fail("BadRequest", "the call is not JSON"));
+    }
+    const reply2 = await this.handle(call, conn, maxFrameBytes, Buffer.byteLength(text2));
+    const textReply = JSON.stringify(reply2);
+    if (encodedBytes(reply2) > maxFrameBytes) return JSON.stringify(fail("ResourceExhausted", "the transport frame cannot carry this response"));
+    return textReply;
+  }
+  async handle(call, conn, transportFrameBytes = DEFAULT_LIMITS.maxFrameBytes, rawBytes) {
+    let responseFrame = transportFrameBytes;
+    try {
+      if (!isObj(call) || typeof call.method !== "string") throw new Bad("a call is an object with a method");
+      if (!METHODS.includes(call.method)) return fail("UnsupportedMethod", `unknown method ${call.method}`);
+      const method = call.method;
+      if (call.args !== void 0 && !isObj(call.args)) throw new Bad("args must be an object");
+      const args = call.args ?? {};
+      const id = await this.o.identity.authenticate(conn);
+      if (!id) return fail("Unauthenticated", "the connection has no known identity");
+      this.rate(id.principal.peerId);
+      const grant2 = this.allowed(id, method);
+      const frame2 = call.frame;
+      if (frame2 !== void 0) {
+        if (!isObj(frame2)) throw new Bad("frame must be an object");
+        if (frame2.authorityId !== void 0 && frame2.authorityId !== this.o.authorityId) return fail("AuthorityMismatch", `this host is authority ${this.o.authorityId}`);
+        if (frame2.primaryEpoch !== void 0 && frame2.primaryEpoch !== this.o.primaryEpoch) return fail("StaleEpoch", `the primary epoch is ${this.o.primaryEpoch}`);
+      }
+      let request;
+      if (MUTATING.includes(method)) {
+        const r = call.request;
+        if (!isObj(r)) throw new Bad(`${method} needs a request {generation, requestId}`);
+        request = { principal: id.principal, generation: str(r.generation, "request.generation"), requestId: str(r.requestId, "request.requestId") };
+      }
+      const space = call.space === void 0 ? void 0 : str(call.space, "space");
+      const client = new PiSpaces(this.o.host, this.o.ctx, this.now, void 0, principalId(id.principal), { space: space === DEFAULT_ALIAS ? void 0 : space, authorityId: this.o.authorityId, maxPending: this.o.maxPendingPerPrincipal, maxPendingPeer: this.o.maxPendingPerPeer, consumer: id.principal });
+      const frameBytes = Math.min(transportFrameBytes, (await client.configuration()).limits.maxFrameBytes);
+      responseFrame = frameBytes;
+      if ((rawBytes ?? encodedBytes(call)) > frameBytes) throw new ResourceExhausted("the request exceeds the space frame limit");
+      const result = await this.dispatch(method, args, { id, request, client, space, grant: grant2, frameBytes });
+      const reply2 = { ok: true, result };
+      if (encodedBytes(reply2) > frameBytes) throw new ResourceExhausted("the configured frame cannot carry the result; use a compatible transport frame");
+      return reply2;
+    } catch (e) {
+      if (e instanceof ResponseBudgetTooSmall && e.requiredBytes > responseFrame - 21) return fail("ResourceExhausted", "the configured frame cannot hold the next whole element");
+      return this.error(e);
+    }
+  }
+  rate(peer) {
+    const now = this.now();
+    for (const [key, value] of this.rates) if (value.at + this.o.rateWindowMs <= now) this.rates.delete(key);
+    let r = this.rates.get(peer);
+    if (!r) {
+      if (this.rates.size >= 1e4) throw new ResourceExhausted("the rate table is full");
+      r = { at: now, calls: 0 };
+      this.rates.set(peer, r);
+    }
+    if (++r.calls > this.o.maxCallsPerWindow) throw new ResourceExhausted("the peer exceeded its call rate");
+  }
+  // ---- rights
+  /** The union of what the principal's roles allow for this method; throws Denied when none does. */
+  allowed(id, method) {
+    let types = /* @__PURE__ */ new Set();
+    let any = false;
+    for (const name of id.roles) {
+      const r = this.policy.roles[name];
+      if (!r || !(r.methods === "*" || r.methods.includes(method))) continue;
+      any = true;
+      if (r.types === void 0) types = "*";
+      else if (types !== "*") for (const t of r.types) types.add(t);
+    }
+    if (!any) throw new Denied(`${method} is not allowed for your roles`);
+    return { types };
+  }
+  checkTypes(grant2, types, what) {
+    if (grant2.types === "*") return;
+    if (!types || types.length === 0 || !types.some((t) => grant2.types.has(t))) throw new Denied(`${what} is outside the types your roles allow`);
+  }
+  // ---- methods
+  async dispatch(method, a, c) {
+    const { client, request, grant: grant2 } = c;
+    switch (method) {
+      case "hello":
+        return this.hello(a, c);
+      case "generation": {
+        const g = await client.issueGeneration(c.id.principal);
+        return { generation: g.generation, admitUntil: g.admitUntil };
+      }
+      case "write": {
+        if (!isObj(a.entry)) throw new Bad("entry is required");
+        const type = str(a.entry.type, "entry.type");
+        const types = a.entry.types === void 0 ? void 0 : Array.isArray(a.entry.types) && a.entry.types.every((t) => typeof t === "string") ? a.entry.types : (() => {
+          throw new Bad("entry.types must be strings");
+        })();
+        if (!isObj(a.entry.fields)) throw new Bad("entry.fields must be an object");
+        this.checkTypes(grant2, [type, ...types ?? []], `type ${type}`);
+        const lease = await client.write({ type, ...types ? { types } : {}, fields: a.entry.fields }, a.txn ?? null, duration(a.leaseMs, "leaseMs", ANY), { request });
+        return lease;
+      }
+      case "read":
+      case "take":
+        return this.readTake(method, a, c);
+      case "pollOperation":
+        return this.poll(a, c);
+      case "cancelOperation": {
+        const t = this.target(a.targetRequest, c.id);
+        return await client.cancelOperation(t, { request });
+      }
+      case "readAll": {
+        const t = template(a.template);
+        if (grant2.types !== "*") this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this template");
+        const p = await client.readPage(t, { maxBytes: Math.min(a.maxBytes === void 0 ? c.frameBytes : int(a.maxBytes, "maxBytes", 1), c.frameBytes - 21), ...a.token === void 0 ? {} : { token: str(a.token, "token") }, after: a.cursor ?? null, txn: a.txn ?? null });
+        return p;
+      }
+      case "count": {
+        const t = template(a.template);
+        if (grant2.types !== "*") this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this template");
+        return await client.countWithRevision(t, a.txn ?? null);
+      }
+      case "stats": {
+        if (grant2.types !== "*") throw new Denied("aggregate stats need a role without type restrictions");
+        return await client.statsWithRevision();
+      }
+      case "txn": {
+        const action = str(a.action, "action");
+        if (action === "begin") return await client.createTransaction(duration(a.leaseMs, "leaseMs", ANY), { request });
+        const id = str(a.id, "id");
+        if (action === "commit") {
+          await client.commit(id, { request });
+          return { state: "committed" };
+        }
+        if (action === "abort") {
+          await client.abort(id, { request });
+          return { state: "aborted" };
+        }
+        throw new Bad("action must be begin, commit or abort");
+      }
+      case "lease": {
+        const action = str(a.action, "action");
+        const id = str(a.id, "id");
+        if (action === "renew") return { expires: await client.renew(id, duration(a.ms, "ms", ANY), { request }) };
+        if (action === "cancel") {
+          await client.cancel(id, { request });
+          return { state: "cancelled" };
+        }
+        throw new Bad("action must be renew or cancel");
+      }
+      case "changes":
+        return this.changes(a, c);
+      case "notify": {
+        const t = template(a.template);
+        this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this subscription");
+        this.checkConsumer(a.consumer, c.id);
+        return await client.notify(t, { target: principalId(c.id.principal), lease: duration(a.leaseMs, "leaseMs", ANY), txn: a.txn ?? null, handback: a.handback ?? null, request });
+      }
+      case "wait": {
+        const t = template(a.template);
+        this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this wait");
+        this.checkConsumer(a.consumer, c.id);
+        if (a.take !== void 0 && typeof a.take !== "boolean") throw new Bad("take must be boolean");
+        const operationGrant = this.allowed(c.id, a.take === false ? "read" : "take");
+        this.checkTypes(operationGrant, t?.type ? [t.type] : void 0, "this wait operation");
+        const id = await client.wait(t, { target: principalId(c.id.principal), timeout: duration(a.timeoutMs, "timeoutMs", NO_WAIT), take: a.take !== false, txnLeaseMs: duration(a.txnLeaseMs, "txnLeaseMs", ANY), handback: a.handback ?? null, request });
+        return { id };
+      }
+      case "events": {
+        this.checkConsumer(a.consumer, c.id);
+        const end = this.now() + Math.min(optInt(a.waitMs, "waitMs") ?? 0, this.o.maxPollMs);
+        for (; ; ) {
+          const p = await client.events(c.id.principal, { ...a.mailboxEpoch === void 0 ? {} : { mailboxEpoch: str(a.mailboxEpoch, "mailboxEpoch") }, after: optInt(a.after, "after"), maxBytes: Math.min(a.maxBytes === void 0 ? c.frameBytes : int(a.maxBytes, "maxBytes", 1), c.frameBytes - 21) }, (p2) => {
+            for (const item of p2.events) if (item.event.entry) this.checkTypes(grant2, item.event.entry.types, "this mailbox event");
+          });
+          if (p.events.length || p.gap || this.now() >= end) return p;
+          await awaitWithContext2(new Promise((r) => setTimeout(r, Math.min(50, Math.max(1, end - this.now())))), this.o.ctx);
+        }
+      }
+      case "ack":
+        this.checkConsumer(a.consumer, c.id);
+        return await client.ack(c.id.principal, str(a.mailboxEpoch, "mailboxEpoch"), int(a.upTo, "upTo"), { request });
+      default:
+        throw new Bad(`${method} is not implemented`);
+    }
+  }
+  checkConsumer(v, id) {
+    if (v !== void 0 && (!isObj(v) || principalId(v) !== principalId(id.principal))) throw new Denied("a consumer must be your authenticated principal");
+  }
+  async hello(a, c) {
+    if (a.protocol !== PROTOCOL_VERSION) throw new UnsupportedProtocol(`this host speaks protocol ${PROTOCOL_VERSION}`);
+    const infos = await listSpaces(this.o.host, this.o.ctx);
+    let info = infos.find((i) => i.alias === (c.space ?? DEFAULT_ALIAS) || i.spaceId === c.space);
+    if (!info && (c.space === void 0 || c.space === DEFAULT_ALIAS)) {
+      await this.o.host.commit(async (tx) => {
+        await spaceDoc(tx, void 0, this.now());
+      }, this.o.ctx);
+      info = (await listSpaces(this.o.host, this.o.ctx)).find((i) => i.alias === DEFAULT_ALIAS);
+    }
+    if (!info) throw new UnknownSpaceError(`unknown space: ${c.space}`);
+    const s = await snapshotSpace(this.o.host, info.spaceId, this.o.ctx);
+    const lim = limitsOf(s ?? initialState());
+    return {
+      protocol: PROTOCOL_VERSION,
+      hostId: this.o.hostId ?? (await this.o.host.snapshot(Registry, this.o.ctx)).hostId,
+      spaceId: info.spaceId,
+      alias: info.alias,
+      incarnation: info.incarnation,
+      streamId: streamIdOf(s ?? initialState()),
+      rev: revision(s ?? initialState()),
+      authorityId: this.o.authorityId,
+      primaryEpoch: this.o.primaryEpoch,
+      role: "single",
+      principal: principalKey(c.id.principal),
+      roles: c.id.roles,
+      features: [...METHODS],
+      limits: { maxFrameBytes: Math.min(lim.maxFrameBytes, c.frameBytes), maxCommitBytes: lim.maxCommitBytes, maxEventBytes: lim.maxEventBytes, maxEntryBytes: lim.maxEntryBytes, maxPollMs: this.o.maxPollMs, maxPendingPerPrincipal: this.o.maxPendingPerPrincipal, maxPendingPerPeer: this.o.maxPendingPerPeer },
+      capabilities: { snapshotPagination: true, mailboxes: true, completionProfiles: true, transactions: true, blockingTake: true, mode: "single" }
+    };
+  }
+  target(v, id) {
+    if (!isObj(v)) throw new Bad("targetRequest is required");
+    return { principal: id.principal, generation: str(v.generation, "targetRequest.generation"), requestId: str(v.requestId, "targetRequest.requestId") };
+  }
+  /** read/take: `done` with the entry or null, or `pending` while the operation keeps running on the host. */
+  async readTake(method, a, c) {
+    const { client, request, grant: grant2 } = c;
+    const t = template(a.template);
+    if (grant2.types !== "*") this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this template");
+    const timeout = duration(a.timeoutMs, "timeoutMs", NO_WAIT);
+    const waitMs = Math.min(optInt(a.waitMs, "waitMs", 0) ?? this.o.maxPollMs, this.o.maxPollMs);
+    let view3 = await client.beginOperation(t, timeout, { txn: a.txn ?? null, request, resultBudget: c.frameBytes - 64, ...a.deadline === void 0 ? {} : { deadline: int(a.deadline, "deadline") } }, method === "take", a.ifExists === true);
+    if (view3.state === "pending" && waitMs > 0) view3 = await this.poll({ targetRequest: { generation: request.generation, requestId: request.requestId }, waitMs }, c);
+    if (view3.resultExpired) throw new ResultExpired("the stored result has expired");
+    if (view3.error) throw view3.error.code === "CompletionViolation" ? new CompletionViolation(view3.error.message) : new TransactionError(view3.error.message);
+    if (view3.state === "cancelled") throw new OperationCancelled("the operation was cancelled");
+    return view3.state === "done" ? { state: "done", entry: view3.result ?? null } : { state: "pending", deadline: view3.deadline };
+  }
+  /** The state of an own request; waits up to `waitMs` (at most maxPollMs) for it to leave `pending`. Never extends a deadline. */
+  async poll(a, c) {
+    const t = this.target(a.targetRequest, c.id);
+    const waitMs = Math.min(optInt(a.waitMs, "waitMs", 0) ?? 0, this.o.maxPollMs);
+    const end = this.now() + waitMs;
+    for (; ; ) {
+      const v = await c.client.pollOperation(t);
+      if (v.result && isObj(v.result) && Array.isArray(v.result.types)) this.checkTypes(this.allowed(c.id, "pollOperation"), v.result.types, "this retained result");
+      if (v.state !== "pending" || this.now() >= end) return v;
+      await awaitWithContext2(new Promise((res) => setTimeout(res, Math.min(50, Math.max(1, end - this.now())))), this.o.ctx);
+    }
+  }
+  /** Commit batches after a revision; `resync` tells the client to read pages again (history dropped or another stream). */
+  async changes(a, c) {
+    if (c.grant.types !== "*") throw new Denied("the change stream carries every type; it needs a role without type limits");
+    const after = int(a.afterRev, "afterRev", 0);
+    const waitMs = Math.min(optInt(a.waitMs, "waitMs", 0) ?? 0, this.o.maxPollMs);
+    const maxBytes = Math.min(a.maxBytes === void 0 ? c.frameBytes : int(a.maxBytes, "maxBytes", 1), c.frameBytes - 21);
+    const end = this.now() + waitMs;
+    for (; ; ) {
+      let r;
+      try {
+        r = await c.client.changes(after, maxBytes === void 0 ? {} : { maxBytes });
+      } catch (e) {
+        if (e instanceof SnapshotExpired || e instanceof RevisionAhead) return { resync: true, reason: e instanceof SnapshotExpired ? "history dropped" : "ahead of this stream" };
+        throw e;
+      }
+      if (a.streamId !== void 0 && a.streamId !== r.streamId) return { resync: true, reason: "another stream", streamId: r.streamId };
+      if (r.batches.length > 0 || this.now() >= end) return r;
+      await awaitWithContext2(new Promise((res) => setTimeout(res, Math.min(50, Math.max(1, end - this.now())))), this.o.ctx);
+    }
+  }
+  // ---- errors
+  error(e) {
+    if (e instanceof Bad) return fail("BadRequest", e.message);
+    if (e instanceof Denied || e instanceof PermissionError) return fail("PermissionDenied", e.message);
+    if (e instanceof UnsupportedProtocol) return fail("UnsupportedProtocol", e.message);
+    if (e instanceof UnknownSpaceError) return fail("UnknownSpace", e.message);
+    if (e instanceof RequestConflict) return fail("RequestConflict", e.message);
+    if (e instanceof RequestExpired) return fail("RequestExpired", e.message);
+    if (e instanceof ResultExpired) return fail("ResultExpired", e.message);
+    if (e instanceof IncarnationChanged) return fail("IncarnationChanged", e.message);
+    if (e instanceof OperationCancelled) return fail("OperationCancelled", e.message);
+    if (e instanceof ResponseBudgetTooSmall) return fail("ResponseBudgetTooSmall", e.message, { requiredBytes: e.requiredBytes });
+    if (e instanceof LimitError) return fail("ResourceExhausted", e.message);
+    if (e instanceof SnapshotExpired) return fail("SnapshotExpired", e.message);
+    if (e instanceof RevisionAhead) return fail("RevisionAhead", e.message);
+    if (e instanceof CompletionViolation) return fail("CompletionViolation", e.message);
+    if (e instanceof MailboxEpochMismatch) return fail("MailboxEpochMismatch", e.message);
+    if (e instanceof InvalidAck) return fail("InvalidAck", e.message);
+    if (e instanceof TransactionError || e instanceof UnknownLeaseError) return fail("TransactionError", e.message);
+    if (e instanceof IllegalArgumentError || e instanceof TypeError) return fail("BadRequest", e.message);
+    return fail("Internal", e instanceof Error ? e.message : String(e));
+  }
+};
+var UnsupportedProtocol = class extends Error {
+};
 
 // src/remote.ts
-init_core();
-init_claims();
-init_service();
-init_auth();
-init_mailbox();
 import { performance } from "node:perf_hooks";
 function inProcessTransport(service, conn) {
   return { request: (text2) => service.handleText(text2, conn) };
@@ -4234,16 +3239,13 @@ var RemoteSpace = class {
   }
   // ---- transport with identity-preserving retries
   async roundTrip(call, end) {
+    const text2 = JSON.stringify(call);
+    const limit = this.frameLimit;
+    if (new TextEncoder().encode(text2).length > limit) throw new ResourceExhausted(`a call may take at most ${limit} bytes`);
     let timer;
     try {
       const raw = await Promise.race([
-        (async () => {
-          const grant2 = this.o.grantProvider && !["challenge", "prove", "enroll", "enrollStatus", "grant"].includes(call.method) ? await this.o.grantProvider(call) : void 0;
-          const text2 = JSON.stringify(grant2 ? { ...call, frame: { ...call.frame, grant: grant2 } } : call);
-          const limit = this.frameLimit;
-          if (new TextEncoder().encode(text2).length > limit) throw new ResourceExhausted(`a call may take at most ${limit} bytes`);
-          return this.t.request(text2);
-        })(),
+        this.t.request(text2),
         new Promise((_, rej) => {
           timer = setTimeout(() => rej(new TransportFailure("the call timed out")), Math.max(1, Math.min(this.o.callTimeoutMs, end === void 0 ? Infinity : end - performance.now())));
         })
@@ -4295,27 +3297,6 @@ var RemoteSpace = class {
   rawCall(method, args = {}) {
     return this.send({ method, args });
   }
-  /** Ask the authoritative control runtime; replicas and data members do not implement this method. */
-  async requestGrant(purpose = "effect") {
-    return this.send({ method: "grant", args: { purpose } });
-  }
-  async lookupPeerKey(peerId, keyId) {
-    return await this.send({ method: "keyLookup", args: { peerId, keyId } });
-  }
-  async rotationChallenge(algorithm, publicKey) {
-    return await this.send({ method: "rotationChallenge", args: { algorithm, publicKey } });
-  }
-  async rotateKey(challenge, replacement, prepared) {
-    if (!this.o.signer) throw new UnsupportedOperation("rotation needs the old signer");
-    const bytes3 = (await Promise.resolve().then(() => (init_rotation(), rotation_exports))).rotationBytes(challenge);
-    const args = { challenge, oldSignature: Buffer.from(await this.o.signer.sign(bytes3)).toString("base64"), newSignature: Buffer.from(await replacement.sign(bytes3)).toString("base64") };
-    const request = prepared?.request ?? { generation: (await this.send({ method: "rotationGeneration" })).generation, requestId: this.o.newRequestId() };
-    await prepared?.beforeSend?.(request);
-    return await this.send({ method: "rotateKey", args, request }, () => new OutcomeUnknown(request, "the rotation answer was lost"));
-  }
-  async rotationStatus(commandId) {
-    return this.send({ method: "rotationStatus", args: { commandId } });
-  }
   /**
    * Layer B (4.3): prove the app key on this connection. The host's challenge must name the host this client means to reach
    * and this client's own peer id before anything is signed, so a challenge that another peer relays is not answered.
@@ -4342,12 +3323,11 @@ var RemoteSpace = class {
    * the first attempt is kept: a retry after a lost answer is answered from the stored claim, also when the token is spent
    * by then. Returns the id and role of the new key; afterwards `authenticate()` proves it as usual.
    */
-  async enroll(token, prepared) {
+  async enroll(token) {
     const signer = this.o.signer;
     if (!signer?.publicKey) throw new UnsupportedOperation("enroll needs a signer with its public key");
-    if (!prepared?.request) await this.info();
-    this.enrollRequest ??= prepared?.request ?? { generation: await this.generation(), requestId: this.o.newRequestId() };
-    await prepared?.beforeSend?.(this.enrollRequest);
+    await this.info();
+    this.enrollRequest ??= { generation: await this.generation(), requestId: this.o.newRequestId() };
     const ch = await this.send({ method: "challenge", args: { protocol: AUTH_PROTOCOL } });
     if (ch.gateHostId !== this.o.expectedGateHostId) throw new RemoteError("AuthorityMismatch", `the challenge comes from host ${ch.gateHostId}, not from ${this.o.expectedGateHostId}`);
     if (ch.observedPeerId !== this.o.ownPeerId) throw new RemoteError("AuthorityMismatch", `the host saw peer ${ch.observedPeerId} on this connection, not ${this.o.ownPeerId}`);
@@ -4360,6 +3340,7 @@ var RemoteSpace = class {
   async enrollStatus(request) {
     const target = request ?? this.enrollRequest;
     if (!target) throw new UnsupportedOperation("no enrollment was started");
+    await this.info();
     return await this.send({ method: "enrollStatus", args: { targetRequest: target } });
   }
   // ---- request identity
@@ -4414,7 +3395,6 @@ var RemoteSpace = class {
       if (this.o.maxClientWaitMs !== void 0 && performance.now() - started >= this.o.maxClientWaitMs) throw new OutcomeUnknown(request, "the client stopped waiting; the operation continues on the host");
       const view3 = await this.send({ method: "pollOperation", args: { targetRequest: request, waitMs: this.pollMs(end) } }, unknown("the client stopped waiting while polling"), end);
       if (view3.resultExpired) throw new ResultExpired("the operation's retained result expired");
-      if (view3.unknownOutcome) throw new OutcomeUnknown(request, "restored history cannot establish the original outcome");
       if (view3.error) throw toError(view3.error);
       if (view3.state === "cancelled") throw new OperationCancelled(`request ${request.requestId} was cancelled`);
       if (view3.state === "done") return view3.result ?? null;
@@ -4507,1571 +3487,9 @@ function leaseArg(ms2) {
   return ms2;
 }
 
-// src/runtime.ts
-init_rotation();
-init_service();
-init_auth();
-init_enroll();
-
-// src/supervisor.ts
-init_rotation();
-init_core();
-init_spaces();
-init_enroll();
-var COMMAND_KINDS = ["createEnroll", "revokePeer", "rotateKey"];
-var RESULT_RETENTION_MS = 7 * 24 * 3600 * 1e3;
-var str2 = (v) => typeof v === "string" && v !== "" ? v : void 0;
-var peerOf = (owner) => {
-  try {
-    const v = JSON.parse(owner);
-    if (Array.isArray(v) && typeof v[0] === "string") return v[0];
-  } catch {
-  }
-  return owner.split("/")[0];
-};
-var Supervisor = class {
-  host;
-  ctx;
-  o;
-  constructor(host, ctx, o = {}) {
-    this.host = host;
-    this.ctx = ctx;
-    this.o = o;
-  }
-  now = () => (this.o.now ?? Date.now)();
-  async controlId() {
-    const known = (await listSpaces(this.host, this.ctx)).find((i) => i.alias === CONTROL_SPACE);
-    return (known ?? await this.host.commit((tx) => createSpace(tx, CONTROL_SPACE, this.now()), this.ctx)).spaceId;
-  }
-  /** Process every waiting command, oldest first; returns how many. */
-  async tick() {
-    const id = await this.controlId();
-    let n = 0;
-    for (; ; ) {
-      const done = await this.host.commit(async (tx) => {
-        const now = this.now();
-        const s = await spaceDoc(tx, id, now);
-        const next = list(s, now, { type: "Command" })[0];
-        if (!next) return void 0;
-        const taken = probe(s, now, { id: next.id }, null, true);
-        if (taken.status !== "found") return void 0;
-        const f = plain(taken.entry.fields);
-        const requestedBy = peerOf(String(taken.entry.owner ?? ""));
-        const commandId = str2(f.commandId) ?? taken.entry.id;
-        const kind = str2(f.kind) ?? "?";
-        if (list(s, now, { type: "Result", fields: { commandId } }).length > 0) return { commandId, kind, state: "duplicate", requestedBy };
-        const finish2 = (state, extra) => {
-          const res = { commandId, kind, state, ...extra, requestedBy, at: now };
-          write(s, now, { type: "Result", fields: res }, null, RESULT_RETENTION_MS);
-          return { commandId, kind, state, requestedBy, ...extra.error ? { error: extra.error } : {} };
-        };
-        if (!requestedBy || kind !== "rotateKey" && !hasAdminKey(s, now, requestedBy)) return finish2("failed", { error: "the writer of this command holds no active admin key" });
-        const args = f.args && typeof f.args === "object" && !Array.isArray(f.args) ? f.args : {};
-        try {
-          if (kind === "rotateKey") return finish2("completed", { result: rotateKeyIn(s, now, { challenge: args.challenge, oldSignature: String(args.oldSignature ?? ""), newSignature: String(args.newSignature ?? "") }, requestedBy) });
-          if (kind === "createEnroll") {
-            const rec = createEnrollIn(s, now, { tokenHash: String(args.tokenHash ?? ""), role: String(args.role ?? ""), allowedPeerId: String(args.allowedPeerId ?? ""), scope: Array.isArray(args.scope) ? args.scope : [], ...typeof args.ttlMs === "number" ? { ttlMs: args.ttlMs } : {} });
-            return finish2("completed", { result: { tokenHash: rec.tokenHash, role: rec.role, allowedPeerId: rec.allowedPeerId, expiresAt: rec.expiresAt } });
-          }
-          if (kind === "revokePeer") {
-            const peerId = str2(args.peerId);
-            if (!peerId) throw new IllegalArgumentError("revokePeer needs a peerId");
-            return finish2("completed", { result: { peerId, revoked: revokePeerKeysIn(s, now, peerId) } });
-          }
-          return finish2("failed", { error: `unknown command ${kind}` });
-        } catch (e) {
-          if (e instanceof ResourceExhausted || e instanceof LimitError) throw e;
-          return finish2("failed", { error: e instanceof Error ? e.message : String(e) });
-        }
-      }, this.ctx);
-      if (!done) return n;
-      n++;
-      try {
-        this.o.onEvent?.(done);
-      } catch {
-      }
-    }
-  }
-  /** Process commands as they arrive (a watch on the control space plus a first pass); returns the function that stops it. */
-  async start() {
-    const id = await this.controlId();
-    let running = false, again = false, stopped = false;
-    const run = async () => {
-      if (stopped) return;
-      if (running) {
-        again = true;
-        return;
-      }
-      running = true;
-      try {
-        do {
-          again = false;
-          await this.tick();
-        } while (again && !stopped);
-      } catch (e) {
-        (this.o.onError ?? ((x) => console.error("pi-spaces supervisor:", x)))(e);
-      } finally {
-        running = false;
-      }
-    };
-    const watch = await this.host.watchDoc(NamedSpace, id, this.ctx);
-    watch?.start(run);
-    await run();
-    return async () => {
-      stopped = true;
-      await watch?.stop();
-    };
-  }
-};
-var READABLE = ["Command", "Result", "PeerKey"];
-var ControlAccess = class {
-  inner;
-  o;
-  controlId;
-  constructor(inner, o) {
-    this.inner = inner;
-    this.o = o;
-  }
-  async handleText(text2, conn, maxFrameBytes) {
-    let call;
-    try {
-      call = JSON.parse(text2);
-    } catch {
-      return this.inner.handleText(text2, conn, maxFrameBytes);
-    }
-    const denied = await this.check(call, conn);
-    return denied ? JSON.stringify(denied) : this.inner.handleText(text2, conn, maxFrameBytes);
-  }
-  async handle(call, conn) {
-    return await this.check(call, conn) ?? this.inner.handle(call, conn);
-  }
-  async isControl(space) {
-    if (space === CONTROL_SPACE) return true;
-    if (typeof space !== "string") return false;
-    if (!this.controlId) this.controlId = (await listSpaces(this.o.host, this.o.ctx)).find((i) => i.alias === CONTROL_SPACE)?.spaceId;
-    return this.controlId !== void 0 && space === this.controlId;
-  }
-  async check(call, conn) {
-    const c = call;
-    if (!c || typeof c.method !== "string" || !await this.isControl(c.space)) return void 0;
-    const deny = (message) => ({ ok: false, error: { code: "PermissionDenied", message } });
-    if (["hello", "generation", "challenge", "prove", "enroll", "enrollStatus", "pollOperation"].includes(c.method)) return void 0;
-    const id = await this.o.identity.authenticate(conn);
-    if (!id || !id.roles.includes("admin")) return deny("the control space is for admins who proved their key");
-    const a = c.args ?? {};
-    switch (c.method) {
-      case "write": {
-        const type = a.entry?.type;
-        return type === "Command" ? void 0 : deny("an admin writes only Command entries into the control space");
-      }
-      case "read":
-      case "readAll":
-      case "count": {
-        const t = a.template?.type;
-        return typeof t === "string" && READABLE.includes(t) ? void 0 : deny(`the control space can be read for ${READABLE.join(", ")}`);
-      }
-      case "cancelOperation":
-      case "lease":
-        return void 0;
-      default:
-        return deny(`${c.method} is not available on the control space`);
-    }
-  }
-};
-
-// src/runtime.ts
-init_spaces();
-
-// src/boot.ts
-init_canonical();
-init_doc();
-init_spaces();
-var BootBlocked = class extends Error {
-};
-function installBootGuard(host, ctx, o) {
-  const original = host.commit.bind(host), originalSnapshot = host.snapshot.bind(host);
-  let installed = true;
-  const guarded = async (fn, context) => {
-    const checkedLocal = /* @__PURE__ */ new Map();
-    const external = await o.external.get(`boot:${o.hostId}`);
-    if (!external || external.value.state !== "active" || external.value.hostId !== o.hostId) throw new BootBlocked("external host boot authorization is absent or inactive");
-    return original(async (tx) => {
-      const proxy = new Proxy(tx, { get(target, property) {
-        if (property !== "doc") {
-          const value = Reflect.get(target, property, target);
-          return typeof value === "function" ? value.bind(target) : value;
-        }
-        return async (...args) => {
-          const state = await target.doc(...args);
-          if (args[0] === Space || args[0] === NamedSpace) {
-            const s = state, id = s.spaceId ?? args[1];
-            const permit = external.value.spaces[id], local = await o.installed.get(`installed:${o.hostId}:${id}`);
-            if (!permit || !local || permit.state !== "active" || local.value.state !== "active" || permit.authorityId !== o.authorityId || permit.authorityMarker && s.acceptedAuthorityId !== o.authorityId || permit.dataIncarnation !== s.incarnation || canonicalJson(permit) !== canonicalJson(local.value) || !["local", "primary"].includes(permit.role)) throw new BootBlocked(`space ${id} lacks matching external/local boot permission`);
-            checkedLocal.set(id, local.version);
-            if (s.primaryEpoch !== void 0 && permit.primaryEpoch !== s.primaryEpoch) throw new BootBlocked("space epoch disagrees with boot permission");
-          }
-          return state;
-        };
-      } });
-      const result = await fn(proxy);
-      const current = await o.external.get(`boot:${o.hostId}`);
-      for (const [id, version] of checkedLocal) if ((await o.installed.get(`installed:${o.hostId}:${id}`))?.version !== version) throw new BootBlocked("local boot installation changed before commit");
-      if (!current || current.version !== external.version) throw new BootBlocked("external boot permission changed before commit");
-      return result;
-    }, context);
-  };
-  host.commit = guarded;
-  const guardedSnapshot = (async (...args) => {
-    const external = await o.external.get(`boot:${o.hostId}`);
-    if (!external || external.value.state !== "active" || external.value.hostId !== o.hostId) throw new BootBlocked("external host boot authorization is absent or inactive");
-    const state = await originalSnapshot(...args);
-    if (state && (args[0] === Space || args[0] === NamedSpace)) {
-      const s = state, id = s.spaceId ?? args[1];
-      const permit = external.value.spaces[id], local = await o.installed.get(`installed:${o.hostId}:${id}`);
-      if (!permit || !local || permit.state !== "active" || local.value.state !== "active" || permit.authorityId !== o.authorityId || permit.authorityMarker && s.acceptedAuthorityId !== o.authorityId || permit.dataIncarnation !== s.incarnation || canonicalJson(permit) !== canonicalJson(local.value) || !["local", "primary"].includes(permit.role) || s.primaryEpoch !== void 0 && permit.primaryEpoch !== s.primaryEpoch) throw new BootBlocked(`space ${id} lacks matching external/local boot permission`);
-      if ((await o.installed.get(`installed:${o.hostId}:${id}`))?.version !== local.version) throw new BootBlocked("local boot installation changed during read");
-    }
-    if ((await o.external.get(`boot:${o.hostId}`))?.version !== external.version) throw new BootBlocked("external boot permission changed during read");
-    return state;
-  });
-  host.snapshot = guardedSnapshot;
-  return () => {
-    if (installed && host.commit === guarded) host.commit = original;
-    if (installed && host.snapshot === guardedSnapshot) host.snapshot = originalSnapshot;
-    installed = false;
-  };
-}
-
-// src/runtime.ts
-async function startFederationHost(host, ctx, o) {
-  if (o.control && o.control.host !== host) throw new Error("the authoritative control runtime must use its own harness");
-  if (!o.boot && !o.unsafeSkipBootGuardForTests) throw new Error("a federation host requires independent boot authorization and local installation");
-  const stopBoot = o.boot ? installBootGuard(host, ctx, { ...o.boot, hostId: o.hostId, authorityId: o.authorityId }) : void 0;
-  const identity = new GateIdentity();
-  const service = new SpaceService({
-    host,
-    ctx,
-    identity,
-    hostId: o.hostId,
-    authorityId: o.authorityId,
-    now: o.now,
-    epochForSpace: async (space) => {
-      const info = (await listSpaces(host, ctx)).find((i) => i.spaceId === space || i.alias === (space ?? "default"));
-      return info ? (await snapshotSpace(host, info.spaceId, ctx))?.primaryEpoch ?? 1 : 0;
-    },
-    authorize: async (call, id, conn) => o.verifier.check(call.frame?.grant, id, call, conn)
-  });
-  const proof = new ProvingService(service, { gateHostId: o.hostId, keys: o.keys, now: o.now });
-  let chain = proof;
-  let stopSupervisor;
-  let stopMaintenance;
-  let gate;
-  try {
-    if (o.control) {
-      const access = new ControlAccess(proof, { identity, host: o.control.host, ctx });
-      const enrollment = new EnrollmentService(access, { host: o.control.host, ctx, now: o.now, keys: o.keys });
-      const inner = new RotationService(enrollment, { host: o.control.host, ctx, keys: o.keys, identity, verifier: o.verifier, now: o.now }), authority = o.control.authority;
-      chain = {
-        async handle(c, conn) {
-          if (c?.method === "keyLookup") {
-            const id = await identity.authenticate(conn), state = conn.state;
-            const key = state?.proof && conn.peerId ? await o.keys.find(conn.peerId, state.proof.keyId) : void 0;
-            if (!key || key.state !== "active" || !id?.roles.some((r) => ["host", "admin"].includes(r))) return { ok: false, error: { code: !state?.proof ? "ProofRequired" : "PermissionDenied", message: "key lookup requires a currently proven service host or admin" } };
-            const a = c.args;
-            if (typeof a?.peerId !== "string" || typeof a?.keyId !== "string") return { ok: false, error: { code: "BadRequest", message: "peerId and keyId required" } };
-            return { ok: true, result: await o.keys.find(a.peerId, a.keyId) };
-          }
-          if (c?.method === "grant") {
-            try {
-              return { ok: true, result: await authority.issue(conn, c.args?.purpose ?? "effect") };
-            } catch (e) {
-              return { ok: false, error: { code: !conn.state?.proof && conn.credentials?.roles?.some((r) => ["admin", "host"].includes(r)) ? "ProofRequired" : "PermissionDenied", message: e instanceof Error ? e.message : String(e) } };
-            }
-          }
-          return inner.handle(c, conn);
-        },
-        async handleText(t, conn, bytes3) {
-          let c;
-          try {
-            c = JSON.parse(t);
-          } catch {
-            return inner.handleText(t, conn, bytes3);
-          }
-          if (["grant", "keyLookup"].includes(c?.method)) {
-            if (Buffer.byteLength(t) > (bytes3 ?? 256 * 1024)) return JSON.stringify({ ok: false, error: { code: "ResourceExhausted", message: "grant request exceeds frame budget" } });
-            return JSON.stringify(await this.handle(c, conn));
-          }
-          return inner.handleText(t, conn, bytes3);
-        }
-      };
-      stopSupervisor = await new Supervisor(o.control.host, ctx, { now: o.now }).start();
-    }
-    stopMaintenance = await startService(host, ctx, { now: o.now });
-    gate = await startGate(chain, { ...o, keys: o.keys });
-    let closed = false;
-    return { ...gate, service: chain, close: async () => {
-      if (closed) return;
-      closed = true;
-      try {
-        await gate.close();
-        await stopSupervisor?.();
-        await stopMaintenance?.();
-      } finally {
-        stopBoot?.();
-      }
-    } };
-  } catch (e) {
-    try {
-      await gate?.close();
-      await stopSupervisor?.();
-      await stopMaintenance?.();
-    } finally {
-      stopBoot?.();
-    }
-    throw e;
-  }
-}
-
-// src/tls-register.ts
-import tls from "node:tls";
-import { createHash as createHash6 } from "node:crypto";
-var TlsRecoveryRegister = class {
-  o;
-  constructor(o) {
-    this.o = o;
-  }
-  call(call) {
-    const o = this.o, body = JSON.stringify(call) + "\n";
-    if (Buffer.byteLength(body) > 256 * 1024) return Promise.reject(new Error("register request exceeds budget"));
-    return new Promise((resolve, reject) => {
-      const socket = tls.connect({ host: o.host, port: o.port, servername: o.serverName, ca: privateFile(o.caFile), cert: privateFile(o.certFile), key: privateFile(o.keyFile), rejectUnauthorized: true, minVersion: "TLSv1.3" });
-      let input = Buffer.alloc(0), done = false;
-      const finish2 = (error, value) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        socket.destroy();
-        error ? reject(error) : resolve(value);
-      };
-      const timer = setTimeout(() => finish2(new Error("independent TLS register timed out")), o.timeoutMs ?? 6e3);
-      socket.on("secureConnect", () => socket.write(body));
-      socket.on("error", (e) => finish2(e));
-      socket.on("close", () => {
-        if (!done) finish2(new Error("register disconnected"));
-      });
-      socket.on("data", (data) => {
-        input = Buffer.concat([input, typeof data === "string" ? Buffer.from(data) : data]);
-        if (input.length > 256 * 1024) return finish2(new Error("register response exceeds budget"));
-        const end = input.indexOf("\n");
-        if (end < 0) return;
-        try {
-          const r = JSON.parse(input.subarray(0, end).toString("utf8"));
-          if (!r.ok) {
-            if (r.error?.code === "RequestConflict") return finish2(new RegisterConflict(r.error.message));
-            throw new Error(r.error?.message ?? "register refused request");
-          }
-          finish2(void 0, r.result);
-        } catch (e) {
-          finish2(e);
-        }
-      });
-    });
-  }
-  get(key) {
-    return this.call({ method: "get", key });
-  }
-  compareAndSet(key, expected, value) {
-    return this.call({ method: "compareAndSet", key, expectedVersion: expected, value });
-  }
-  close() {
-  }
-};
-async function serveTlsRegister(register, o) {
-  const open2 = /* @__PURE__ */ new Set();
-  const server = tls.createServer({ ca: privateFile(o.caFile), cert: privateFile(o.certFile), key: privateFile(o.keyFile), requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3", handshakeTimeout: 4e3 }, (socket) => {
-    const certificate = socket.getPeerCertificate(), fingerprint = certificate.raw ? createHash6("sha256").update(certificate.raw).digest("hex") : "", policy = o.peers[fingerprint];
-    if (!socket.authorized || !policy || open2.size >= 32) {
-      socket.destroy();
-      return;
-    }
-    open2.add(socket);
-    socket.setTimeout(8e3, () => socket.destroy());
-    socket.on("error", () => {
-    });
-    socket.on("close", () => open2.delete(socket));
-    let input = Buffer.alloc(0), started = false;
-    socket.on("data", async (data) => {
-      if (started) {
-        socket.destroy();
-        return;
-      }
-      input = Buffer.concat([input, typeof data === "string" ? Buffer.from(data) : data]);
-      if (input.length > 256 * 1024) {
-        socket.destroy();
-        return;
-      }
-      const end = input.indexOf("\n");
-      if (end < 0) return;
-      started = true;
-      try {
-        const c = JSON.parse(input.subarray(0, end).toString("utf8"));
-        if (typeof c.key !== "string" || !c.key || c.key.length > 512) throw new Error("invalid register key");
-        let result;
-        if (c.method === "get") result = await register.get(c.key);
-        else if (c.method === "compareAndSet" && (policy.operator || policy.writeKeys?.includes(c.key))) result = await register.compareAndSet(c.key, c.expectedVersion, c.value);
-        else throw new Error("certificate has no CAS permission for this register key");
-        socket.end(JSON.stringify({ ok: true, result }) + "\n");
-      } catch (e) {
-        socket.end(JSON.stringify({ ok: false, error: { code: e instanceof RegisterConflict ? "RequestConflict" : "PermissionDenied", message: e instanceof Error ? e.message : String(e) } }) + "\n");
-      }
-    });
-  });
-  server.maxConnections = 64;
-  server.on("tlsClientError", () => {
-  });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(o.port, o.host, () => {
-      server.removeListener("error", reject);
-      resolve();
-    });
-  });
-  return { address: () => server.address(), close: async () => {
-    for (const s of open2) s.destroy();
-    await new Promise((resolve, reject) => server.close((e) => e ? reject(e) : resolve()));
-  } };
-}
-
-// src/ssh-register.ts
-import { spawn } from "node:child_process";
-var SshRecoveryRegister = class {
-  target;
-  timeoutMs;
-  operator;
-  constructor(target, timeoutMs = 6e3, o = {}) {
-    if (!/^[A-Za-z0-9_.@:-]+$/.test(target) || target.startsWith("-")) throw new Error("invalid register SSH target");
-    this.target = target;
-    this.timeoutMs = timeoutMs;
-    this.operator = o.operator ?? false;
-  }
-  call(call) {
-    const key = call.key;
-    if (typeof key !== "string" || !key || key.length > 512) return Promise.reject(new Error("invalid register key"));
-    return new Promise((resolve, reject) => {
-      const child = spawn("ssh", ["-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", this.target, this.operator ? "pi-spaces-register-operator" : "pi-spaces-register-read"], { stdio: ["pipe", "pipe", "ignore"] });
-      let output = Buffer.alloc(0), settled = false;
-      const finish2 = (error, value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        child.kill();
-        error ? reject(error) : resolve(value);
-      };
-      const timer = setTimeout(() => finish2(new Error("independent SSH register timed out")), this.timeoutMs);
-      child.on("error", (e) => finish2(e));
-      child.stdin.on("error", (e) => finish2(e));
-      child.stdout.on("data", (b) => {
-        output = Buffer.concat([output, b]);
-        if (output.length > 256 * 1024) finish2(new Error("register response exceeds budget"));
-      });
-      child.on("close", (code) => {
-        if (code !== 0) return finish2(new Error("register SSH command failed"));
-        try {
-          const r = JSON.parse(output.toString("utf8"));
-          if (!r.ok) {
-            if (r.error?.code === "RequestConflict") throw new RegisterConflict(r.error.message);
-            throw new Error(r.error?.message ?? r.error ?? "register unavailable");
-          }
-          finish2(void 0, r.result);
-        } catch (e) {
-          finish2(e);
-        }
-      });
-      child.stdin.end(JSON.stringify(call));
-    });
-  }
-  get(key) {
-    return this.call({ method: "get", key });
-  }
-  compareAndSet(key, expected, value) {
-    return this.operator ? this.call({ method: "compareAndSet", key, expectedVersion: expected, value }) : Promise.reject(new Error("SSH member register access is read-only"));
-  }
-  close() {
-  }
-};
-
-// src/configured-runtime.ts
-init_spaces();
-
-// src/configured-recovery.ts
-import { join, basename } from "node:path";
-
-// src/control-ack.ts
-import { defineDoc as defineDoc4 } from "@earendil-works/pi-durable";
-init_canonical();
-init_spaces();
-init_core();
-init_enroll();
-var RecoveryReceipts = defineDoc4({ kind: "pi-spaces.control-recovery-receipts", version: 1, scope: "session", initial: () => ({ receipts: {} }) });
-var ControlAckService = class {
-  o;
-  constructor(o) {
-    this.o = o;
-  }
-  async hostKey(call) {
-    const args = call.args;
-    if (!args || typeof args.targetHostId !== "string") return null;
-    const key = await this.o.register.get(`host-key:${args.targetHostId}`);
-    if (!key || typeof key.value.peerId !== "string" || typeof key.value.keyId !== "string") return null;
-    const appKey = await new SpaceKeyDirectory(this.o.host, this.o.ctx).find(key.value.peerId, key.value.keyId);
-    return appKey?.state === "active" && appKey.roles.includes("host") && appKey.algorithm === key.value.algorithm && appKey.publicKey === key.value.publicKey && key?.value.state === "active" && key.value.authorityId === this.o.authorityId && ["ed25519", "ecdsa-p256"].includes(key.value.algorithm) && typeof key.value.publicKey === "string" ? key.value : null;
-  }
-  async acknowledge(args, requireHostKey = false) {
-    if (![args.recoveryId, args.space, args.incarnation, args.authorityId, args.targetHostId, args.argsHash].every((s) => typeof s === "string" && s.length > 0 && s.length <= 512) || !Number.isSafeInteger(args.primaryEpoch) || args.primaryEpoch < 1 || args.authorityId !== this.o.authorityId) throw new RecoveryBlocked("invalid control acknowledgement tuple");
-    const authority = await this.o.register.get(`authority:${this.o.controlSpaceId}`), transition = await this.o.register.get(`data-transition:${args.space}`), target = await this.o.register.get(`boot:${args.targetHostId}`);
-    if (!authority || authority.value.state !== "active" || authority.value.hostId !== this.o.hostId || authority.value.authorityId !== this.o.authorityId) throw new RecoveryBlocked("control is not the independently active authority");
-    if (!transition || !["restoring", "completed"].includes(transition.value.state) || ["recoveryId", "incarnation", "primaryEpoch", "targetHostId", "argsHash", "authorityId"].some((k) => transition.value[k] !== args[k])) throw new RecoveryBlocked("control receipt disagrees with the independent data transition");
-    const permit = target?.value.spaces[args.space];
-    if (!target || target.value.state !== "active" || !permit || permit.authorityId !== args.authorityId || !(permit.state === "revoked" && permit.dataIncarnation === transition.value.expectedDataIncarnation || permit.state === "active" && permit.dataIncarnation === args.incarnation && permit.primaryEpoch === args.primaryEpoch && permit.transitionId === args.recoveryId)) throw new RecoveryBlocked("target boot permission disagrees with recovery");
-    const source = await this.o.register.get(`boot:${transition.value.sourceHostId}`);
-    if (!source || source.value.state !== "fenced") throw new RecoveryBlocked("source host is not independently fenced");
-    const hostKey2 = requireHostKey ? await this.o.register.get(`host-key:${args.targetHostId}`) : null;
-    if (requireHostKey && (!hostKey2 || hostKey2.value.state !== "active" || hostKey2.value.authorityId !== this.o.authorityId)) throw new RecoveryBlocked("target host key is no longer independently authorized");
-    return this.o.host.commit(async (tx) => {
-      const state = await spaceDoc(tx, this.o.controlSpaceId, (this.o.now ?? Date.now)());
-      if (!maintenanceStep(state, Buffer.byteLength(JSON.stringify(args)) + 512, (this.o.now ?? Date.now)(), "control-recovery-ack")) throw new ResourceExhausted("control receipt exceeds commit budget");
-      if (hostKey2) {
-        const key = list(state, (this.o.now ?? Date.now)(), { type: "PeerKey", fields: { peerId: hostKey2.value.peerId, keyId: hostKey2.value.keyId } })[0];
-        if (!key || key.fields.state !== "active" || !Array.isArray(key.fields.roles) || !key.fields.roles.includes("host") || key.fields.algorithm !== hostKey2.value.algorithm || key.fields.publicKey !== hostKey2.value.publicKey || (await this.o.register.get(`host-key:${args.targetHostId}`))?.version !== hostKey2.version) throw new RecoveryBlocked("target host key changed before control receipt commit");
-      }
-      const doc = await tx.doc(RecoveryReceipts), existing = doc.receipts[args.recoveryId];
-      if (existing && canonicalJson(existing) !== canonicalJson(args)) throw new RegisterConflict("recovery receipt identity has different arguments");
-      if ((await this.o.register.get(`authority:${this.o.controlSpaceId}`))?.version !== authority.version || (await this.o.register.get(`data-transition:${args.space}`))?.version !== transition.version || (await this.o.register.get(`boot:${args.targetHostId}`))?.version !== target.version || (await this.o.register.get(`boot:${transition.value.sourceHostId}`))?.version !== source.version) throw new RecoveryBlocked("recovery authorization changed before control receipt commit");
-      doc.receipts[args.recoveryId] ??= plain(args);
-      return plain(doc.receipts[args.recoveryId]);
-    }, this.o.ctx);
-  }
-};
-
-// src/ssh-recovery.ts
-import { spawn as spawn2 } from "node:child_process";
-function sshRecoveryTransport(target, timeoutMs = 1e4) {
-  if (!/^[A-Za-z0-9_.@:-]+$/.test(target) || target.startsWith("-")) throw new Error("invalid recovery SSH target");
-  const active2 = /* @__PURE__ */ new Set();
-  let closed = false;
-  return { close() {
-    closed = true;
-    for (const c of active2) c.kill();
-  }, async request(text2) {
-    if (closed || Buffer.byteLength(text2) > 256 * 1024) throw new Error("recovery transport is closed or request exceeds budget");
-    return new Promise((resolve, reject) => {
-      const child = spawn2("ssh", ["-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", target, "pi-spaces-recovery"], { stdio: ["pipe", "pipe", "ignore"] });
-      active2.add(child);
-      let output = Buffer.alloc(0), done = false;
-      const finish2 = (error, reply2) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        active2.delete(child);
-        child.kill();
-        error ? reject(error) : resolve(reply2);
-      };
-      const timer = setTimeout(() => finish2(new Error("recovery SSH timed out; resolve the existing request identity")), timeoutMs);
-      child.on("error", (e) => finish2(e));
-      child.stdin.on("error", (e) => finish2(e));
-      child.stdout.on("data", (data) => {
-        output = Buffer.concat([output, data]);
-        if (output.length > 256 * 1024) finish2(new Error("recovery response exceeds budget"));
-      });
-      child.on("close", (code) => {
-        if (code !== 0) return finish2(new Error("recovery forced command failed"));
-        finish2(void 0, output.toString("utf8"));
-      });
-      child.stdin.end(text2);
-    });
-  } };
-}
-
-// src/fencing.ts
-import { spawn as spawn3 } from "node:child_process";
-async function verifySshFence(register, hostId, targets) {
-  const target = targets[hostId];
-  if (!target || !/^[A-Za-z0-9_.@:-]+$/.test(target) || target.startsWith("-")) throw new RecoveryBlocked("no independently provisioned fencing endpoint for this host");
-  const boot = await register.get(`boot:${hostId}`);
-  if (!boot || Object.values(boot.value.spaces).some((s) => s.durability === "sync" || !["local", "primary"].includes(s.role))) throw new RecoveryBlocked("F15 is restricted to single-space hosting without replicas");
-  const status = await new Promise((resolve, reject) => {
-    const process2 = spawn3("ssh", ["-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", target, "pi-spaces-fence-status"], { stdio: ["ignore", "pipe", "ignore"] });
-    let output = "", settled = false;
-    const finish2 = (error, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      process2.kill();
-      error ? reject(error) : resolve(value);
-    };
-    const timer = setTimeout(() => finish2(new RecoveryBlocked("independent fencing status timed out")), 1e4);
-    process2.on("error", (e) => finish2(e));
-    process2.stdout.on("data", (b) => {
-      output += b.toString("utf8");
-      if (Buffer.byteLength(output) > 8192) finish2(new RecoveryBlocked("invalid fencing response"));
-    });
-    process2.on("close", (code) => {
-      if (code !== 0) return finish2(new RecoveryBlocked("fencing SSH command failed"));
-      try {
-        finish2(void 0, JSON.parse(output));
-      } catch {
-        finish2(new RecoveryBlocked("invalid fencing status"));
-      }
-    });
-  });
-  if (status.hostId !== hostId || status.restartLocked !== true || status.stopped !== true) throw new RecoveryBlocked("normal service is not independently stopped and restart-locked");
-  if (boot.value.state !== "fenced") await register.compareAndSet(`boot:${hostId}`, boot.version, { ...boot.value, state: "fenced" });
-  return { hostId, restartLocked: true };
-}
-
-// src/configured-recovery.ts
-async function startConfiguredRecovery(host, raw, ctx, o) {
-  const c = o.config;
-  if ([c.writerSocket, c.writerSshTarget, c.writerTls].filter(Boolean).length > 1) throw new Error("configure one operator register endpoint");
-  const writer = c.writerTls ? new TlsRecoveryRegister(c.writerTls) : c.writerSshTarget ? new SshRecoveryRegister(c.writerSshTarget, 1e4, { operator: true }) : c.writerSocket ? new SocketRecoveryRegister(c.writerSocket, { writable: true }) : void 0;
-  const acks = o.mode === "control" ? new ControlAckService({ host, ctx, register: o.external, hostId: o.hostId, authorityId: o.authorityId, controlSpaceId: o.controlSpaceId }) : void 0;
-  let controller;
-  if (writer) {
-    if (!c.snapshotDirectory || !c.fenceTargets || !c.controlEndpoint || !!c.controlEndpoint.path === !!c.controlEndpoint.sshTarget) {
-      writer.close();
-      throw new Error("data recovery needs snapshot directory, pinned fencing endpoints and one control endpoint");
-    }
-    controller = new RecoveryController({ host: raw, ctx, hostId: o.hostId, authorityId: o.authorityId, external: writer, installed: o.installed, loadSnapshot: async (reference) => {
-      if (!reference || reference !== basename(reference) || reference.length > 256 || !/^[A-Za-z0-9_.-]+\.json$/.test(reference)) throw new RecoveryBlocked("snapshot reference must name a provisioned private JSON file");
-      return JSON.parse(privateFile(join(c.snapshotDirectory, reference)).toString("utf8"));
-    }, verifyFence: (id) => verifySshFence(writer, id, c.fenceTargets), acknowledgeControl: async (job) => {
-      const client = new RecoveryClient(c.controlEndpoint.sshTarget ? sshRecoveryTransport(c.controlEndpoint.sshTarget) : c.controlEndpoint.path, { hostId: o.controlHostId, signer: o.signer });
-      try {
-        return await client.call("controlAck", { recoveryId: job.request.recoveryId, space: job.request.space, incarnation: job.incarnation, primaryEpoch: job.primaryEpoch, authorityId: o.authorityId, targetHostId: o.hostId, argsHash: job.argsHash }, `ack:${job.request.recoveryId}`);
-      } finally {
-        client.close();
-      }
-    } });
-  }
-  try {
-    const server = await serveRecovery({ path: c.path, hostId: o.hostId, operator: c.operator, supervisor: async () => o.controlKey, hostKey: acks ? (call) => acks.hostKey(call) : void 0, handle: async (call, role) => {
-      if (call.method === "controlAck" && acks) return await acks.acknowledge(call.args, role === "host");
-      if (controller && role !== "host") return dataRecoveryHandler(controller)(call, role);
-      throw new RecoveryBlocked("private recovery method is not provisioned on this host");
-    } });
-    return { close: async () => {
-      try {
-        await server.close();
-      } finally {
-        writer?.close();
-      }
-    } };
-  } catch (e) {
-    writer?.close();
-    throw e;
-  }
-}
-
-// src/configured-runtime.ts
-async function startConfiguredFederation(host, ctx, configFile) {
-  const raw = { commit: host.commit.bind(host), snapshot: host.snapshot.bind(host) };
-  const config = JSON.parse(privateFile(configFile).toString("utf8"));
-  if (!config.hostId || !config.peerId || !config.authorityId || !config.controlHostId || !config.controlSpaceId || !["control", "member"].includes(config.mode)) throw new Error("incomplete federation provisioning");
-  const signer = loadFileSigner(config.keyFile);
-  if ([config.registerReadSocket, config.registerSshTarget, config.registerTls].filter(Boolean).length !== 1) throw new Error("configure exactly one independent register endpoint");
-  const external = config.registerTls ? new TlsRecoveryRegister(config.registerTls) : config.registerSshTarget ? new SshRecoveryRegister(config.registerSshTarget) : new SocketRecoveryRegister(config.registerReadSocket), installed = new SqliteRecoveryRegister(config.installedRegisterFile);
-  const directory = new NetbirdDirectory({ url: config.management.url, token: privateFile(config.management.tokenFile).toString("utf8").trim() });
-  const groupRoles = config.groupRoles ?? { "space-hosts": ["member", "host"], "space-admin": ["admin"], "space-observer": ["observer"], "space-enroll": ["unpaired"] };
-  let controlSocket;
-  try {
-    const boot = await external.get(`boot:${config.hostId}`);
-    if (!boot || boot.value.hostId !== config.hostId || boot.value.state !== "active") throw new BootBlocked("configured host is not authorized for normal boot");
-    await directory.refresh();
-    const ownPeer = await directory.lookup(config.listen.host);
-    if (!ownPeer || ownPeer.id !== config.peerId) throw new Error("listen address does not belong to the provisioned NetBird peer");
-    const installedAuthority = await installed.get(`installed-authority:${config.controlSpaceId}`);
-    const authorityId = installedAuthority?.value.authorityId ?? config.authorityId;
-    const controlPublicKey = installedAuthority?.value.supervisorKey ?? config.control.publicKey;
-    const authority = await external.get(`authority:${config.controlSpaceId}`);
-    if (!authority || authority.value.state !== "active" || authority.value.authorityId !== authorityId || authority.value.hostId !== config.controlHostId || authority.value.supervisorKey !== controlPublicKey) throw new BootBlocked("independent authority is not active or disagrees with installed control identity");
-    if (installedAuthority?.value.targetHostId && installedAuthority.value.targetHostId !== config.controlHostId) throw new Error("control endpoint must be reprovisioned for the installed authority successor");
-    const identity = new GateIdentity();
-    let keys, control2;
-    if (config.mode === "control") {
-      if (config.hostId !== config.controlHostId || (await host.snapshot(Registry, ctx))?.aliases.control !== config.controlSpaceId) throw new Error("configured control host or space identity disagrees with provisioned state");
-      if (config.control.algorithm !== signer.algorithm || controlPublicKey !== signer.publicKey) throw new Error("provisioned control signer disagrees with installed authority");
-      keys = new SpaceKeyDirectory(host, ctx);
-      control2 = { host, authority: new GrantAuthority({ authorityId, hostId: config.hostId, signer, keys, identity, allowAOnly: async () => {
-        const state = await snapshotSpace(host, config.controlSpaceId, ctx), policy = await external.get(`access:${authorityId}`);
-        return policy ? policy.value.authorityId === authorityId && policy.value.aOnlyAllowed === true : state?.restore?.kind !== "control";
-      }, refreshIdentity: async (conn) => {
-        await directory.refresh();
-        const peer = conn.overlayIp ? await directory.lookup(conn.overlayIp) : null;
-        if (!peer) return null;
-        return identity.authenticate({ ...conn, credentials: { roles: peer.groups.flatMap((g) => groupRoles[g] ?? []) } });
-      } }) };
-    } else {
-      controlSocket = socketTransport(config.control.address);
-      let remote;
-      remote = new RemoteSpace(controlSocket, { space: "control", signer, expectedGateHostId: config.controlHostId, ownPeerId: config.peerId, grantProvider: () => remote.requestGrant() });
-      await remote.authenticate();
-      keys = { find: (peerId, keyId) => remote.lookupPeerKey(peerId, keyId) };
-    }
-    const runtime = await startFederationHost(host, ctx, { ...config, authorityId, directory, groupRoles, keys, control: control2, verifier: new GrantVerifier({ authorityId, issuerHostId: config.controlHostId, algorithm: config.control.algorithm, publicKey: controlPublicKey }), boot: { external, installed } });
-    let recovery;
-    try {
-      if (config.recovery) recovery = await startConfiguredRecovery(host, raw, ctx, { ...config, authorityId, signer, controlKey: { algorithm: config.control.algorithm, publicKey: controlPublicKey }, config: config.recovery, external, installed });
-      await host.snapshot(Registry, ctx);
-    } catch (e) {
-      await recovery?.close();
-      await runtime.close();
-      throw e;
-    }
-    const trustedConnection = async () => {
-      await directory.refresh();
-      const peer = await directory.lookup(config.listen.host);
-      if (!peer || peer.id !== config.peerId) throw new Error("local service peer is no longer known to NetBird");
-      return { peerId: peer.id, overlayIp: peer.ip, credentials: { roles: peer.groups.flatMap((g) => groupRoles[g] ?? []) } };
-    };
-    const nativeService = { async handle(call, conn) {
-      Object.assign(conn, await trustedConnection());
-      return runtime.service.handle(call, conn);
-    } };
-    return { ...runtime, service: nativeService, config, trustedConnection, close: async () => {
-      try {
-        try {
-          await recovery?.close();
-        } finally {
-          await runtime.close();
-        }
-      } finally {
-        controlSocket?.close();
-        external.close();
-        installed.close();
-      }
-    } };
-  } catch (e) {
-    controlSocket?.close();
-    external.close();
-    installed.close();
-    throw e;
-  }
-}
-
-// src/index.ts
-init_rotation();
-init_grants();
-init_spaces();
-init_canonical();
-init_enroll();
-init_auth();
-
-// src/pi-server.ts
-function withSpaceService(base, space, trustedConnection) {
-  return {
-    async attachClient(presentation, context) {
-      const original = await base.attachClient(presentation, context);
-      const conn = await trustedConnection();
-      return {
-        async invokeService(call, ...rest) {
-          if (call.serviceId !== "space") return original.invokeService(call, ...rest);
-          const arg = call.args[0];
-          if (!arg || typeof arg !== "object" || Array.isArray(arg) || arg.method !== call.member) return { ok: false, error: { code: "BadRequest", message: "space member and encoded method must agree" } };
-          return space.handle(arg, conn);
-        },
-        release: (...rest) => original.release(...rest)
-      };
-    }
-  };
-}
-function piServerTransport(invoke) {
-  return {
-    async request(text2) {
-      const call = JSON.parse(text2);
-      return JSON.stringify(await invoke({ serviceId: "space", member: call.method, args: [call] }));
-    }
-  };
-}
-
-// src/index.ts
-init_service();
-init_claims();
-init_claims();
-init_mailbox();
-init_core();
-init_meter();
-
-// src/member-transition.ts
-init_canonical();
-init_spaces();
-init_core();
-import { createHash as createHash7 } from "node:crypto";
-var digest = (value) => createHash7("sha256").update(canonicalJson(value)).digest("hex");
-var MemberTransitionInstaller = class {
-  o;
-  constructor(o) {
-    this.o = o;
-  }
-  async advance(proof) {
-    const o = this.o, t = await verifyAuthorityTransition(o.external, proof, o.pinned), quiesced = await o.assertQuiesced();
-    if (quiesced.hostId !== o.hostId || !quiesced.normalStopped || !quiesced.restartLocked) throw new RecoveryBlocked("member normal runtime must be stopped with a persistent restart lock");
-    const key = `boot:${o.hostId}`;
-    let boot = await o.external.get(key);
-    if (!boot || boot.value.hostId !== o.hostId) throw new RecoveryBlocked("member boot authorization is absent");
-    const infos = await listSpaces(o.host, o.ctx);
-    if (infos.length !== Object.keys(boot.value.spaces).length || infos.some((i) => !boot.value.spaces[i.spaceId])) throw new RecoveryBlocked("member registry and independent boot space set disagree");
-    for (const permit of Object.values(boot.value.spaces)) if (permit.durability === "sync" || !["local", "primary"].includes(permit.role) || ![t.expectedAuthorityId, t.newAuthorityId].includes(permit.authorityId)) throw new RecoveryBlocked("single-mode transition cannot reconcile replicas or another authority");
-    const priorAck = await o.installed.get(`member-ack:${t.recoveryId}:${o.hostId}`);
-    if (priorAck) {
-      if (boot.value.state !== "active" || priorAck.value.bootDigest !== digest(boot.value)) throw new RecoveryBlocked("installed ACK no longer matches the external member boot configuration");
-      for (const i of infos) {
-        const local2 = await o.installed.get(`installed:${o.hostId}:${i.spaceId}`), s = await snapshotSpace(o.host, i.spaceId, o.ctx);
-        if (canonicalJson(local2?.value ?? null) !== canonicalJson(boot.value.spaces[i.spaceId]) || s?.acceptedAuthorityId !== t.newAuthorityId || s.primaryEpoch !== 1 || s.incarnation !== boot.value.spaces[i.spaceId].dataIncarnation) throw new RecoveryBlocked("member local configuration disagrees with persisted ACK");
-      }
-      await this.publishAck(priorAck.value);
-      return { completed: true, ack: priorAck.value };
-    }
-    if (boot.value.state !== "quarantine") {
-      boot = await o.external.compareAndSet(key, boot.version, { ...boot.value, state: "quarantine", spaces: Object.fromEntries(Object.entries(boot.value.spaces).map(([id, p]) => [id, { ...p, state: "revoked" }])) });
-    }
-    for (const info of infos) {
-      const state = await snapshotSpace(o.host, info.spaceId, o.ctx), permit = boot.value.spaces[info.spaceId];
-      if (!state || state.incarnation !== permit.dataIncarnation || state.authorityTransition && state.authorityTransition.stage !== "completed" && (state.authorityTransition.recoveryId !== t.recoveryId || state.authorityTransition.authorityId !== t.newAuthorityId)) throw new RecoveryBlocked("member space state or transition changed");
-      if (state.authorityTransition?.stage === "completed" && state.authorityTransition.recoveryId === t.recoveryId && state.acceptedAuthorityId === t.newAuthorityId) continue;
-      const now = (o.now ?? Date.now)();
-      await o.host.commit(async (tx) => {
-        const s = await spaceDoc(tx, info.spaceId, now);
-        if (!maintenanceStep(s, 512, now, "member-authority-transition")) throw new ResourceExhausted("member transition metadata exceeds commit budget");
-        if (!s.authorityTransition || s.authorityTransition.recoveryId !== t.recoveryId) {
-          s.authorityTransition = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId, stage: "clearing" };
-          s.waiters = [];
-          s.regs = [];
-          s.outbox = [];
-          s.jobs = [];
-          s.releaseQueue = [];
-          s.mailboxes = { boxes: {} };
-          touch2(s, now);
-        }
-        const step = s.authorityTransition;
-        if (step.stage === "clearing") {
-          const txn = Object.values(s.txns)[0];
-          if (txn) {
-            if (txn.sealed || txn.prepared) throw new RecoveryBlocked("sealed replica candidates require their separate reconciliation protocol");
-            abortTxn(s, now, txn.id, txn.owner ?? void 0);
-            return;
-          }
-          step.stage = "history";
-        }
-        if (step.stage === "history") {
-          const pending = Object.entries(s.rpc?.claims ?? {}).find(([, c]) => c.state === "pending");
-          if (pending) {
-            const [id, c] = pending, copy2 = plain(c);
-            delete copy2.reservedResultBytes;
-            const bytes3 = Buffer.byteLength(JSON.stringify(copy2)) + Buffer.byteLength(JSON.stringify(id)) + 256;
-            if (overheadBytes(s) + bytes3 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes3, now, "member-pending-history")) throw new ResourceExhausted("pending history cannot fit the transition budget");
-            s.restoredClaims ??= {};
-            s.restoredClaims[id] = copy2;
-            delete s.rpc.claims[id];
-            s.rpc.bytes = Math.max(0, (s.rpc.bytes ?? 0) - Buffer.byteLength(JSON.stringify(c)) - Buffer.byteLength(JSON.stringify(id)) - 2);
-            s.rpc.reservedBytes = Math.max(0, (s.rpc.reservedBytes ?? 0) - (c.reservedResultBytes ?? 0));
-            touch2(s, now);
-            return;
-          }
-          const decided = Object.values(s.rpc?.claims ?? {}).find((c) => c.state !== "pending" && !c.orphanedAfterRestore);
-          if (decided) {
-            const before = Buffer.byteLength(JSON.stringify(decided)), mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes3 = Buffer.byteLength(JSON.stringify(mark)) + 128;
-            if (claimBytes(s) + bytes3 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes3 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes3, now, "member-orphaned-claim")) throw new ResourceExhausted("orphan audit exceeds current limits");
-            decided.orphanedAfterRestore = mark;
-            s.rpc.bytes = (s.rpc.bytes ?? 0) + Buffer.byteLength(JSON.stringify(decided)) - before;
-            touch2(s, now);
-            return;
-          }
-          const historical = Object.values(s.restoredClaims ?? {}).find((c) => c.state !== "pending" && !c.orphanedAfterRestore);
-          if (historical) {
-            const mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes3 = Buffer.byteLength(JSON.stringify(mark)) + 128;
-            if (claimBytes(s) + bytes3 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes3 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes3, now, "member-historical-orphan")) throw new ResourceExhausted("historical orphan audit exceeds current limits");
-            historical.orphanedAfterRestore = mark;
-            touch2(s, now);
-            return;
-          }
-          step.stage = "generations";
-        }
-        if (step.stage === "generations") {
-          const old = Object.keys(s.rpc?.generations ?? {}).find((id) => !s.invalidGenerations?.[id]);
-          if (old) {
-            const bytes3 = Buffer.byteLength(JSON.stringify(old)) + 64;
-            if (claimBytes(s) + bytes3 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes3 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes3, now, "member-old-generation")) throw new ResourceExhausted("old generation cannot fit the transition budget");
-            s.invalidGenerations ??= {};
-            s.invalidGenerations[old] = true;
-            touch2(s, now);
-            return;
-          }
-          if (s.rpc) s.rpc.authorityId = t.newAuthorityId;
-          s.primaryEpoch = 1;
-          s.acceptedAuthorityId = t.newAuthorityId;
-          step.stage = "completed";
-          touch2(s, now);
-        }
-      }, o.ctx);
-      return { completed: false };
-    }
-    await installAuthorityTransition(o.installed, o.external, proof, o.pinned);
-    const spaces2 = {}, tuples = {};
-    for (const i of infos) {
-      const s = await snapshotSpace(o.host, i.spaceId, o.ctx);
-      const permit = { ...boot.value.spaces[i.spaceId], state: "active", authorityId: t.newAuthorityId, dataIncarnation: s.incarnation, primaryEpoch: 1, transitionId: t.recoveryId, authorityMarker: true };
-      spaces2[i.spaceId] = permit;
-      tuples[i.spaceId] = { incarnation: s.incarnation, primaryEpoch: 1 };
-      const k = `installed:${o.hostId}:${i.spaceId}`, local2 = await o.installed.get(k);
-      if (canonicalJson(local2?.value ?? null) !== canonicalJson(permit)) await o.installed.compareAndSet(k, local2?.version ?? null, permit);
-    }
-    const next = { hostId: o.hostId, state: "active", spaces: spaces2 };
-    if (canonicalJson(boot.value) !== canonicalJson(next)) await o.external.compareAndSet(key, boot.version, next);
-    const ack = { hostId: o.hostId, recoveryId: t.recoveryId, authorityId: t.newAuthorityId, bootDigest: digest(next), spaces: tuples };
-    const localKey = `member-ack:${t.recoveryId}:${o.hostId}`, local = await o.installed.get(localKey);
-    if (local && canonicalJson(local.value) !== canonicalJson(ack)) throw new RecoveryBlocked("member ACK conflicts with local installation");
-    if (!local) await o.installed.compareAndSet(localKey, null, ack);
-    await this.publishAck(ack);
-    return { completed: true, ack };
-  }
-  async publishAck(ack) {
-    const key = `authority-ack:${ack.recoveryId}:${this.o.hostId}`, known = await this.o.external.get(key);
-    if (known && canonicalJson(known.value) !== canonicalJson(ack)) throw new RecoveryBlocked("member ACK conflicts with independent register");
-    if (!known) await this.o.external.compareAndSet(key, null, ack);
-  }
-};
-
-// src/control-recovery.ts
-import { defineDoc as defineDoc5 } from "@earendil-works/pi-durable";
-import { createHash as createHash8 } from "node:crypto";
-init_spaces();
-init_canonical();
-init_enroll();
-init_core();
-var ControlRecoveryJobs = defineDoc5({ kind: "pi-spaces.control-recovery-jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
-var digest2 = (v) => createHash8("sha256").update(canonicalJson(v)).digest("hex");
-var ControlRecoveryController = class {
-  o;
-  constructor(o) {
-    if (!o.operator.publicKey || !o.supervisor.publicKey) throw new RecoveryBlocked("provisioned recovery and supervisor public identities are required");
-    this.o = o;
-  }
-  now() {
-    return (this.o.now ?? Date.now)();
-  }
-  async quiesced() {
-    const p = await this.o.assertQuiesced();
-    if (p.hostId !== this.o.hostId || !p.normalStopped || !p.restartLocked) throw new RecoveryBlocked("control normal runtime must be stopped with a persistent restart lock");
-  }
-  async job(id) {
-    const j = (await this.o.host.snapshot(ControlRecoveryJobs, this.o.ctx))?.jobs[id];
-    if (!j) throw new RecoveryBlocked("unknown control recovery");
-    return plain(j);
-  }
-  async authority(job) {
-    const t = await verifyAuthorityTransition(this.o.external, job.proof, { algorithm: this.o.operator.algorithm, publicKey: this.o.operator.publicKey });
-    const fence = await this.o.verifyFence(job.sourceHostId);
-    if (fence.hostId !== job.sourceHostId || !fence.restartLocked) throw new RecoveryBlocked("old control host lost its restart fence");
-    return t;
-  }
-  async submit(request) {
-    await this.quiesced();
-    if (!request || ![request.recoveryId, request.controlSpaceId, request.snapshotRef, request.expectedAuthorityId, request.expectedDataIncarnation, request.targetHostId].every((v) => typeof v === "string" && v.length > 0 && v.length <= 256) || request.targetHostId !== this.o.hostId || !Number.isSafeInteger(request.expectedPrimaryEpoch) || request.expectedPrimaryEpoch < 1 || !Array.isArray(request.confirmedMembers) || request.confirmedMembers.length > 128 || !request.confirmedMembers.every((v) => typeof v === "string" && v.length > 0 && v.length <= 128) || new Set(request.confirmedMembers).size !== request.confirmedMembers.length || !request.confirmedMembers.includes(this.o.hostId)) throw new RecoveryBlocked("invalid control recovery identity or confirmed member set");
-    const argsHash = digest2(request), prior = (await this.o.host.snapshot(ControlRecoveryJobs, this.o.ctx))?.jobs[request.recoveryId];
-    if (prior) {
-      if (prior.argsHash !== argsHash) throw new RegisterConflict("control recovery id has different arguments");
-      return plain(prior);
-    }
-    const state = await snapshotSpace(this.o.host, request.controlSpaceId, this.o.ctx), source = await this.o.loadSnapshot(request.snapshotRef), boot = await this.o.external.get(`boot:${this.o.hostId}`), permit = boot?.value.spaces[request.controlSpaceId];
-    if (!state || state.incarnation !== request.expectedDataIncarnation || (state.primaryEpoch ?? 1) !== request.expectedPrimaryEpoch || source.spaceId !== request.controlSpaceId || !permit || permit.authorityId !== request.expectedAuthorityId || permit.dataIncarnation !== request.expectedDataIncarnation || (permit.primaryEpoch ?? 1) !== request.expectedPrimaryEpoch) throw new RecoveryBlocked("control snapshot, registry and target boot tuple must be provisioned consistently");
-    const authority = await this.o.external.get(`authority:${request.controlSpaceId}`);
-    if (!authority) throw new RecoveryBlocked("independent control authority missing");
-    const transitionKey = `control-transition:${request.controlSpaceId}`, known = await this.o.external.get(transitionKey);
-    if (known && known.value.argsHash !== argsHash && known.value.state !== "completed") throw new RegisterConflict("another control transition is active");
-    if (known?.value.argsHash !== argsHash) await this.o.external.compareAndSet(transitionKey, known?.version ?? null, { argsHash, sourceHostId: authority.value.hostId, state: "restoring" });
-    const transition = await this.o.external.get(transitionKey), sourceHostId = transition.value.sourceHostId;
-    const proof = await new RecoveryCoordinator(this.o.external, this.o.operator).reserve({ recoveryId: request.recoveryId, expectedAuthorityId: request.expectedAuthorityId, controlSpaceId: request.controlSpaceId, targetHostId: this.o.hostId, supervisorKey: this.o.supervisor.publicKey }, this.o.verifyFence);
-    const accessKey = `access:${proof.transition.newAuthorityId}`, access = await this.o.external.get(accessKey);
-    if (!access) await this.o.external.compareAndSet(accessKey, null, { authorityId: proof.transition.newAuthorityId, aOnlyAllowed: false, routerEpoch: 1, policyVersion: 1 });
-    else if (access.value.aOnlyAllowed !== false) throw new RecoveryBlocked("A-only access must be disabled for control recovery");
-    if (boot.value.state !== "quarantine") await this.o.external.compareAndSet(`boot:${this.o.hostId}`, boot.version, { ...boot.value, state: "quarantine", spaces: Object.fromEntries(Object.entries(boot.value.spaces).map(([id, p]) => [id, { ...p, state: "revoked" }])) });
-    const job = { request, argsHash, snapshotHash: snapshotHash(source), proof, sourceHostId, state: "importing" };
-    await this.o.host.commit(async (tx) => {
-      const s = await spaceDoc(tx, request.controlSpaceId, this.now());
-      if (!maintenanceStep(s, Buffer.byteLength(JSON.stringify(job)) + 512, this.now(), "control-recovery-journal")) throw new ResourceExhausted("control journal exceeds commit budget");
-      const jobs = await tx.doc(ControlRecoveryJobs);
-      if (jobs.jobs[request.recoveryId] && jobs.jobs[request.recoveryId].argsHash !== argsHash) throw new RegisterConflict("control journal identity changed");
-      jobs.jobs[request.recoveryId] ??= job;
-    }, this.o.ctx);
-    return this.job(request.recoveryId);
-  }
-  async advance(id) {
-    await this.quiesced();
-    const o = this.o, job = await this.job(id), t = await this.authority(job), r = job.request;
-    if (job.state === "completed") return job;
-    if (job.state === "importing") {
-      const source = await o.loadSnapshot(r.snapshotRef);
-      if (snapshotHash(source) !== job.snapshotHash) throw new RecoveryBlocked("control snapshot changed");
-      await o.host.commit(async (tx) => {
-        const s = await spaceDoc(tx, r.controlSpaceId, this.now());
-        if (!s.restore || s.restore.recoveryId !== id) {
-          const restoration = beginRestore(s, this.now(), { recoveryId: id, expectedDataIncarnation: r.expectedDataIncarnation, expectedPrimaryEpoch: r.expectedPrimaryEpoch, snapshotHash: job.snapshotHash, kind: "control" });
-          (await tx.doc(Registry)).spaces[r.controlSpaceId].incarnation = restoration.incarnation;
-        }
-        if (s.restore.stage !== "waiting") restoreBatch(s, this.now(), source);
-        if (s.restore.stage === "waiting") {
-          s.authorityCounters = { routerEpoch: 1, policyVersion: 1 };
-          (await tx.doc(ControlRecoveryJobs)).jobs[id].state = "members";
-        }
-      }, o.ctx);
-      return this.job(id);
-    }
-    const control2 = await snapshotSpace(o.host, r.controlSpaceId, o.ctx);
-    let boot = await o.external.get(`boot:${o.hostId}`);
-    const permit = boot.value.spaces[r.controlSpaceId];
-    if (job.state === "members" && permit.dataIncarnation !== control2.incarnation) {
-      if (boot.value.state !== "quarantine" || permit.state !== "revoked") throw new RecoveryBlocked("control target admission unexpectedly reopened");
-      await o.external.compareAndSet(`boot:${o.hostId}`, boot.version, { ...boot.value, spaces: { ...boot.value.spaces, [r.controlSpaceId]: { ...permit, dataIncarnation: control2.incarnation, primaryEpoch: 1 } } });
-    }
-    const installer = new MemberTransitionInstaller({ host: o.host, ctx: o.ctx, hostId: o.hostId, external: o.external, installed: o.installed, pinned: { algorithm: o.operator.algorithm, publicKey: o.operator.publicKey }, assertQuiesced: o.assertQuiesced, now: o.now });
-    if (job.state === "members") {
-      if (!(await installer.advance(job.proof)).completed) return job;
-      await o.host.commit(async (tx) => {
-        const s = await spaceDoc(tx, r.controlSpaceId, this.now());
-        if (!maintenanceStep(s, 512, this.now(), "control-members-installed")) throw new ResourceExhausted("control completion metadata exceeds budget");
-        (await tx.doc(ControlRecoveryJobs)).jobs[id].state = "waiting";
-      }, o.ctx);
-      return this.job(id);
-    }
-    if (this.now() < control2.restore.waitUntil) throw new RecoveryBlocked("old grant and lease validity has not expired");
-    const versions = /* @__PURE__ */ new Map();
-    for (const host of r.confirmedMembers) {
-      const ack = await o.external.get(`authority-ack:${id}:${host}`), memberBoot = await o.external.get(`boot:${host}`);
-      if (!ack || !memberBoot || ack.value.authorityId !== t.newAuthorityId || ack.value.hostId !== host || ack.value.recoveryId !== id || memberBoot.value.state !== "active" || digest2(memberBoot.value) !== ack.value.bootDigest) throw new RecoveryBlocked(`member ${host} has no matching durable installation ACK`);
-      versions.set(`boot:${host}`, memberBoot.version);
-      versions.set(`authority-ack:${id}:${host}`, ack.version);
-    }
-    const metadataPending = await o.host.commit(async (tx) => {
-      const s = await spaceDoc(tx, r.controlSpaceId, this.now());
-      const admins = list(s, this.now(), { type: "PeerKey", fields: { state: "active" } }).filter((e) => Array.isArray(e.fields.roles) && e.fields.roles.includes("admin") && Array.isArray(e.fields.scope) && e.fields.scope.some((v) => ["*", "control", r.controlSpaceId].includes(String(v))));
-      if (!admins.length) throw new RecoveryBlocked("first new admin must be authorized through the private operator endpoint");
-      for (const member of list(s, this.now(), { type: "Member" })) {
-        if (r.confirmedMembers.includes(String(member.fields.hostId)) && member.fields.state === "recoveryBlocked") {
-          const p = probe(s, this.now(), { id: member.id }, null, true);
-          if (p.status !== "found") throw new RecoveryBlocked("member metadata changed");
-          write(s, this.now(), { type: "Member", fields: { ...plain(member.fields), state: "active", authorityId: t.newAuthorityId } }, null, FOREVER);
-          for (const [k, v] of versions) if ((await o.external.get(k))?.version !== v) throw new RecoveryBlocked("member installation changed before metadata commit");
-          return true;
-        }
-      }
-      completeRestore(s, this.now(), id);
-      for (const [k, v] of versions) if ((await o.external.get(k))?.version !== v) throw new RecoveryBlocked("member installation changed before control release");
-      return false;
-    }, o.ctx);
-    if (metadataPending) return job;
-    const a = await o.external.get(`authority:${r.controlSpaceId}`);
-    if (a.value.authorityId !== t.newAuthorityId) throw new RecoveryBlocked("control successor changed");
-    if (a.value.state !== "active") await o.external.compareAndSet(`authority:${r.controlSpaceId}`, a.version, { ...a.value, state: "active" });
-    const transition = await o.external.get(`control-transition:${r.controlSpaceId}`);
-    if (transition.value.argsHash !== job.argsHash) throw new RecoveryBlocked("control transition changed");
-    if (transition.value.state !== "completed") await o.external.compareAndSet(`control-transition:${r.controlSpaceId}`, transition.version, { ...transition.value, state: "completed" });
-    await o.host.commit(async (tx) => {
-      const s = await spaceDoc(tx, r.controlSpaceId, this.now());
-      if (!maintenanceStep(s, 512, this.now(), "control-recovery-completed")) throw new ResourceExhausted("control completion metadata exceeds budget");
-      (await tx.doc(ControlRecoveryJobs)).jobs[id].state = "completed";
-    }, o.ctx);
-    return this.job(id);
-  }
-  async authorizeKey(id, key) {
-    await this.quiesced();
-    const job = await this.job(id);
-    await this.authority(job);
-    if (job.state !== "waiting" || ![key.peerId, key.publicKey].every((v) => typeof v === "string" && v.length > 0 && v.length <= 4096) || !["ed25519", "ecdsa-p256"].includes(key.algorithm) || !Array.isArray(key.roles) || !key.roles.length || !key.roles.every((v) => ["admin", "host", "member", "observer"].includes(v)) || !Array.isArray(key.scope) || !key.scope.length || !key.scope.every((v) => typeof v === "string" && v.length > 0 && v.length <= 256)) throw new RecoveryBlocked("invalid explicit key authorization or recovery stage");
-    const { createPublicKey: createPublicKey4 } = await import("node:crypto");
-    const raw = Buffer.from(key.publicKey, "base64"), publicKey = createPublicKey4({ key: key.algorithm === "ed25519" ? Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), raw]) : raw, format: "der", type: "spki" });
-    if (key.algorithm === "ecdsa-p256" && (publicKey.asymmetricKeyType !== "ec" || publicKey.asymmetricKeyDetails?.namedCurve !== "prime256v1") || key.algorithm === "ed25519" && publicKey.asymmetricKeyType !== "ed25519") throw new RecoveryBlocked("wrong authorized key algorithm");
-    const keyId = keyFingerprint(key.publicKey), record2 = { ...key, keyId, principal: `enrolled:${key.peerId}`, state: "active" };
-    await this.o.host.commit(async (tx) => {
-      const s = await spaceDoc(tx, job.request.controlSpaceId, this.now()), known = list(s, this.now(), { type: "PeerKey", fields: { peerId: key.peerId, keyId } })[0];
-      if (known) {
-        if (known.fields.state === "active" && canonicalJson(known.fields) === canonicalJson(record2)) return;
-        throw new RegisterConflict("old or conflicting key cannot be revived through recovery");
-      }
-      write(s, this.now(), { type: "PeerKey", fields: record2 }, null, FOREVER);
-    }, this.o.ctx);
-    return { keyId, peerId: key.peerId };
-  }
-  async status(id) {
-    return this.job(id);
-  }
-};
-function controlRecoveryHandler(controller, member) {
-  return async (call, role) => {
-    if (role !== "operator") throw new RecoveryBlocked("control authority recovery requires the pinned operator");
-    const a = call.args;
-    if (!a || typeof a !== "object" || Array.isArray(a)) throw new RecoveryBlocked("control recovery arguments must be an object");
-    if (call.method === "restoreControlSpace") return await controller.submit(a);
-    if (call.method === "advanceControlRestore") return await controller.advance(a.recoveryId);
-    if (call.method === "controlRestoreStatus") return await controller.status(a.recoveryId);
-    if (call.method === "authorizeRecoveryKey") return await controller.authorizeKey(a.recoveryId, a.key);
-    if (call.method === "installAuthority") return await member.advance(a.proof);
-    throw new RecoveryBlocked("unsupported control recovery method");
-  };
-}
-
-// src/recovery-only.ts
-import { basename as basename2, join as join2 } from "node:path";
-async function startRecoveryOnly(host, ctx, configFile, assertQuiesced) {
-  const c = JSON.parse(privateFile(configFile).toString());
-  if (!c.hostId || !c.path || !c.snapshotDirectory || !c.fenceTargets || !!c.registerTls === !!c.registerSshTarget) throw new RecoveryBlocked("incomplete recovery-only provisioning");
-  const status = await assertQuiesced();
-  if (status.hostId !== c.hostId || !status.normalStopped || !status.restartLocked) throw new RecoveryBlocked("exclusive stopped and restart-locked normal runtime is required");
-  const operator = loadFileSigner(c.operatorKeyFile), supervisor = loadFileSigner(c.supervisorKeyFile), external = c.registerTls ? new TlsRecoveryRegister(c.registerTls) : new SshRecoveryRegister(c.registerSshTarget, 1e4, { operator: true }), installed = new SqliteRecoveryRegister(c.installedRegisterFile);
-  const options = { host, ctx, hostId: c.hostId, external, installed, operator, supervisor, assertQuiesced, loadSnapshot: async (ref) => {
-    if (!ref || ref !== basename2(ref) || ref.length > 256 || !/^[A-Za-z0-9_.-]+\.json$/.test(ref)) throw new RecoveryBlocked("invalid provisioned snapshot reference");
-    return JSON.parse(privateFile(join2(c.snapshotDirectory, ref)).toString());
-  }, verifyFence: (id) => verifySshFence(external, id, c.fenceTargets) };
-  try {
-    const controller = new ControlRecoveryController(options), member = new MemberTransitionInstaller({ ...options, pinned: { algorithm: operator.algorithm, publicKey: operator.publicKey } });
-    const service = await serveRecovery({ path: c.path, hostId: c.hostId, operator: { algorithm: operator.algorithm, publicKey: operator.publicKey }, handle: controlRecoveryHandler(controller, member) });
-    return { close: async () => {
-      try {
-        await service.close();
-      } finally {
-        external.close();
-        installed.close();
-      }
-    } };
-  } catch (e) {
-    external.close();
-    installed.close();
-    throw e;
-  }
-}
-async function startMemberRecoveryOnly(host, ctx, configFile, assertQuiesced) {
-  const c = JSON.parse(privateFile(configFile).toString());
-  if (!c.hostId || !c.path || !c.installedRegisterFile || !c.operator?.publicKey || !["ed25519", "ecdsa-p256"].includes(c.operator.algorithm) || !c.registerTls) throw new RecoveryBlocked("incomplete member recovery provisioning");
-  const status = await assertQuiesced();
-  if (status.hostId !== c.hostId || !status.normalStopped || !status.restartLocked) throw new RecoveryBlocked("exclusive stopped and restart-locked member runtime is required");
-  const external = new TlsRecoveryRegister(c.registerTls), installed = new SqliteRecoveryRegister(c.installedRegisterFile);
-  try {
-    const member = new MemberTransitionInstaller({ host, ctx, hostId: c.hostId, external, installed, pinned: c.operator, assertQuiesced });
-    const service = await serveRecovery({ path: c.path, hostId: c.hostId, operator: c.operator, handle: async (call, role) => {
-      if (role !== "operator" || call.method !== "installAuthority" || !call.args || typeof call.args !== "object" || Array.isArray(call.args)) throw new RecoveryBlocked("member recovery permits only signed authority installation");
-      return await member.advance(call.args.proof);
-    } });
-    return { close: async () => {
-      try {
-        await service.close();
-      } finally {
-        external.close();
-        installed.close();
-      }
-    } };
-  } catch (e) {
-    external.close();
-    installed.close();
-    throw e;
-  }
-}
-
-// src/router.ts
-init_canonical();
-init_claims();
-import { createHash as createHash9 } from "node:crypto";
-import { defineDocFamily as defineDocFamily2 } from "@earendil-works/pi-durable";
-var DEFAULT_ROUTER_LIMITS = Object.freeze({
-  maxCommands: 128,
-  maxSteps: 16,
-  maxCommandBytes: 128 * 1024,
-  maxIndexBytes: 32 * 1024,
-  maxCommitBytes: 192 * 1024,
-  maxJournalBytes: 4 * 1024 * 1024,
-  defaultResultBytes: 16 * 1024
-});
-var RouterJournal = defineDocFamily2({
-  kind: "pi-spaces.router-journal",
-  version: 1,
-  scope: "session",
-  family: true,
-  initial: () => ({ authorityId: null, mode: "recovering", limits: null, refs: {}, reservedBytes: 0 })
-});
-var RouterCommands = defineDocFamily2({
-  kind: "pi-spaces.router-command",
-  version: 1,
-  scope: "session",
-  family: true,
-  initial: () => ({ command: null })
-});
-var RouterBlocked = class extends Error {
-};
-var RouterConflict = class extends Error {
-};
-var RouterBudgetExceeded = class extends Error {
-};
-var copy = (v) => JSON.parse(JSON.stringify(v));
-var bytes2 = (v) => Buffer.byteLength(JSON.stringify(v));
-var hash = (v) => createHash9("sha256").update(canonicalJson(v)).digest("hex");
-var ident = (id) => {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id) || ["constructor", "prototype", "__proto__"].includes(id))
-    throw new TypeError("invalid router identifier");
-};
-var boundedEvidence = (text2) => {
-  let result = "";
-  for (const char of text2) {
-    if (Buffer.byteLength(result + char) > 512) break;
-    result += char;
-  }
-  return result;
-};
-var terminal = (s) => ["completed", "failed", "needsReview"].includes(s);
-var commandKey = (router, id) => hash([router, id]);
-var specOf = (c) => ({
-  id: c.id,
-  area: c.area,
-  blocksArea: c.blocksArea,
-  steps: c.steps.map(
-    ({ target, principal, generation, method, args, resultBudgetBytes }) => ({ target, principal, generation, method, args, resultBudgetBytes })
-  )
-});
-var RouterController = class {
-  o;
-  limits;
-  ready = false;
-  tail = Promise.resolve();
-  constructor(o) {
-    ident(o.routerId);
-    ident(o.authorityId);
-    if (o.target.protocol !== "pi-spaces-rpc-v1" || typeof o.assertAuthority !== "function")
-      throw new TypeError("idempotent target and authority guard required");
-    this.o = o;
-    this.limits = { ...DEFAULT_ROUTER_LIMITS, ...o.limits };
-    for (const v of Object.values(this.limits))
-      if (!Number.isSafeInteger(v) || v <= 0) throw new TypeError("invalid router budget");
-  }
-  serial(f) {
-    const p = this.tail.then(f);
-    this.tail = p.catch(() => {
-    });
-    return p;
-  }
-  async change(f) {
-    await this.o.assertAuthority();
-    try {
-      return await this.o.host.commit(async (tx) => {
-        const i = await tx.doc(RouterJournal, this.o.routerId, null);
-        if (i.authorityId !== null && i.authorityId !== this.o.authorityId)
-          throw new RouterBlocked(
-            "journal authority changed; explicit restore reconciliation required"
-          );
-        i.authorityId = this.o.authorityId;
-        if (i.limits && hash(i.limits) !== hash(this.limits))
-          throw new RouterBlocked("persisted budget configuration differs");
-        i.limits = this.limits;
-        const r = await f(i, tx);
-        if (bytes2(i) > this.limits.maxIndexBytes)
-          throw new RouterBudgetExceeded("router index exceeds budget");
-        await this.o.assertAuthority();
-        return r;
-      }, this.o.ctx);
-    } catch (e) {
-      if (!(e instanceof RouterConflict) && !(e instanceof RouterBudgetExceeded))
-        this.ready = false;
-      throw e;
-    }
-  }
-  async get(id) {
-    ident(id);
-    await this.o.assertAuthority();
-    const d = await this.o.host.snapshot(RouterCommands, commandKey(this.o.routerId, id), this.o.ctx);
-    return d?.command ? copy(d.command) : void 0;
-  }
-  normalize(s) {
-    ident(s.id);
-    ident(s.area);
-    if (!Array.isArray(s.steps) || s.steps.length < 1 || s.steps.length > this.limits.maxSteps)
-      throw new TypeError("invalid command steps");
-    const steps = s.steps.map((x, n) => {
-      for (const k of [
-        x.target.hostId,
-        x.target.spaceId,
-        x.target.authorityId,
-        x.target.dataIncarnation,
-        x.principal.peerId,
-        x.generation
-      ])
-        if (typeof k !== "string" || !k || k.length > 256)
-          throw new TypeError("incomplete target/request binding");
-      if (x.principal.agentId !== void 0 && (!x.principal.agentId || x.principal.agentId.length > 128))
-        throw new TypeError("invalid agent binding");
-      if (!Number.isSafeInteger(x.target.primaryEpoch) || x.target.primaryEpoch < 1 || x.target.authorityId !== this.o.authorityId)
-        throw new RouterBlocked("target authority/epoch mismatch");
-      if (!["write", "read", "take", "txn", "lease", "wait", "notify", "cancelOperation"].includes(x.method))
-        throw new TypeError("non-idempotent command operation");
-      canonicalJson(x.args);
-      const resultBudgetBytes = x.resultBudgetBytes ?? this.limits.defaultResultBytes;
-      if (!Number.isSafeInteger(resultBudgetBytes) || resultBudgetBytes < 64)
-        throw new TypeError("invalid result reservation");
-      return {
-        ...copy(x),
-        resultBudgetBytes,
-        requestId: "router-" + hash([this.o.routerId, s.id, n]),
-        argHash: argHash(x.method, x.args),
-        state: "prepared"
-      };
-    });
-    const c = {
-      id: s.id,
-      area: s.area,
-      blocksArea: !!s.blocksArea,
-      hash: "",
-      state: "accepted",
-      steps,
-      reservedBytes: 0,
-      reviews: []
-    };
-    c.hash = hash(specOf(c));
-    c.reservedBytes = bytes2(c) + steps.reduce((n, x) => n + x.resultBudgetBytes + 512, 0) + 8192;
-    if (c.reservedBytes > this.limits.maxCommandBytes || c.reservedBytes + this.limits.maxIndexBytes + 4096 > this.limits.maxCommitBytes)
-      throw new RouterBudgetExceeded(
-        "command cannot reserve bounded results and commit overhead"
-      );
-    return c;
-  }
-  async submit(spec) {
-    const c = this.normalize(spec);
-    return this.serial(async () => {
-      if (!this.ready) throw new RouterBlocked("router is recovering");
-      return this.change(async (i, tx) => {
-        const d = await tx.doc(RouterCommands, commandKey(this.o.routerId, c.id), null);
-        if (d.command) {
-          if (d.command.hash !== c.hash)
-            throw new RouterConflict("command ID already binds different arguments");
-          return copy(d.command);
-        }
-        if (Object.values(i.refs).some(
-          (r) => r.area === c.area && r.blocksArea && !r.released && r.state !== "completed" && r.state !== "failed"
-        ))
-          throw new RouterBlocked("routing area has unresolved policy/membership work");
-        if (Object.keys(i.refs).length >= this.limits.maxCommands || i.reservedBytes + c.reservedBytes + this.limits.maxIndexBytes > this.limits.maxJournalBytes)
-          throw new RouterBudgetExceeded(
-            "journal full; historical IDs must not be evicted for reuse"
-          );
-        d.command = c;
-        i.refs[c.id] = {
-          hash: c.hash,
-          state: c.state,
-          area: c.area,
-          blocksArea: c.blocksArea,
-          released: false,
-          reservedBytes: c.reservedBytes
-        };
-        i.reservedBytes += c.reservedBytes;
-        return copy(c);
-      });
-    });
-  }
-  /** Ack only AFTER the mailbox command has been durably deduplicated into the journal. */
-  async ingest(spec, ack) {
-    const c = await this.submit(spec);
-    await ack();
-    return c;
-  }
-  async update(id, f) {
-    return this.change(async (i, tx) => {
-      const d = await tx.doc(RouterCommands, commandKey(this.o.routerId, id), null);
-      if (!d.command || !i.refs[id]) throw new RouterBlocked("missing command history");
-      f(d.command);
-      if (bytes2(d.command) > d.command.reservedBytes)
-        throw new RouterBudgetExceeded("reserved command bytes exceeded");
-      i.refs[id].state = d.command.state;
-      return copy(d.command);
-    });
-  }
-  verify(c) {
-    if (c.hash !== hash(specOf(c))) throw new RouterBlocked("command binding hash corrupted");
-    for (const [n, s] of c.steps.entries())
-      if (s.argHash !== argHash(s.method, s.args) || s.requestId !== "router-" + hash([this.o.routerId, c.id, n]))
-        throw new RouterBlocked("subrequest binding corrupted");
-  }
-  async applyReceipt(id, n, r) {
-    return this.update(id, (c) => {
-      const s = c.steps[n];
-      if (hash(r.target) !== hash(s.target) || hash(r.principal) !== hash(s.principal) || r.method !== s.method || r.generation !== s.generation || r.requestId !== s.requestId || r.argHash !== s.argHash) {
-        s.state = "needsReview";
-        s.evidence = "receipt binding mismatch";
-        c.state = "needsReview";
-        return;
-      }
-      if (!["done", "pending", "failed", "cancelled", "notAdmitted", "needsReview"].includes(
-        r.outcome
-      )) {
-        s.state = "needsReview";
-        s.evidence = "invalid claim outcome";
-        c.state = "needsReview";
-        return;
-      }
-      if (bytes2(r.result ?? null) > s.resultBudgetBytes) {
-        s.state = "needsReview";
-        s.evidence = "result exceeds reservation; receipt hash " + hash(r);
-        c.state = "needsReview";
-        return;
-      }
-      s.evidence = boundedEvidence(r.evidence ?? r.outcome);
-      if (r.outcome === "done") {
-        s.state = "done";
-        s.result = r.result ?? null;
-      } else if (r.outcome === "failed" || r.outcome === "cancelled") {
-        s.state = "failed";
-        c.state = "failed";
-      } else if (r.outcome === "needsReview") {
-        s.state = "needsReview";
-        c.state = "needsReview";
-      } else
-        s.state = r.outcome === "notAdmitted" ? "prepared" : "pending";
-      if (c.steps.every((x) => x.state === "done")) c.state = "completed";
-    });
-  }
-  async resolve(c, n) {
-    let receipt;
-    await this.o.assertAuthority();
-    try {
-      receipt = await this.o.target.resolve(copy(c.steps[n]));
-    } catch {
-      return this.update(c.id, (d) => {
-        d.steps[n].state = "unknown";
-        d.steps[n].evidence = "resolution transport unavailable";
-      });
-    }
-    return this.applyReceipt(c.id, n, receipt);
-  }
-  async recover() {
-    return this.serial(async () => {
-      this.ready = false;
-      const refs = await this.change(async (i) => {
-        i.mode = "recovering";
-        return copy(i.refs);
-      });
-      let sum = 0;
-      for (const [id, r] of Object.entries(refs)) {
-        const c = await this.get(id);
-        if (!c || c.hash !== r.hash || c.reservedBytes !== r.reservedBytes || c.area !== r.area || c.blocksArea !== r.blocksArea || c.state !== r.state)
-          throw new RouterBlocked("incomplete journal reconstruction");
-        this.verify(c);
-        sum += c.reservedBytes;
-        if (!terminal(c.state)) {
-          const n = c.steps.findIndex((s) => s.state !== "done");
-          if (n >= 0 && c.steps[n].state !== "prepared") await this.resolve(c, n);
-        }
-      }
-      await this.change(async (i) => {
-        if (sum !== i.reservedBytes || sum + this.limits.maxIndexBytes > this.limits.maxJournalBytes)
-          throw new RouterBlocked("reservation reconstruction mismatch");
-        i.mode = "ready";
-      });
-      this.ready = true;
-    });
-  }
-  async advance(id) {
-    ident(id);
-    return this.serial(async () => {
-      if (!this.ready) throw new RouterBlocked("router is recovering");
-      let c = await this.get(id);
-      if (!c) throw new RouterBlocked("unknown command");
-      this.verify(c);
-      while (!terminal(c.state)) {
-        const n = c.steps.findIndex((s) => s.state !== "done");
-        if (n < 0) throw new RouterBlocked("inconsistent command state");
-        if (c.steps[n].state !== "prepared") {
-          c = await this.resolve(c, n);
-          if (terminal(c.state)) break;
-          if (c.steps[n].state !== "prepared") return c;
-        }
-        c = await this.update(id, (d) => {
-          d.state = "applying";
-          d.steps[n].state = "inflight";
-        });
-        try {
-          await this.o.checkpoint?.("beforeSend", copy(c));
-        } catch (e) {
-          this.ready = false;
-          throw e;
-        }
-        await this.o.assertAuthority();
-        let receipt;
-        try {
-          receipt = await this.o.target.invoke(copy(c.steps[n]));
-        } catch {
-          return this.update(id, (d) => {
-            d.steps[n].state = "unknown";
-            d.steps[n].evidence = "effect outcome unknown; resolve same request";
-          });
-        }
-        try {
-          await this.o.checkpoint?.("afterReply", copy(c));
-        } catch (e) {
-          this.ready = false;
-          throw e;
-        }
-        c = await this.applyReceipt(id, n, receipt);
-        if (c.steps[n].state !== "done") return c;
-      }
-      return c;
-    });
-  }
-  /** Data-restore step 5: persist review barriers without replay or changing retained results. */
-  async reconcileDataRestore(o) {
-    ident(o.recoveryId);
-    return this.serial(async () => {
-      if (!this.ready) throw new RouterBlocked("router is recovering");
-      const i = await this.o.host.snapshot(RouterJournal, this.o.routerId, this.o.ctx);
-      const affected = [];
-      for (const id of Object.keys(i?.refs ?? {})) {
-        const c = await this.get(id);
-        if (!c) throw new RouterBlocked("missing restore journal history");
-        const matches2 = c.steps.some(
-          (s) => s.target.hostId === o.hostId && s.target.spaceId === o.spaceId && s.target.dataIncarnation === o.oldIncarnation
-        );
-        if (!matches2) continue;
-        await this.update(id, (d) => {
-          for (const s of d.steps)
-            if (s.target.hostId === o.hostId && s.target.spaceId === o.spaceId && s.target.dataIncarnation === o.oldIncarnation) {
-              s.state = "needsReview";
-              s.evidence = "data restore " + o.recoveryId + ": historical outcome retained; recovery views require review";
-            }
-          d.state = "needsReview";
-        });
-        affected.push(id);
-      }
-      return affected;
-    });
-  }
-  async review(id, admin, note, releaseArea, authorize) {
-    ident(id);
-    ident(admin);
-    if (!note || Buffer.byteLength(note) > 1024)
-      throw new TypeError("bounded review note required");
-    return this.serial(async () => {
-      if (!this.ready) throw new RouterBlocked("router is recovering");
-      await authorize(admin);
-      return this.change(async (i, tx) => {
-        const d = await tx.doc(RouterCommands, commandKey(this.o.routerId, id), null);
-        if (d.command?.state !== "needsReview" || !i.refs[id] || d.command.reviews.length >= 4)
-          throw new RouterBlocked("review requires retained needsReview history");
-        d.command.reviews.push({ at: (this.o.now ?? Date.now)(), admin, note, releaseArea });
-        if (bytes2(d.command) > d.command.reservedBytes)
-          throw new RouterBudgetExceeded("review exceeds reservation");
-        if (releaseArea) i.refs[id].released = true;
-        await authorize(admin);
-        return copy(d.command);
-      });
-    });
-  }
-};
-
 // src/index.ts
 var MAX_WAIT_MS = 6e4;
-var Claim = defineDoc6({
+var Claim = defineDoc3({
   kind: "pi-spaces.claim",
   version: 1,
   scope: "task",
@@ -6466,42 +3884,34 @@ async function startDelivery(harness, ctx, o = {}) {
     await watch?.stop();
   };
 }
+async function startConfiguredFederation(harness, ctx, config) {
+  return null;
+}
 export {
   ANY,
   AUTH_PROTOCOL,
-  BootBlocked,
   BootstrapClosed,
   CHALLENGE_TTL_MS,
-  COMMAND_KINDS,
   CONTROL_SPACE,
   COUNTERS,
   CompletionViolation,
-  ControlAccess,
-  ControlAckService,
-  ControlRecoveryController,
-  ControlRecoveryJobs,
   DEFAULT_ALIAS,
   DEFAULT_GROUP_ROLES,
   DEFAULT_LIMITS,
   DEFAULT_POLICY,
   DEFAULT_PRIVILEGED,
-  DEFAULT_ROUTER_LIMITS,
   DirectoryDown,
   ENROLLABLE_ROLES,
   ENROLL_TTL_MS,
   EnrollmentService,
   FOREVER,
   GateIdentity,
-  GrantAuthority,
-  GrantDenied,
-  GrantVerifier,
   IllegalArgumentError,
   IncarnationChanged,
   InvalidAck,
   LimitError,
   METHODS,
   MailboxEpochMismatch,
-  MemberTransitionInstaller,
   MemoryKeyDirectory,
   Meter,
   NO_WAIT,
@@ -6513,34 +3923,16 @@ export {
   PermissionError,
   PiSpaces,
   ProvingService,
-  RESULT_RETENTION_MS,
-  RecoveryBlocked,
-  RecoveryClient,
-  RecoveryController,
-  RecoveryCoordinator,
-  RecoveryJobs,
-  RecoveryReceipts,
-  RegisterConflict,
   Registry,
   RemoteError,
   RemoteSpace,
   RequestConflict,
   RequestExpired,
   ResultExpired,
-  RotationService,
-  RouterBlocked,
-  RouterBudgetExceeded,
-  RouterConflict,
-  RouterController,
-  SocketRecoveryRegister,
   Space,
   SpaceKeyDirectory,
   SpaceService,
-  SqliteRecoveryRegister,
-  SshRecoveryRegister,
   StaticIdentity,
-  Supervisor,
-  TlsRecoveryRegister,
   TransactionError,
   UNPAIRED_ROLE,
   UnknownLeaseError,
@@ -6548,18 +3940,13 @@ export {
   UnsupportedOperation,
   WAKE_DEBOUNCE_MS,
   argHash,
-  beginRestore,
   bootstrapEnroll,
   canonicalJson,
   claims_exports as claims,
-  completeRestore,
-  controlRecoveryHandler,
   core_exports as core,
   createEnroll,
-  createRotationChallenge,
   createSpace,
   createSpaces,
-  dataRecoveryHandler,
   deliverEvents,
   enrollQr,
   formatStatus,
@@ -6567,48 +3954,27 @@ export {
   generateKey,
   hashToken,
   inProcessTransport,
-  installAuthorityTransition,
-  installBootGuard,
   keyFingerprint,
   listSpaces,
-  loadFileSigner,
   meter,
   newEnrollToken,
   piServerTransport,
   principalKey,
-  privateFile,
-  provisionFileSigner,
-  recoveryBytes,
-  releaseRestored,
   resolveSpaceId,
-  restoreBatch,
   revokePeerKey,
   rolesOf,
-  rotateKeyIn,
-  rotationBytes,
-  serveRecovery,
-  serveRegister,
   serveSpace,
-  serveTlsRegister,
   signedBytes,
-  snapshotHash,
   snapshotSpace,
   socketTransport,
   spaceDoc,
   spaces,
-  sshRecoveryTransport,
   startConfiguredFederation,
-  startConfiguredRecovery,
   startDelivery,
-  startFederationHost,
   startGate,
   startMaintenance,
-  startMemberRecoveryOnly,
-  startRecoveryOnly,
   startService,
-  verifyDetached,
   verifySignature,
-  verifySshFence,
   watchLive,
   withSpaceService
 };
