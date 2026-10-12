@@ -5975,13 +5975,14 @@ async function startFederationHost(host, ctx, o) {
           if (c?.method === "capabilityHeartbeat") {
             try {
               const id = await identity.authenticate(conn), proof2 = conn.state?.proof, key = proof2 && conn.peerId ? await o.keys.find(conn.peerId, proof2.keyId) : null;
-              if (!id || !proof2 || !key || key.state !== "active" || !id.roles.includes("host") || !o.control.directory) throw Error("capability requires a currently proven host");
+              if (!id || !proof2 || !key || key.state !== "active" || !key.roles.includes("host") || !id.roles.includes("host") || !o.control.directory) throw Error("capability requires a currently proven host");
               const auth = o.verifier.check(c.frame?.grant, id, { method: "write", space: "control" }, conn);
               auth.check();
-              const lease = await o.control.directory.heartbeat(c.args?.report, { peerId: id.principal.peerId, roles: id.roles, check: async () => {
+              if (!auth.roles.includes("host")) throw Error("capability grant does not authorize host publication");
+              const lease = await o.control.directory.heartbeat(c.args?.report, { peerId: id.principal.peerId, roles: auth.roles, check: async () => {
                 auth.check();
                 const current = await o.keys.find(id.principal.peerId, proof2.keyId);
-                if (!current || current.state !== "active") throw Error("host key no longer active");
+                if (!current || current.state !== "active" || !current.roles.includes("host")) throw Error("host key no longer authorized");
               } });
               return { ok: true, result: lease };
             } catch (e) {
