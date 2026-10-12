@@ -7437,6 +7437,9 @@ var RouterController = class {
     for (const v of Object.values(this.limits))
       if (!Number.isSafeInteger(v) || v <= 0) throw new TypeError("invalid router budget");
   }
+  get journalId() {
+    return this.o.routerId;
+  }
   serial(f) {
     const p = this.tail.then(f);
     this.tail = p.catch(() => {
@@ -7795,8 +7798,37 @@ var RouterController = class {
 
 // src/federated-space.ts
 init_canonical();
-import { defineDocFamily as defineDocFamily7 } from "@earendil-works/pi-durable";
+import { defineDocFamily as defineDocFamily8 } from "@earendil-works/pi-durable";
+import { createHash as createHash13 } from "node:crypto";
+
+// src/federation-journals.ts
+init_canonical();
 import { createHash as createHash12 } from "node:crypto";
+import { defineDocFamily as defineDocFamily7 } from "@earendil-works/pi-durable";
+var FederationJournalLayout = defineDocFamily7({
+  kind: "pi-spaces.federation-journal-layout",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: () => ({ partitions: null, routerIds: null })
+});
+function validateJournalPartitions(n) {
+  if (!Number.isSafeInteger(n) || n < 1 || n > 1024) throw new TypeError("journalPartitions must be 1..1024");
+}
+function operationPartition(id, n) {
+  validateJournalPartitions(n);
+  return parseInt(createHash12("sha256").update(canonicalJson(id)).digest("hex").slice(0, 8), 16) % n;
+}
+function parentJournalKey(id, n, partition) {
+  validateJournalPartitions(n);
+  if (!Number.isInteger(partition) || partition < 0 || partition >= n) throw new TypeError("invalid journal partition");
+  return n === 1 ? id : createHash12("sha256").update(canonicalJson([id, "parent-partition-v1", partition])).digest("hex");
+}
+function partitionRouterId(id, partition) {
+  return "partition-" + createHash12("sha256").update(canonicalJson([id, "router-partition-v1", partition])).digest("hex");
+}
+
+// src/federated-space.ts
 init_routing_semantics();
 var FederationUnavailable = class extends Error {
 };
@@ -7807,7 +7839,7 @@ var FederationPending = class extends Error {
     this.requestId = id;
   }
 };
-var FederationOperations = defineDocFamily7({
+var FederationOperations = defineDocFamily8({
   kind: "pi-spaces.federation-operations",
   version: 1,
   scope: "session",
@@ -7815,13 +7847,48 @@ var FederationOperations = defineDocFamily7({
   initial: () => ({ operations: {}, reservedBytes: 0 })
 });
 var copy5 = (v) => structuredClone(v);
-var hash4 = (v) => createHash12("sha256").update(canonicalJson(v)).digest("hex");
+var hash4 = (v) => createHash13("sha256").update(canonicalJson(v)).digest("hex");
 var child = (id, label) => "f-" + hash4([id, label]);
 var FederatedSpace = class {
   o;
   tail = Promise.resolve();
+  partitions;
+  routers;
   constructor(o) {
     this.o = o;
+    this.partitions = o.journalPartitions ?? 1;
+    validateJournalPartitions(this.partitions);
+    this.routers = [...o.partitionRouters ?? [o.router]];
+    if (this.routers.length !== this.partitions || new Set(this.routers.map((r) => r.journalId)).size !== this.partitions || this.partitions > 1 && this.routers.some((r) => r.journalId === o.router.journalId))
+      throw new TypeError("distinct fixed partition routers required");
+  }
+  router(id) {
+    return this.routers[operationPartition(id, this.partitions)];
+  }
+  async layoutIn(tx) {
+    const layout = await tx.doc(FederationJournalLayout, this.o.id, null), ids = this.routers.map((r) => r.journalId);
+    if (layout.partitions === null) {
+      const legacy = await tx.doc(FederationOperations, this.o.id, null);
+      if (this.partitions > 1 && Object.keys(legacy.operations).length)
+        throw new RoutingConflict("legacy history requires explicit journal migration");
+      layout.partitions = this.partitions;
+      layout.routerIds = ids;
+    } else if (layout.partitions !== this.partitions || hash4(layout.routerIds) !== hash4(ids))
+      throw new RoutingConflict("persisted journal topology differs; explicit migration required");
+  }
+  async initializeJournals() {
+    await this.o.assertAuthority();
+    await this.o.host.commit(async (tx) => {
+      await this.layoutIn(tx);
+      await this.o.assertAuthority();
+    }, this.o.ctx);
+  }
+  async ensureLayout(allowReconciliation = false) {
+    const layout = await this.o.host.snapshot(FederationJournalLayout, this.o.id, this.o.ctx);
+    if (!layout || layout.partitions === null) return this.initializeJournals();
+    if (layout.reconciliation && !allowReconciliation) throw new FederationUnavailable("journal restore reconciliation is incomplete");
+    if (layout.partitions !== this.partitions || hash4(layout.routerIds) !== hash4(this.routers.map((r) => r.journalId)))
+      throw new RoutingConflict("persisted journal topology differs; explicit migration required");
   }
   serial(fn) {
     const r = this.tail.then(fn);
@@ -7829,37 +7896,77 @@ var FederatedSpace = class {
     });
     return r;
   }
-  async change(f) {
+  async change(id, f, allowReconciliation = false) {
     await this.o.assertAuthority();
     return this.o.host.commit(async (tx) => {
       await this.o.assertAuthority();
-      const d = await tx.doc(FederationOperations, this.o.id, null);
+      await this.layoutIn(tx);
+      if ((await tx.doc(FederationJournalLayout, this.o.id, null)).reconciliation && !allowReconciliation) throw new FederationUnavailable("journal restore reconciliation is incomplete");
+      const partition = typeof id === "number" ? id : operationPartition(id, this.partitions);
+      const d = await tx.doc(FederationOperations, parentJournalKey(this.o.id, this.partitions, partition), null);
+      this.verifyParentJournal(d, partition);
       const r = await f(d, tx);
+      this.verifyParentJournal(d, partition);
       if (Buffer.byteLength(JSON.stringify(d)) > d.reservedBytes + 4096)
         throw new RoutingConflict("composite journal exceeded reserved bytes");
+      await this.o.assertAuthority();
       return r;
     }, this.o.ctx);
+  }
+  verifyParentJournal(d, partition) {
+    const entries = Object.entries(d.operations);
+    if (entries.length > 16 || d.reservedBytes !== entries.length * 128 * 1024 || entries.some(([id, op]) => op.id !== id || operationPartition(id, this.partitions) !== partition || Buffer.byteLength(JSON.stringify(op)) > 128 * 1024))
+      throw new RoutingConflict("incomplete or corrupt parent journal reconstruction");
   }
   /** Reconcile parents too, including completed and not-yet-sent children. No replay. */
   async reconcileDataRestore(o) {
     return this.serial(async () => {
-      const children = new Set(await this.o.router.reconcileDataRestore(o));
+      for (const [key, value] of Object.entries(o)) if (!["hostId", "spaceId", "oldIncarnation", "recoveryId"].includes(key) || typeof value !== "string" || !value || value.length > 256)
+        throw new RoutingConflict("invalid restore journal binding");
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(o.recoveryId) || ["constructor", "prototype", "__proto__"].includes(o.recoveryId)) throw new RoutingConflict("invalid recovery ID");
+      await this.ensureLayout(true);
+      await this.o.host.commit(async (tx) => {
+        await this.o.assertAuthority();
+        await this.layoutIn(tx);
+        const layout = await tx.doc(FederationJournalLayout, this.o.id, null);
+        if (layout.reconciliation && hash4(layout.reconciliation) !== hash4(o))
+          throw new RoutingConflict("another journal restore reconciliation is incomplete");
+        layout.reconciliation = copy5(o);
+        await this.o.assertAuthority();
+      }, this.o.ctx);
+      const children = /* @__PURE__ */ new Set();
+      for (const router of /* @__PURE__ */ new Set([this.o.router, ...this.routers]))
+        for (const id of await router.reconcileDataRestore(o)) children.add(id);
       const st = await this.o.state();
       const affectedMembers = new Set(Object.values(st.members).filter((m) => m.target.hostId === o.hostId && m.target.spaceId === o.spaceId && m.target.dataIncarnation === o.oldIncarnation).map((m) => m.id));
-      return this.change((d) => {
-        const affected = [];
-        for (const op of Object.values(d.operations)) {
-          if (!op.targets?.some((t) => t.hostId === o.hostId && t.spaceId === o.spaceId && t.dataIncarnation === o.oldIncarnation) && !op.members.some((m) => affectedMembers.has(m)) && !Object.values(op.children).some((c) => children.has(c))) continue;
-          op.phase = "needsReview";
-          affected.push(op.id);
-        }
-        return affected;
-      });
+      const affected = [];
+      for (let partition = 0; partition < this.partitions; partition++)
+        affected.push(...await this.change(partition, (d) => {
+          const ids = [];
+          for (const op of Object.values(d.operations)) {
+            if (!op.targets?.some((t) => t.hostId === o.hostId && t.spaceId === o.spaceId && t.dataIncarnation === o.oldIncarnation) && !op.members.some((m) => affectedMembers.has(m)) && !Object.values(op.children).some((c) => children.has(c))) continue;
+            op.phase = "needsReview";
+            ids.push(op.id);
+          }
+          return ids;
+        }, true));
+      await this.o.host.commit(async (tx) => {
+        await this.o.assertAuthority();
+        await this.layoutIn(tx);
+        const layout = await tx.doc(FederationJournalLayout, this.o.id, null);
+        if (hash4(layout.reconciliation) !== hash4(o)) throw new RoutingConflict("restore reconciliation changed");
+        delete layout.reconciliation;
+        await this.o.assertAuthority();
+      }, this.o.ctx);
+      return affected;
     });
   }
   async get(id) {
     await this.o.assertAuthority();
-    return copy5((await this.o.host.snapshot(FederationOperations, this.o.id, this.o.ctx))?.operations[id]);
+    await this.ensureLayout();
+    const partition = operationPartition(id, this.partitions), d = await this.o.host.snapshot(FederationOperations, parentJournalKey(this.o.id, this.partitions, partition), this.o.ctx);
+    if (d) this.verifyParentJournal(d, partition);
+    return copy5(d?.operations[id]);
   }
   async prepare(kind, args, q) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(q.id) || ["constructor", "prototype", "__proto__"].includes(q.id))
@@ -7902,7 +8009,7 @@ var FederatedSpace = class {
       candidates: {},
       ...q.txn ? { userTxn: copy5(q.txn) } : {}
     };
-    await this.change(async (d, tx) => {
+    await this.change(q.id, async (d, tx) => {
       if (this.o.controlSpaceId) {
         const current = await tx.doc(FederationRouting, this.o.controlSpaceId, null), jobs = await tx.doc(MembershipJournal, this.o.controlSpaceId, null);
         if (current.policy?.policyVersion !== op.policyVersion || ids.some((id) => !current.members[id] || !["active", "draining"].includes(current.members[id].state)) || Object.values(jobs.operations).some((job) => !["completed", "failed"].includes(job.phase) && ids.includes(job.member.id)))
@@ -7920,14 +8027,15 @@ var FederatedSpace = class {
   async save(op) {
     if (Buffer.byteLength(JSON.stringify(op)) > 128 * 1024)
       throw new RoutingConflict("operation result/event budget exceeded");
-    await this.change((d) => {
+    await this.change(op.id, (d) => {
+      if (d.operations[op.id]?.hash !== op.hash) throw new RoutingConflict("missing or conflicting parent history");
       d.operations[op.id] = copy5(op);
     });
   }
   async admit(op) {
     if (op.phase !== "admitting")
       return op;
-    await this.o.router.reserveFuture(
+    await this.router(op.id).reserveFuture(
       child(op.id, "budget"),
       op.members.length * (op.kind === "race" ? 4 : 1),
       64 * 1024
@@ -7944,7 +8052,7 @@ var FederatedSpace = class {
       }
       if (op.userTxn)
         a.txn = op.userTxn.id;
-      const prior = await this.o.router.get(id);
+      const prior = await this.router(op.id).get(id);
       if (prior) {
         op.children[member] = id;
         await this.save(op);
@@ -7956,14 +8064,14 @@ var FederatedSpace = class {
         method,
         a,
         op.policyVersion,
-        op.kind === "txn" && a.originId ? (await this.o.router.get((await this.get(
+        op.kind === "txn" && a.originId ? (await this.router(a.originId).get((await this.get(
           a.originId
         )).children[member])).steps[0] : void 0
       );
       const expected = (await this.o.state()).members[member]?.target;
       if (!expected || hash4(spec.target) !== hash4(expected) || hash4(spec.principal) !== hash4(op.principal))
         throw new RoutingConflict("target/principal adapter binding mismatch");
-      await this.o.router.submit(
+      await this.router(op.id).submit(
         { id, area: "federation", steps: [spec] },
         child(op.id, "budget")
       );
@@ -7978,7 +8086,7 @@ var FederatedSpace = class {
     op.phase = "done";
     op.result = result;
     await this.save(op);
-    await this.o.router.releaseFuture(child(op.id, "budget"));
+    await this.router(op.id).releaseFuture(child(op.id, "budget"));
     return copy5(result);
   }
   async decide(op) {
@@ -7988,7 +8096,7 @@ var FederatedSpace = class {
       throw new FederationUnavailable("operation needs explicit review");
     op = await this.admit(op);
     for (; op.cursor < op.members.length; op.cursor++) {
-      const m = op.members[op.cursor], c = await this.o.router.advance(op.children[m]);
+      const m = op.members[op.cursor], c = await this.router(op.id).advance(op.children[m]);
       if (c.state === "needsReview") {
         op.phase = "needsReview";
         await this.save(op);
@@ -8006,7 +8114,7 @@ var FederatedSpace = class {
         return this.finish(op, r);
       await this.save({ ...op, cursor: op.cursor + 1 });
     }
-    if (op.kind === "read" && (await Promise.all(op.members.map((m) => this.o.router.get(op.children[m])))).some((c) => c?.state !== "completed")) {
+    if (op.kind === "read" && (await Promise.all(op.members.map((m) => this.router(op.id).get(op.children[m])))).some((c) => c?.state !== "completed")) {
       op.cursor = 0;
       await this.save(op);
       throw new FederationUnavailable("some required read outcomes unavailable");
@@ -8071,6 +8179,8 @@ var FederatedSpace = class {
     );
   }
   async readAll(template2, principal, o = {}) {
+    await this.o.assertAuthority();
+    await this.ensureLayout();
     const st = await this.o.state();
     if (!st.policy)
       throw new RoutingConflict("no policy");
@@ -8132,7 +8242,7 @@ var FederatedSpace = class {
   }
   async effect(op, m, label, method, args) {
     const id = child(op.id, label);
-    let c = await this.o.router.get(id);
+    let c = await this.router(op.id).get(id);
     if (!c) {
       const step = await this.o.io.step(
         m,
@@ -8140,14 +8250,14 @@ var FederatedSpace = class {
         method,
         args,
         op.policyVersion,
-        (await this.o.router.get(op.children[m])).steps[0]
+        (await this.router(op.id).get(op.children[m])).steps[0]
       );
-      await this.o.router.submit(
+      await this.router(op.id).submit(
         { id, area: "federation", steps: [step] },
         child(op.id, "budget")
       );
     }
-    c = await this.o.router.advance(id);
+    c = await this.router(op.id).advance(id);
     if (c.state === "failed" && (label.startsWith("cancel:") && ["UnknownLeaseError", "TransactionError"].includes(c.steps[0].evidence) || label.startsWith("abort:") && c.steps[0].evidence === "TransactionError"))
       return null;
     if (c.state === "failed" || c.state === "needsReview") {
@@ -8161,7 +8271,7 @@ var FederatedSpace = class {
   }
   async collectRaceEvents(op) {
     for (const m of op.members) {
-      const c = await this.o.router.get(op.children[m]), page = await this.o.io.events(m, op.principal, c.steps[0]);
+      const c = await this.router(op.id).get(op.children[m]), page = await this.o.io.events(m, op.principal, c.steps[0]);
       if (page.gap) {
         op.phase = "needsReview";
         await this.save(op);
@@ -8178,7 +8288,7 @@ var FederatedSpace = class {
           };
           const ownerId = e.handback?.federationOperation;
           if (typeof ownerId === "string" && ownerId !== op.id) {
-            await this.change((d) => {
+            await this.change(ownerId, (d) => {
               const owner = d.operations[ownerId];
               if (!owner || hash4(owner.principal) !== hash4(op.principal) || !owner.members.includes(m))
                 throw new RoutingConflict(
@@ -8205,7 +8315,7 @@ var FederatedSpace = class {
       return copy5(op.result);
     op = await this.admit(op);
     for (const m of op.members) {
-      const c = await this.o.router.advance(op.children[m]);
+      const c = await this.router(op.id).advance(op.children[m]);
       if (c.state !== "completed") {
         if (op.kind === "read")
           continue;
@@ -8222,7 +8332,7 @@ var FederatedSpace = class {
           candidate.member,
           op.principal,
           candidate.txn,
-          (await this.o.router.get(op.children[candidate.member])).steps[0]
+          (await this.router(op.id).get(op.children[candidate.member])).steps[0]
         ))) {
           op.winner = {
             member: candidate.member,
@@ -8430,20 +8540,29 @@ var FederationRpc = class {
 
 // src/federation-references.ts
 init_canonical();
-import { createHash as createHash13 } from "node:crypto";
+import { createHash as createHash14 } from "node:crypto";
 init_spaces();
 async function memberReferencesIn(tx, o, memberId, spaceId) {
-  const index = await tx.doc(RouterJournal, o.routerId, null);
-  for (const [id, ref] of Object.entries(index.refs)) {
-    if (["completed", "failed"].includes(ref.state) || ref.released)
-      continue;
-    const key = createHash13("sha256").update(canonicalJson([o.routerId, id])).digest("hex"), command = (await tx.doc(RouterCommands, key, null)).command;
-    if (!command)
-      throw new Error("incomplete Router reference reconstruction");
-    if (command.steps.some((s) => s.target.spaceId === spaceId))
-      return true;
+  const layout = await tx.doc(FederationJournalLayout, o.federationId, null), partitions = layout.partitions ?? 1;
+  validateJournalPartitions(partitions);
+  if (layout.reconciliation) return true;
+  if (layout.partitions !== null && (!layout.routerIds || layout.routerIds.length !== partitions || new Set(layout.routerIds).size !== partitions))
+    throw new Error("incomplete journal topology");
+  for (const routerId of /* @__PURE__ */ new Set([o.routerId, ...layout.routerIds ?? []])) {
+    const index = await tx.doc(RouterJournal, routerId, null);
+    for (const [id, ref] of Object.entries(index.refs)) {
+      if (["completed", "failed"].includes(ref.state) || ref.released)
+        continue;
+      const key = createHash14("sha256").update(canonicalJson([routerId, id])).digest("hex"), command = (await tx.doc(RouterCommands, key, null)).command;
+      if (!command)
+        throw new Error("incomplete Router reference reconstruction");
+      if (command.steps.some((s) => s.target.spaceId === spaceId))
+        return true;
+    }
   }
-  const operations = (await tx.doc(FederationOperations, o.federationId, null)).operations;
+  const operations = {};
+  for (let partition = 0; partition < partitions; partition++)
+    Object.assign(operations, (await tx.doc(FederationOperations, parentJournalKey(o.federationId, partitions, partition), null)).operations);
   for (const op of Object.values(operations)) {
     if (!op.members.includes(memberId))
       continue;
@@ -8504,18 +8623,33 @@ async function createFederationController(o) {
     assertAuthority: guard,
     now
   });
-  await router.recover();
+  const partitions = o.journalPartitions ?? 1;
+  validateJournalPartitions(partitions);
+  const partitionRouters = partitions === 1 ? [router] : Array.from({ length: partitions }, (_, n) => new RouterController({
+    host: o.host,
+    ctx: o.ctx,
+    routerId: partitionRouterId(o.id, n),
+    authorityId: o.authorityId,
+    target: rpc2,
+    assertAuthority: guard,
+    now
+  }));
   const space = new FederatedSpace({
     host: o.host,
     ctx: o.ctx,
     id: o.id,
     router,
+    journalPartitions: partitions,
+    partitionRouters,
     state: () => policy.state(),
     io: rpc2,
     assertAuthority: guard,
     now,
     controlSpaceId: o.controlSpaceId
   });
+  await space.initializeJournals();
+  await router.recover();
+  for (const partitionRouter of partitionRouters) if (partitionRouter !== router) await partitionRouter.recover();
   const refs = { controlSpaceId: o.controlSpaceId, routerId: o.id, federationId: o.id };
   const membership = new MembershipController({
     host: o.host,
@@ -8551,7 +8685,7 @@ async function createFederationController(o) {
     }
   });
   const directory = o.probeStatus ? new MemberStatusDirectory({ host: o.host, ctx: o.ctx, controlSpaceId: o.controlSpaceId, assertAuthority: guard, now, probe: o.probeStatus }) : void 0;
-  return { space, router, rpc: rpc2, membership, policy, directory };
+  return { space, router, partitionRouters: Object.freeze(partitionRouters), rpc: rpc2, membership, policy, directory };
 }
 
 // src/data-admin.ts
@@ -8560,9 +8694,9 @@ init_mailbox();
 init_spaces();
 init_stream();
 init_core();
-import { defineDocFamily as defineDocFamily8 } from "@earendil-works/pi-durable";
-import { createHash as createHash14 } from "node:crypto";
-var DataAdminJournal = defineDocFamily8({
+import { defineDocFamily as defineDocFamily9 } from "@earendil-works/pi-durable";
+import { createHash as createHash15 } from "node:crypto";
+var DataAdminJournal = defineDocFamily9({
   kind: "pi-spaces.data-admin",
   version: 1,
   scope: "session",
@@ -8575,7 +8709,7 @@ function commandHash(id, kind, spaceId, admin, input) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id) || ["__proto__", "constructor", "prototype"].includes(id)) throw new IllegalArgumentError("invalid admin command ID");
   if (typeof spaceId !== "string" || !spaceId || spaceId.length > 128 || typeof admin !== "string" || !admin || admin.length > 128) throw new IllegalArgumentError("invalid admin or Space identifier");
   if (!["purgeTasks", "deletePrincipal"].includes(kind)) throw new IllegalArgumentError("invalid admin command kind");
-  return createHash14("sha256").update(canonicalJson({ kind, spaceId, admin, input })).digest("hex");
+  return createHash15("sha256").update(canonicalJson({ kind, spaceId, admin, input })).digest("hex");
 }
 function validatePrincipal(p) {
   if (!p || typeof p.peerId !== "string" || !p.peerId || p.peerId.length > 128 || p.agentId !== void 0 && (typeof p.agentId !== "string" || !p.agentId || p.agentId.length > 128) || Object.keys(p).some((k) => !["peerId", "agentId"].includes(k))) throw new IllegalArgumentError("invalid deletion principal");
@@ -8738,7 +8872,7 @@ function eraseBatch(s, c, p, now, id) {
         } else if (b.events.some((e) => e.event.entry && ids.has(e.event.entry.id))) {
           if (!spend(512 + bytes5(key))) return;
           b.gap = { epoch: b.epoch, from: b.acked + 1, to: b.next - 1 };
-          b.epoch = "deleted-" + createHash14("sha256").update(b.epoch + id).digest("hex");
+          b.epoch = "deleted-" + createHash15("sha256").update(b.epoch + id).digest("hex");
           b.acked = b.next - 1;
           b.delivered = b.acked;
           b.events = [];
@@ -9241,6 +9375,7 @@ export {
   EnrollmentService,
   FOREVER,
   FederatedSpace,
+  FederationJournalLayout,
   FederationOperations,
   FederationPending,
   FederationPolicyAuthority,
@@ -9345,6 +9480,9 @@ export {
   meter,
   newEnrollToken,
   normalizeFederatedEntry,
+  operationPartition,
+  parentJournalKey,
+  partitionRouterId,
   piServerTransport,
   principalId,
   principalKey,
@@ -9384,6 +9522,7 @@ export {
   startRecoveryOnly,
   startService,
   validateFederationPolicy,
+  validateJournalPartitions,
   verifyDetached,
   verifyFederationPolicy,
   verifyMembership,
