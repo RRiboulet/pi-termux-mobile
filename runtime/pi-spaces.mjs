@@ -9431,6 +9431,7 @@ export {
   RouterBudgetExceeded,
   RouterConflict,
   RouterController,
+  RouterJournal,
   RouterLeaseAuthority,
   RoutingConflict,
   SocketRecoveryRegister,
