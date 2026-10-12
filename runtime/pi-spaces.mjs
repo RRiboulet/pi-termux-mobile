@@ -8090,8 +8090,10 @@ var FederatedSpace = class {
     return copy5(result);
   }
   async decide(op) {
-    if (op.phase === "done")
+    if (op.phase === "done") {
+      await this.router(op.id).releaseFuture(child(op.id, "budget"));
       return copy5(op.result);
+    }
     if (op.phase === "needsReview")
       throw new FederationUnavailable("operation needs explicit review");
     op = await this.admit(op);
@@ -8311,8 +8313,10 @@ var FederatedSpace = class {
     }
   }
   async progressRace(op) {
-    if (op.phase === "done")
+    if (op.phase === "done") {
+      await this.router(op.id).releaseFuture(child(op.id, "budget"));
       return copy5(op.result);
+    }
     op = await this.admit(op);
     for (const m of op.members) {
       const c = await this.router(op.id).advance(op.children[m]);
@@ -8578,13 +8582,28 @@ async function memberReferencesIn(tx, o, memberId, spaceId) {
 }
 
 // src/federation-controller.ts
+import { AsyncLocalStorage } from "node:async_hooks";
 init_canonical();
 init_grants();
 init_spaces();
 async function createFederationController(o) {
+  const inCommit = new AsyncLocalStorage();
+  const host = new Proxy(o.host, { get(target, property) {
+    if (property === "commit") return (fn, ctx) => target.commit((tx) => inCommit.run(true, () => fn(tx)), ctx);
+    const value = Reflect.get(target, property);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  let cachedLease;
+  const lease = async () => {
+    const t = await o.lease();
+    cachedLease = structuredClone(t);
+    return t;
+  };
   const now = o.now ?? Date.now, guard = async () => {
     await o.assertAuthority();
-    const t = await o.lease(), l = t.lease;
+    const t = inCommit.getStore() ? cachedLease : await lease();
+    if (!t) throw new Error("RouterLease was not validated before journal commit");
+    const l = t.lease;
     if (t.issuer !== o.controlPeerId || t.algorithm !== o.controlSigner.algorithm || !verifyDetached(
       t.algorithm,
       o.controlPublicKey,
@@ -8597,7 +8616,7 @@ async function createFederationController(o) {
       throw new Error("RouterLease was superseded by Control");
   };
   const policy = new FederationPolicyAuthority({
-    host: o.host,
+    host,
     ctx: o.ctx,
     controlSpaceId: o.controlSpaceId,
     authorityId: o.authorityId,
@@ -8610,12 +8629,12 @@ async function createFederationController(o) {
     transport: o.transport,
     signer: o.routerSigner,
     peerId: o.routerPeerId,
-    lease: o.lease,
+    lease,
     grant: o.grant,
     now
   });
   const router = new RouterController({
-    host: o.host,
+    host,
     ctx: o.ctx,
     routerId: o.id,
     authorityId: o.authorityId,
@@ -8626,7 +8645,7 @@ async function createFederationController(o) {
   const partitions = o.journalPartitions ?? 1;
   validateJournalPartitions(partitions);
   const partitionRouters = partitions === 1 ? [router] : Array.from({ length: partitions }, (_, n) => new RouterController({
-    host: o.host,
+    host,
     ctx: o.ctx,
     routerId: partitionRouterId(o.id, n),
     authorityId: o.authorityId,
@@ -8635,7 +8654,7 @@ async function createFederationController(o) {
     now
   }));
   const space = new FederatedSpace({
-    host: o.host,
+    host,
     ctx: o.ctx,
     id: o.id,
     router,
@@ -8652,7 +8671,7 @@ async function createFederationController(o) {
   for (const partitionRouter of partitionRouters) if (partitionRouter !== router) await partitionRouter.recover();
   const refs = { controlSpaceId: o.controlSpaceId, routerId: o.id, federationId: o.id };
   const membership = new MembershipController({
-    host: o.host,
+    host,
     ctx: o.ctx,
     controlSpaceId: o.controlSpaceId,
     authorityId: o.authorityId,
@@ -8660,7 +8679,7 @@ async function createFederationController(o) {
     signer: o.controlSigner,
     assertAuthority: guard,
     authorize: o.authorizeAdmin,
-    hasReferences: async (id) => o.host.commit(
+    hasReferences: async (id) => host.commit(
       async (tx) => {
         const m = (await policy.state()).members[id];
         return !!m && memberReferencesIn(tx, refs, id, m.target.spaceId);
@@ -8684,7 +8703,7 @@ async function createFederationController(o) {
       }
     }
   });
-  const directory = o.probeStatus ? new MemberStatusDirectory({ host: o.host, ctx: o.ctx, controlSpaceId: o.controlSpaceId, assertAuthority: guard, now, probe: o.probeStatus }) : void 0;
+  const directory = o.probeStatus ? new MemberStatusDirectory({ host, ctx: o.ctx, controlSpaceId: o.controlSpaceId, assertAuthority: guard, now, probe: o.probeStatus }) : void 0;
   return { space, router, partitionRouters: Object.freeze(partitionRouters), rpc: rpc2, membership, policy, directory };
 }
 
