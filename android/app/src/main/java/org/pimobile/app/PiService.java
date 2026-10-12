@@ -45,6 +45,7 @@ public final class PiService extends Service {
     private Thread supervisor;
     private volatile boolean stopping;
     private PowerManager.WakeLock wakeLock;
+    private SpaceKeyStore spaceKeys;
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
@@ -54,6 +55,7 @@ public final class PiService extends Service {
         startForegroundWithNotification();
         acquireWakeLock();
         synchronized (lock) {
+            if (spaceKeys == null) try { spaceKeys = new SpaceKeyStore(this); } catch (Exception e) { logError("space keystore failed", e); stopSelf(); return START_NOT_STICKY; }
             if (supervisor != null && supervisor.isAlive()) return START_STICKY; // already running
             stopping = false;
             supervisor = new Thread(this::superviseNode, "pi-supervisor");
@@ -122,6 +124,7 @@ public final class PiService extends Service {
         // Termux-built openssl hardcodes /data/data/com.termux paths — point at ours.
         env.put("OPENSSL_CONF", new File(prefix, "etc/tls/openssl.cnf").getAbsolutePath());
         env.put("SSL_CERT_FILE", new File(prefix, "etc/tls/cert.pem").getAbsolutePath());
+        env.put("PI_SPACES_KEY_SOCKET", SpaceKeyStore.socketName());
 
         // a stale port file would make the UI load a dead bridge address
         new File(new File(home, ".pi-mobile"), "port").delete();
@@ -277,6 +280,7 @@ public final class PiService extends Service {
     @Override
     public void onDestroy() {
         stopping = true;
+        if (spaceKeys != null) { spaceKeys.close(); spaceKeys = null; }
         Thread sup;
         synchronized (lock) { sup = supervisor; supervisor = null; }
         stopNode();

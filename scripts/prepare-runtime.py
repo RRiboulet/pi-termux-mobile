@@ -14,7 +14,7 @@ SOURCE = Path(os.environ.get('PI_SPACES_SOURCE', str(ROOT.parent / 'pi-spaces'))
 RUNTIME = ROOT / 'runtime'
 ASSETS = ROOT / 'android/app/src/main/assets'
 FILES = ['server.mjs', 'common.mjs', 'remote-env.mjs', 'env-server.mjs', 'pi-serverd.mjs',
-         'remote-client.mjs', 'remote-provision.mjs', 'pi-spaces.mjs', 'package.json',
+         'space-keystore.mjs', 'spaces-mobile.mjs', 'remote-client.mjs', 'remote-provision.mjs', 'pi-spaces.mjs', 'package.json',
          'package-lock.json', 'public', 'node_modules', 'space-examples']
 
 source_available = (SOURCE / 'scripts/bundle-mobile.mjs').is_file()

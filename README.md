@@ -523,3 +523,20 @@ service.
 ---
 
 *vibe coding fun with pi* — [Earendil Pi on GitHub](https://github.com/earendil-works/pi)
+
+The Spaces page prepares a P-256 device key in Android Keystore, pairs via an
+entered token/QR JSON, checks pairing/authentication and resolves own-key
+rotation. It connects to explicitly trusted control/data hosts over the overlay
+and displays the selected space's objects and statistics. Private keys are never
+exported; request identities and public metadata are saved privately before
+sending, without persisting enrollment tokens. Camera QR scanning and the live
+Keystore/phone-to-server acceptance remain pending.
+
+`PI_SERVERD_FEDERATION_CONFIG` opts pi-serverd into the provisioned federation
+runtime, independent boot/authority checks and its supervisor. Configuration,
+keys and register endpoints must be provisioned explicitly. A persistent
+`restart.lock` blocks normal server startup. Operational requirements and open
+recovery integration are documented in the sibling pi-spaces
+`docs/ap1b-betrieb.md` and `docs/ap1b-abnahme.md`.
+
+Mobile lifecycle checks: `node --test test/spaces-mobile.test.mjs`.

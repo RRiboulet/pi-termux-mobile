@@ -47,6 +47,7 @@ export function renderMenu() {
       { href: '/remote.html',  icon: '⌁',  label: 'Remote' },
       { href: '/terminal.html',icon: '>_', label: 'pi CLI (local)' },
       { href: '/clients.html', icon: '⊟',  label: 'Clients' },
+      { href: '/spaces.html', icon: '▦', label: 'Spaces' },
       { href: '/keys.html',    icon: '⚿',  label: 'Accounts' },
     ];
     for (const t of tabs) {
@@ -92,12 +93,14 @@ export function renderMenu() {
     term:     ['term'],
     clients:  ['clients'],
     keys:     ['keys'],
+    spaces:   ['spaces'],
   };
   const tabs = [
     { key: 'chat',    href: '/',             icon: '💬', label: 'Chat' },
     { key: 'remote',  href: '/remote.html',  icon: '⌁',  label: 'Remote' },
     { key: 'term',    href: '/terminal.html',icon: '>_', label: 'CLI' },
     { key: 'clients', href: '/clients.html', icon: '⊟',  label: 'Clients' },
+    { key: 'spaces', href: '/spaces.html', icon: '▦', label: 'Spaces' },
     { key: 'keys',    href: '/keys.html',    icon: '⚿',  label: 'Keys' },
   ];
   for (const tab of tabs) {

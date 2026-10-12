@@ -5,6 +5,7 @@
 // over $HOME/.pi-mobile/remotes.json) — a conversation whose cwd is
 // "remote:<name>:/path" runs its tools on that host.
 import http from 'node:http';
+import { MobileSpaces } from './spaces-mobile.mjs';
 import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import { createReadStream, existsSync, readdirSync, readFileSync, readlinkSync, statSync, unlinkSync } from 'node:fs';
@@ -31,6 +32,7 @@ const WORKDIR = process.env.PI_WORKDIR || HOME_DIR;
 const AGENT_DIR = path.join(HOME_DIR, '.pi', 'agent');
 const AUTH_PATH = path.join(AGENT_DIR, 'auth.json');
 const STATE_DIR = path.join(HOME_DIR, '.pi-mobile');
+const mobileSpaces = new MobileSpaces(path.join(STATE_DIR, 'space-profile.json'));
 const PORT_FILE = path.join(STATE_DIR, 'port');
 const TOKEN_FILE = path.join(STATE_DIR, 'token');
 const LEGACY_SESSIONS_FILE = path.join(STATE_DIR, 'sessions.json');
@@ -397,6 +399,11 @@ async function activeState() {
 
 async function handleApi(req, res, url, p) {
   const body = req.method === 'POST' ? await readBody(req) : {};
+  if (p.startsWith('/api/spaces/') && ['GET', 'POST'].includes(req.method)) {
+    const method = p.slice('/api/spaces/'.length);
+    if (req.method === 'GET' && method !== 'status') throw Object.assign(new Error('use POST'), { status: 405 });
+    return json(res, 200, await mobileSpaces.call(method, body));
+  }
   if (!active && !p.startsWith('/api/oauth') && p !== '/api/auth' && p !== '/api/providers') {
     throw Object.assign(new Error('harness not ready'), { status: 503 });
   }
