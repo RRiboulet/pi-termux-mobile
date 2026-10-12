@@ -276,6 +276,7 @@ function permitRoutedWrite(s, proven) {
   routerPermit.set(s, proven);
 }
 function assertMemberAdmission(s, method) {
+  if (s.adminMaintenance) throw new MemberDrained("Space has a pending administrative deletion");
   const a = s.membership;
   if (a && ["adding", "removing", "detached", "recoveryBlocked"].includes(a.state) && !["ack", "cancelOperation", "txn.abort"].includes(method))
     throw new MemberDrained("Member admission is " + a.state);
@@ -297,9 +298,9 @@ function initializeMemberTxn(s, t, now) {
 }
 function assertMemberWrite(s, entry, txn, now) {
   const a = s.membership;
+  assertMemberAdmission(s, "write");
   if (!a)
     return;
-  assertMemberAdmission(s, "write");
   if (!a.policy)
     throw new RoutingConflict("Member policy is not installed");
   const p = a.policy, r = ruleFor(p, entry.type), parents = declaredSupertypes(p, entry.type), actual = [...entry.types ?? []].filter((t) => t !== entry.type).sort();
@@ -480,6 +481,7 @@ __export(claims_exports, {
 });
 import { createHash as createHash2, createHmac, randomBytes } from "node:crypto";
 function issueGeneration(s, now, principal, options = {}) {
+  assertAdminIdle(s);
   checkPrincipal(principal);
   sweep(s, now);
   const st = rpc(s);
@@ -497,6 +499,7 @@ function issueGeneration(s, now, principal, options = {}) {
   return { generation, admitUntil };
 }
 function admit(s, now, r, method, args, deadline, resultBytes = 1024) {
+  assertAdminIdle(s);
   checkPrincipal(r.principal);
   if (typeof r.requestId !== "string" || r.requestId === "" || typeof r.generation !== "string") throw new TypeError("request needs a generation and a requestId");
   sweep(s, now);
@@ -810,6 +813,7 @@ __export(core_exports, {
   UnknownLeaseError: () => UnknownLeaseError,
   abortTxn: () => abortTxn,
   addWaiter: () => addWaiter,
+  assertAdminIdle: () => assertAdminIdle,
   beginCommit: () => beginCommit,
   cancel: () => cancel,
   cancelWaiter: () => cancelWaiter,
@@ -901,7 +905,7 @@ function setLimits(s, l, now = Date.now()) {
   return limitsOf(s);
 }
 function overheadBytes(s) {
-  return jsonBytes(s.membership ?? {}) + Object.values(s.txns).reduce((n, t) => n + (t.completion?.remainingBytes ?? 0), 0) + jsonBytes(s.authorityTransition ?? {}) + jsonBytes(s.authorityCounters ?? {}) + (s.restore ? jsonBytes(s.restore) : 0) + claimBytes(s) + (s.stream?.bytes ?? 0) + jsonBytes(s.outbox) + jsonBytes(s.waiters) + jsonBytes(s.regs) + jsonBytes(s.txns) + jsonBytes(s.jobs ?? []) + jsonBytes(s.mailboxes ?? {});
+  return jsonBytes(s.adminMaintenance ?? {}) + jsonBytes(s.membership ?? {}) + Object.values(s.txns).reduce((n, t) => n + (t.completion?.remainingBytes ?? 0), 0) + jsonBytes(s.authorityTransition ?? {}) + jsonBytes(s.authorityCounters ?? {}) + (s.restore ? jsonBytes(s.restore) : 0) + claimBytes(s) + (s.stream?.bytes ?? 0) + jsonBytes(s.outbox) + jsonBytes(s.waiters) + jsonBytes(s.regs) + jsonBytes(s.txns) + jsonBytes(s.jobs ?? []) + jsonBytes(s.mailboxes ?? {});
 }
 function claimBytes(s) {
   const r = s.rpc;
@@ -1037,7 +1041,11 @@ function matches(t, e) {
   }
   return true;
 }
+function assertAdminIdle(s) {
+  if (s.adminMaintenance) throw new PermissionError("Space has a pending administrative deletion");
+}
 function settle(s, now) {
+  if (s.adminMaintenance) return;
   const ownBudget = !commitBudgets.has(s);
   if (ownBudget) commitBudgets.set(s, { used: 0 });
   try {
@@ -1287,6 +1295,7 @@ function apply(s, now, e, txn, take) {
   return copy6;
 }
 function createTxn(s, now, lease, as) {
+  assertAdminIdle(s);
   settle(s, now);
   if (as !== void 0 && Object.values(s.txns).filter(ownedBy(as)).length >= limitsOf(s).maxTxnsPerOwner) throw new LimitError(`you already have ${limitsOf(s).maxTxnsPerOwner} open transactions`);
   const t = { id: newId(s, "t"), expires: grant(lease, now), owner: as ?? null };
@@ -1364,6 +1373,7 @@ function cancelWaiter(s, id, now = Date.now()) {
   return prune(s.waiters, (w2) => w2.id === id) > 0;
 }
 function serve(s, now) {
+  if (s.adminMaintenance) return;
   if (s.membership && ["adding", "removing", "detached", "recoveryBlocked"].includes(s.membership.state)) return;
   for (const w of [...s.waiters]) {
     if (w.claimKey) {
@@ -1534,6 +1544,7 @@ function leased(s, id, as) {
   return l;
 }
 function renew(s, now, id, ms2, as) {
+  assertAdminIdle(s);
   settle(s, now);
   const l = leased(s, id, as);
   const v = grant(ms2, now);
@@ -1594,6 +1605,7 @@ function standing(s, e, now) {
   return "visible";
 }
 function count(s, now, tmpl2 = null, txn = null, as) {
+  assertAdminIdle(s);
   if (txn !== null) requireTxn(s, txn, as);
   const mine = active(s, txn, now);
   let n = 0;
@@ -1605,6 +1617,7 @@ function count(s, now, tmpl2 = null, txn = null, as) {
   return n;
 }
 function list(s, now, tmpl2 = null, txn = null, limit = Number.MAX_SAFE_INTEGER, as) {
+  assertAdminIdle(s);
   if (!Number.isInteger(limit) || limit < 1) throw new IllegalArgumentError("limit must be a positive integer");
   if (txn !== null) requireTxn(s, txn, as);
   const mine = active(s, txn, now);
@@ -1663,6 +1676,7 @@ function logDel(s, now, id) {
   record(s, now, { op: "del", id }, limitsOf(s).maxLogBytes);
 }
 function changes(s, afterRev, o = {}) {
+  assertAdminIdle(s);
   const lim = limitsOf(s);
   const budget = o.maxBytes === void 0 ? lim.maxFrameBytes : o.maxBytes;
   if (!Number.isInteger(budget) || budget <= 0) throw new IllegalArgumentError("maxBytes must be a positive integer");
@@ -1699,6 +1713,7 @@ function closeRegistrationsForRemoval(s, now) {
   touch2(s, now);
 }
 function purgeTasks(s, now, template2) {
+  assertAdminIdle(s);
   settle(s, now);
   const tasks = s.entries.filter((e) => matches(template2, e));
   if (tasks.some((e) => !(s.completionProfiles ?? []).some((p) => e.types.includes(p.taskType)))) throw new PermissionError("purgeTasks accepts only profiled tasks");
@@ -1770,6 +1785,7 @@ var init_core = __esm({
         ...v.stream ? { stream: v.stream } : {},
         // revisions and change batches (stream.ts)
         ...v.membership ? { membership: v.membership } : {},
+        ...v.adminMaintenance ? { adminMaintenance: v.adminMaintenance } : {},
         ...v.snapshotEpoch === void 0 ? {} : { snapshotEpoch: v.snapshotEpoch },
         ...v.completionProfiles ? { completionProfiles: v.completionProfiles } : {},
         ...v.mailboxes ? { mailboxes: v.mailboxes } : {},
@@ -2107,6 +2123,7 @@ var init_meter = __esm({
 // src/snapshot.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
 function snapshotPage(host, state, now, tmpl2, o, owner) {
+  assertAdminIdle(state);
   let cache = hosts.get(host);
   if (!cache) {
     cache = /* @__PURE__ */ new Map();
@@ -2129,9 +2146,9 @@ function snapshotPage(host, state, now, tmpl2, o, owner) {
   const fresh = record2 === void 0;
   if (!record2) {
     const items = list(state, now, tmpl2, o.txn ?? null, Number.MAX_SAFE_INTEGER, owner);
-    const bytes5 = encodedBytes(items);
-    if (bytes5 > limits.maxSnapshotBytes) throw new ResourceExhausted("the snapshot exceeds maxSnapshotBytes");
-    record2 = { snapshotEpoch: state.snapshotEpoch ?? 0, token: `ss${randomBytes4(16).toString("hex")}`, streamId, query, owner, rev: revision(state), expires: until(now, limits.snapshotTtlMs), bytes: bytes5, items };
+    const bytes6 = encodedBytes(items);
+    if (bytes6 > limits.maxSnapshotBytes) throw new ResourceExhausted("the snapshot exceeds maxSnapshotBytes");
+    record2 = { snapshotEpoch: state.snapshotEpoch ?? 0, token: `ss${randomBytes4(16).toString("hex")}`, streamId, query, owner, rev: revision(state), expires: until(now, limits.snapshotTtlMs), bytes: bytes6, items };
   }
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > record2.items.length) throw new IllegalArgumentError("invalid snapshot position");
   const budget = o.maxBytes ?? limits.maxFrameBytes;
@@ -3752,8 +3769,8 @@ var FrameReader = class {
     this.max = max;
   }
   push(chunk, onFrame) {
-    const bytes5 = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    this.buf = this.buf.length === 0 ? bytes5 : Buffer.concat([this.buf, bytes5]);
+    const bytes6 = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    this.buf = this.buf.length === 0 ? bytes6 : Buffer.concat([this.buf, bytes6]);
     for (; ; ) {
       if (this.buf.length < HEADER) return;
       const n = this.buf.readUInt32BE(0);
@@ -4273,8 +4290,8 @@ var RecoveryController = class {
     this.o = o;
   }
   reserve(s, record2, now) {
-    const bytes5 = Buffer.byteLength(JSON.stringify(record2)) + 512;
-    if (!maintenanceStep(s, bytes5, now, "recovery-journal")) throw new ResourceExhausted("recovery metadata exceeds the commit budget");
+    const bytes6 = Buffer.byteLength(JSON.stringify(record2)) + 512;
+    if (!maintenanceStep(s, bytes6, now, "recovery-journal")) throw new ResourceExhausted("recovery metadata exceeds the commit budget");
   }
   now = () => (this.o.now ?? Date.now)();
   async job(id) {
@@ -4674,6 +4691,7 @@ var MemberLifecycle = class {
       if (Object.keys(d.steps).length >= 128)
         throw new RoutingConflict("transition history full");
       const now = (this.o.now ?? Date.now)(), s = await spaceDoc(tx, this.o.spaceId, now);
+      assertAdminIdle(s);
       settle(s, now);
       const a = s.membership;
       if (q.expectedAdmissionVersion !== void 0 && (a?.admissionVersion ?? 0) !== q.expectedAdmissionVersion)
@@ -5420,8 +5438,8 @@ var RemoteSpace = class {
   }
   async rotateKey(challenge, replacement, prepared) {
     if (!this.o.signer) throw new UnsupportedOperation("rotation needs the old signer");
-    const bytes5 = (await Promise.resolve().then(() => (init_rotation(), rotation_exports))).rotationBytes(challenge);
-    const args = { challenge, oldSignature: Buffer.from(await this.o.signer.sign(bytes5)).toString("base64"), newSignature: Buffer.from(await replacement.sign(bytes5)).toString("base64") };
+    const bytes6 = (await Promise.resolve().then(() => (init_rotation(), rotation_exports))).rotationBytes(challenge);
+    const args = { challenge, oldSignature: Buffer.from(await this.o.signer.sign(bytes6)).toString("base64"), newSignature: Buffer.from(await replacement.sign(bytes6)).toString("base64") };
     const request = prepared?.request ?? { generation: (await this.send({ method: "rotationGeneration" })).generation, requestId: this.o.newRequestId() };
     await prepared?.beforeSend?.(request);
     return await this.send({ method: "rotateKey", args, request }, () => new OutcomeUnknown(request, "the rotation answer was lost"));
@@ -6018,18 +6036,18 @@ async function startFederationHost(host, ctx, o) {
           }
           return inner.handle(c, conn);
         },
-        async handleText(t, conn, bytes5) {
+        async handleText(t, conn, bytes6) {
           let c;
           try {
             c = JSON.parse(t);
           } catch {
-            return inner.handleText(t, conn, bytes5);
+            return inner.handleText(t, conn, bytes6);
           }
           if (["grant", "keyLookup", "routerLease", "routingPolicy", "capabilityHeartbeat"].includes(c?.method)) {
-            if (Buffer.byteLength(t) > (bytes5 ?? 256 * 1024)) return JSON.stringify({ ok: false, error: { code: "ResourceExhausted", message: "grant request exceeds frame budget" } });
+            if (Buffer.byteLength(t) > (bytes6 ?? 256 * 1024)) return JSON.stringify({ ok: false, error: { code: "ResourceExhausted", message: "grant request exceeds frame budget" } });
             return JSON.stringify(await this.handle(c, conn));
           }
-          return inner.handleText(t, conn, bytes5);
+          return inner.handleText(t, conn, bytes6);
         }
       };
       const asyncCommands = {};
@@ -7037,8 +7055,8 @@ var MemberTransitionInstaller = class {
           if (pending) {
             const [id, c] = pending, copy6 = plain(c);
             delete copy6.reservedResultBytes;
-            const bytes5 = Buffer.byteLength(JSON.stringify(copy6)) + Buffer.byteLength(JSON.stringify(id)) + 256;
-            if (overheadBytes(s) + bytes5 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes5, now, "member-pending-history")) throw new ResourceExhausted("pending history cannot fit the transition budget");
+            const bytes6 = Buffer.byteLength(JSON.stringify(copy6)) + Buffer.byteLength(JSON.stringify(id)) + 256;
+            if (overheadBytes(s) + bytes6 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes6, now, "member-pending-history")) throw new ResourceExhausted("pending history cannot fit the transition budget");
             s.restoredClaims ??= {};
             s.restoredClaims[id] = copy6;
             delete s.rpc.claims[id];
@@ -7049,8 +7067,8 @@ var MemberTransitionInstaller = class {
           }
           const decided = Object.values(s.rpc?.claims ?? {}).find((c) => c.state !== "pending" && !c.orphanedAfterRestore);
           if (decided) {
-            const before = Buffer.byteLength(JSON.stringify(decided)), mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes5 = Buffer.byteLength(JSON.stringify(mark)) + 128;
-            if (claimBytes(s) + bytes5 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes5 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes5, now, "member-orphaned-claim")) throw new ResourceExhausted("orphan audit exceeds current limits");
+            const before = Buffer.byteLength(JSON.stringify(decided)), mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes6 = Buffer.byteLength(JSON.stringify(mark)) + 128;
+            if (claimBytes(s) + bytes6 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes6 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes6, now, "member-orphaned-claim")) throw new ResourceExhausted("orphan audit exceeds current limits");
             decided.orphanedAfterRestore = mark;
             s.rpc.bytes = (s.rpc.bytes ?? 0) + Buffer.byteLength(JSON.stringify(decided)) - before;
             touch2(s, now);
@@ -7058,8 +7076,8 @@ var MemberTransitionInstaller = class {
           }
           const historical = Object.values(s.restoredClaims ?? {}).find((c) => c.state !== "pending" && !c.orphanedAfterRestore);
           if (historical) {
-            const mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes5 = Buffer.byteLength(JSON.stringify(mark)) + 128;
-            if (claimBytes(s) + bytes5 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes5 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes5, now, "member-historical-orphan")) throw new ResourceExhausted("historical orphan audit exceeds current limits");
+            const mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes6 = Buffer.byteLength(JSON.stringify(mark)) + 128;
+            if (claimBytes(s) + bytes6 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes6 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes6, now, "member-historical-orphan")) throw new ResourceExhausted("historical orphan audit exceeds current limits");
             historical.orphanedAfterRestore = mark;
             touch2(s, now);
             return;
@@ -7069,8 +7087,8 @@ var MemberTransitionInstaller = class {
         if (step.stage === "generations") {
           const old = Object.keys(s.rpc?.generations ?? {}).find((id) => !s.invalidGenerations?.[id]);
           if (old) {
-            const bytes5 = Buffer.byteLength(JSON.stringify(old)) + 64;
-            if (claimBytes(s) + bytes5 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes5 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes5, now, "member-old-generation")) throw new ResourceExhausted("old generation cannot fit the transition budget");
+            const bytes6 = Buffer.byteLength(JSON.stringify(old)) + 64;
+            if (claimBytes(s) + bytes6 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes6 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes6, now, "member-old-generation")) throw new ResourceExhausted("old generation cannot fit the transition budget");
             s.invalidGenerations ??= {};
             s.invalidGenerations[old] = true;
             touch2(s, now);
@@ -8540,90 +8558,257 @@ async function createFederationController(o) {
 init_canonical();
 init_mailbox();
 init_spaces();
+init_stream();
 init_core();
 import { defineDocFamily as defineDocFamily8 } from "@earendil-works/pi-durable";
 import { createHash as createHash14 } from "node:crypto";
-var DataAdminJournal = defineDocFamily8({ kind: "pi-spaces.data-admin", version: 1, scope: "session", family: true, initial: () => ({ commands: {} }) });
+var DataAdminJournal = defineDocFamily8({
+  kind: "pi-spaces.data-admin",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: () => ({ commands: {} })
+});
+var bytes5 = (v) => Buffer.byteLength(JSON.stringify(v));
+var audit = (c) => ({ hash: c.hash, at: c.at, kind: c.kind, admin: c.admin, count: c.count });
+function commandHash(id, kind, spaceId, admin, input) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id) || ["__proto__", "constructor", "prototype"].includes(id)) throw new IllegalArgumentError("invalid admin command ID");
+  if (typeof spaceId !== "string" || !spaceId || spaceId.length > 128 || typeof admin !== "string" || !admin || admin.length > 128) throw new IllegalArgumentError("invalid admin or Space identifier");
+  if (!["purgeTasks", "deletePrincipal"].includes(kind)) throw new IllegalArgumentError("invalid admin command kind");
+  return createHash14("sha256").update(canonicalJson({ kind, spaceId, admin, input })).digest("hex");
+}
+function validatePrincipal(p) {
+  if (!p || typeof p.peerId !== "string" || !p.peerId || p.peerId.length > 128 || p.agentId !== void 0 && (typeof p.agentId !== "string" || !p.agentId || p.agentId.length > 128) || Object.keys(p).some((k) => !["peerId", "agentId"].includes(k))) throw new IllegalArgumentError("invalid deletion principal");
+}
+function assertTuple(c, s) {
+  if (c.incarnation !== void 0 && (c.incarnation !== (s.incarnation ?? null) || c.authorityId !== (s.acceptedAuthorityId ?? s.membership?.authorityId ?? null))) throw new TransactionError("deletion incarnation or authority changed; restore review required");
+}
+function stableSpace(s, id) {
+  if (s.spaceId !== id) throw new IllegalArgumentError("admin commands require the immutable Space ID");
+}
+function quiescent(s) {
+  if (Object.keys(s.txns).length || s.waiters.length || (s.jobs ?? []).length || (s.releaseQueue ?? []).length || Object.values(s.rpc?.claims ?? {}).some((c) => c.state === "pending")) throw new TransactionError("principal deletion requires a quiescent Space");
+}
+function reserveHeader(s, now, id) {
+  if (!maintenanceStep(s, 1024, now, "delete-principal:" + id)) throw new ResourceExhausted("admin metadata exceeds maxCommitBytes");
+}
 var DataAdminController = class {
   o;
   constructor(o) {
     this.o = o;
   }
-  async execute(id, kind, spaceId, admin, input) {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id) || ["__proto__", "constructor", "prototype"].includes(id)) throw new IllegalArgumentError("invalid admin command ID");
-    const hash5 = createHash14("sha256").update(canonicalJson({ kind, spaceId, admin, input })).digest("hex");
-    await this.o.authorize(admin, kind, spaceId);
+  async check(admin, kind, sid) {
+    await this.o.authorize(admin, kind, sid);
     await this.o.assertAuthority();
+  }
+  async execute(id, kind, spaceId, admin, input) {
+    const hash5 = commandHash(id, kind, spaceId, admin, input);
+    if (kind === "deletePrincipal") {
+      await this.startDeletion(id, spaceId, admin, input);
+      for (; ; ) {
+        const r = await this.advanceDeletion(id, spaceId, admin, input);
+        if (r.phase === "completed") return audit(r);
+      }
+    }
+    await this.check(admin, kind, spaceId);
     return this.o.host.commit(async (tx) => {
-      await this.o.authorize(admin, kind, spaceId);
-      await this.o.assertAuthority();
-      const journal = await tx.doc(DataAdminJournal, spaceId, null), old = journal.commands[id];
+      await this.check(admin, kind, spaceId);
+      const d = await tx.doc(DataAdminJournal, spaceId, null), old = d.commands[id];
       if (old) {
         if (old.hash !== hash5) throw new IllegalArgumentError("admin command ID changed");
-        return plain(old);
+        const s2 = await spaceDoc(tx, spaceId, (this.o.now ?? Date.now)());
+        stableSpace(s2, spaceId);
+        assertTuple(old, s2);
+        return audit(old);
       }
-      if (Object.keys(journal.commands).length >= 128) throw new ResourceExhausted("admin journal is full");
+      if (Object.keys(d.commands).length >= 128) throw new ResourceExhausted("admin journal is full");
       const now = (this.o.now ?? Date.now)(), s = await spaceDoc(tx, spaceId, now);
-      const count2 = kind === "purgeTasks" ? purgeTasks(s, now, input) : deletePrincipalIn(s, now, input);
-      const audit = { hash: hash5, kind, admin, at: now, count: count2 };
-      journal.commands[id] = audit;
-      return audit;
+      stableSpace(s, spaceId);
+      assertAdminIdle(s);
+      reserveHeader(s, now, id);
+      const c = { hash: hash5, kind, admin, at: now, count: purgeTasks(s, now, input), incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null };
+      d.commands[id] = c;
+      await this.check(admin, kind, spaceId);
+      return audit(c);
+    }, this.o.ctx);
+  }
+  /** Explicit start/advance are also usable by a supervisor that resumes one batch at a time. */
+  async startDeletion(id, spaceId, admin, p) {
+    validatePrincipal(p);
+    const hash5 = commandHash(id, "deletePrincipal", spaceId, admin, p);
+    await this.check(admin, "deletePrincipal", spaceId);
+    return this.o.host.commit(async (tx) => {
+      await this.check(admin, "deletePrincipal", spaceId);
+      const d = await tx.doc(DataAdminJournal, spaceId, null), old = d.commands[id];
+      if (old) {
+        if (old.hash !== hash5) throw new IllegalArgumentError("admin command ID changed");
+        const s2 = await spaceDoc(tx, spaceId, (this.o.now ?? Date.now)());
+        stableSpace(s2, spaceId);
+        assertTuple(old, s2);
+        return { ...audit(old), phase: old.phase ?? "completed", batches: old.batches ?? 0 };
+      }
+      if (Object.keys(d.commands).length >= 128) throw new ResourceExhausted("admin journal is full");
+      const now = (this.o.now ?? Date.now)(), s = await spaceDoc(tx, spaceId, now);
+      stableSpace(s, spaceId);
+      assertAdminIdle(s);
+      settle(s, now);
+      quiescent(s);
+      reserveHeader(s, now, id);
+      s.adminMaintenance = { commandId: id, hash: hash5 };
+      s.snapshotEpoch = (s.snapshotEpoch ?? 0) + 1;
+      if (bytes5(s) > limitsOf(s).maxDocBytes) throw new ResourceExhausted("admin fence exceeds maxDocBytes");
+      d.commands[id] = { hash: hash5, kind: "deletePrincipal", admin, at: now, count: 0, phase: "registrations", principal: plain(p), incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null, batches: 0 };
+      touch2(s, now);
+      await this.check(admin, "deletePrincipal", spaceId);
+      return { ...audit(d.commands[id]), phase: "registrations", batches: 0 };
+    }, this.o.ctx);
+  }
+  async advanceDeletion(id, spaceId, admin, p) {
+    validatePrincipal(p);
+    const hash5 = commandHash(id, "deletePrincipal", spaceId, admin, p);
+    await this.check(admin, "deletePrincipal", spaceId);
+    return this.o.host.commit(async (tx) => {
+      await this.check(admin, "deletePrincipal", spaceId);
+      const d = await tx.doc(DataAdminJournal, spaceId, null), c = d.commands[id];
+      if (!c) throw new IllegalArgumentError("unknown deletion command");
+      if (c.hash !== hash5) throw new IllegalArgumentError("admin command ID changed");
+      const now = (this.o.now ?? Date.now)(), s = await spaceDoc(tx, spaceId, now);
+      stableSpace(s, spaceId);
+      assertTuple(c, s);
+      if (!c.phase || c.phase === "completed") return { ...audit(c), phase: "completed", batches: c.batches ?? 0 };
+      if (s.adminMaintenance?.commandId !== id || s.adminMaintenance.hash !== hash5 || c.incarnation !== (s.incarnation ?? null) || c.authorityId !== (s.acceptedAuthorityId ?? s.membership?.authorityId ?? null)) throw new TransactionError("deletion fence or incarnation changed; restore review required");
+      quiescent(s);
+      reserveHeader(s, now, id);
+      eraseBatch(s, c, p, now, id);
+      c.batches = (c.batches ?? 0) + 1;
+      const phase = c.phase;
+      if (phase === "completed") {
+        delete c.principal;
+        delete s.adminMaintenance;
+        delete s.maintenance;
+        s.snapshotEpoch = (s.snapshotEpoch ?? 0) + 1;
+      }
+      touch2(s, now);
+      await this.check(admin, "deletePrincipal", spaceId);
+      return { ...audit(c), phase, batches: c.batches };
     }, this.o.ctx);
   }
 };
-function deletePrincipalIn(s, now, p) {
-  if (!p || typeof p.peerId !== "string" || !p.peerId || p.agentId !== void 0 && typeof p.agentId !== "string") throw new IllegalArgumentError("invalid deletion principal");
-  if (Object.keys(s.txns).length || s.waiters.length || (s.jobs ?? []).length) throw new TransactionError("principal deletion requires a quiescent Space");
+function eraseBatch(s, c, p, now, id) {
   const pid = principalId(p), same3 = (q) => principalId(q) === pid, ids = new Set(s.entries.filter((e) => e.owner === pid).map((e) => e.id));
-  const before = plain(s);
-  s.entries = s.entries.filter((e) => !ids.has(e.id));
-  s.regs = s.regs.filter((r) => r.target !== pid && (!r.consumer || !same3(r.consumer)));
-  for (const r of s.regs) if (r.pendingEntry && ids.has(r.pendingEntry.id)) {
-    delete r.pendingEntry;
-    r.pending = 0;
+  let mutations = 0;
+  const spend = (cost) => {
+    if (mutations >= 32) return false;
+    if (!maintenanceStep(s, cost, now, "delete-principal:" + id)) {
+      if (mutations === 0) throw new ResourceExhausted("one deletion tombstone exceeds maxCommitBytes; operator review required");
+      return false;
+    }
+    mutations++;
+    return true;
+  };
+  const affected = (v) => typeof v === "string" ? v === pid || ids.has(v) : v !== null && typeof v === "object" ? Object.values(v).some(affected) : false;
+  switch (c.phase) {
+    case "registrations": {
+      for (let i = s.regs.length - 1; i >= 0; i--) {
+        const r = s.regs[i];
+        if (r.target === pid || r.consumer && same3(r.consumer)) {
+          if (!spend(256)) return;
+          s.regs.splice(i, 1);
+        } else if (r.pendingEntry && ids.has(r.pendingEntry.id)) {
+          if (!spend(256)) return;
+          delete r.pendingEntry;
+          r.pending = 0;
+        }
+      }
+      for (let i = s.outbox.length - 1; i >= 0; i--) {
+        const e = s.outbox[i];
+        if (e.target === pid || e.entry && ids.has(e.entry.id)) {
+          if (!spend(256)) return;
+          s.outbox.splice(i, 1);
+        }
+      }
+      c.phase = "mailboxes";
+      return;
+    }
+    case "mailboxes": {
+      for (const [key, b] of Object.entries(s.mailboxes?.boxes ?? {})) {
+        if (same3(b.principal)) {
+          if (!spend(256 + bytes5(key))) return;
+          delete s.mailboxes.boxes[key];
+        } else if (b.events.some((e) => e.event.entry && ids.has(e.event.entry.id))) {
+          if (!spend(512 + bytes5(key))) return;
+          b.gap = { epoch: b.epoch, from: b.acked + 1, to: b.next - 1 };
+          b.epoch = "deleted-" + createHash14("sha256").update(b.epoch + id).digest("hex");
+          b.acked = b.next - 1;
+          b.delivered = b.acked;
+          b.events = [];
+          b.bytes = 2;
+        }
+      }
+      c.phase = "claims";
+      return;
+    }
+    case "claims": {
+      for (const claims of [s.rpc?.claims, s.restoredClaims]) for (const [key, claim] of Object.entries(claims ?? {})) {
+        if (same3(claim.principal)) {
+          if (!spend(256 + bytes5(key))) {
+            tally(s);
+            return;
+          }
+          delete claims[key];
+        } else if (claim.result !== void 0 && affected(claim.result)) {
+          if (!spend(256 + bytes5(key))) {
+            tally(s);
+            return;
+          }
+          delete claim.result;
+          claim.resultExpired = true;
+          delete claim.reservedResultBytes;
+        }
+      }
+      tally(s);
+      c.phase = "generations";
+      return;
+    }
+    case "generations": {
+      for (const [g, r] of Object.entries(s.rpc?.generations ?? {})) if (same3(r.principal)) {
+        if (!spend(256 + bytes5(g))) {
+          tally(s);
+          return;
+        }
+        delete s.rpc.generations[g];
+      }
+      tally(s);
+      c.phase = "entries";
+      return;
+    }
+    case "entries": {
+      for (let i = s.entries.length - 1; i >= 0; i--) if (s.entries[i].owner === pid) {
+        if (!spend(256 + bytes5(s.entries[i].id))) return;
+        s.entries.splice(i, 1);
+        c.count++;
+      }
+      c.phase = "history";
+      return;
+    }
+    case "history": {
+      if (!spend(512)) return;
+      if (s.stream) {
+        s.stream.floor = s.stream.rev;
+        s.stream.log = [];
+        s.stream.bytes = 0;
+        seal(s);
+      }
+      c.phase = "completed";
+      return;
+    }
   }
-  s.outbox = s.outbox.filter((e) => e.target !== pid && (!e.entry || !ids.has(e.entry.id)));
-  for (const [key, b] of Object.entries(s.mailboxes?.boxes ?? {})) {
-    if (same3(b.principal)) {
-      delete s.mailboxes.boxes[key];
-      continue;
-    }
-    if (b.events.some((e) => e.event.entry && ids.has(e.event.entry.id))) {
-      b.gap = { epoch: b.epoch, from: b.acked + 1, to: b.next - 1 };
-      b.epoch = "deleted-" + createHash14("sha256").update(b.epoch + String(now)).digest("hex");
-      b.acked = b.next - 1;
-      b.delivered = b.acked;
-      b.events = [];
-      b.bytes = 2;
-    }
-  }
-  for (const claims of [s.rpc?.claims, s.restoredClaims]) for (const [key, c] of Object.entries(claims ?? {})) {
-    if (same3(c.principal)) {
-      delete claims[key];
-      continue;
-    }
-    if (c.result !== void 0 && [...ids].some((id) => JSON.stringify(c.result).includes(id))) {
-      delete c.result;
-      c.resultExpired = true;
-      delete c.reservedResultBytes;
-    }
-  }
-  for (const [g, r] of Object.entries(s.rpc?.generations ?? {})) if (same3(r.principal)) delete s.rpc.generations[g];
+}
+function tally(s) {
   if (s.rpc) {
-    s.rpc.bytes = Buffer.byteLength(JSON.stringify(s.rpc.claims)) + Buffer.byteLength(JSON.stringify(s.rpc.generations));
+    s.rpc.bytes = bytes5(s.rpc.claims) + bytes5(s.rpc.generations);
     s.rpc.reservedBytes = Object.values(s.rpc.claims).reduce((n, c) => n + (c.reservedResultBytes ?? 0), 0);
   }
-  s.snapshotEpoch = (s.snapshotEpoch ?? 0) + 1;
-  if (s.stream) {
-    s.stream.floor = s.stream.rev;
-    s.stream.log = [];
-    s.stream.bytes = 0;
-  }
-  seal2(s);
-  touch2(s, now);
-  const changed = Buffer.byteLength(JSON.stringify(before)) + Buffer.byteLength(JSON.stringify(s));
-  if (changed > limitsOf(s).maxCommitBytes) throw new ResourceExhausted("principal deletion needs the bounded batch protocol; no deletion was committed");
-  return ids.size;
 }
 
 // src/index.ts
