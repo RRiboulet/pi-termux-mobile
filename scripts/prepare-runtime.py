@@ -14,7 +14,7 @@ SOURCE = Path(os.environ.get('PI_SPACES_SOURCE', str(ROOT.parent / 'pi-spaces'))
 RUNTIME = ROOT / 'runtime'
 ASSETS = ROOT / 'android/app/src/main/assets'
 FILES = ['server.mjs', 'common.mjs', 'remote-env.mjs', 'env-server.mjs', 'pi-serverd.mjs',
-         'space-keystore.mjs', 'spaces-mobile.mjs', 'remote-client.mjs', 'remote-provision.mjs', 'pi-spaces.mjs', 'package.json',
+         'space-keystore.mjs', 'spaces-mobile.mjs', 'remote-client.mjs', 'remote-provision.mjs', 'remote-state.mjs', 'pi-spaces.mjs', 'package.json',
          'package-lock.json', 'public', 'node_modules', 'space-examples']
 
 source_available = (SOURCE / 'scripts/bundle-mobile.mjs').is_file()
@@ -32,9 +32,12 @@ for name in FILES:
 if source_available:
     subprocess.run(['npm', 'run', 'bundle'], cwd=SOURCE, check=True,
                    env={**os.environ, 'PI_SPACES_MOBILE_ROOT': str(ROOT)})
-for name in ('pi-spaces.mjs', 'space-examples'):
-    if not (RUNTIME / name).exists():
-        raise SystemExit(f'Required mobile bundle missing: {name}; prepare it from a pi-spaces source checkout first')
+if not (RUNTIME / 'pi-spaces.mjs').is_file():
+    raise SystemExit('Required mobile bundle missing: pi-spaces.mjs; prepare it from a pi-spaces source checkout first')
+if (RUNTIME / 'space-examples').is_dir():
+    FILES.append('space-examples')
+else:
+    print('WARNING: optional space-examples missing; packaging the runtime without CLI examples', file=sys.stderr)
 
 def entries(path):
     if path.name == '.bin':
