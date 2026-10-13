@@ -476,8 +476,10 @@ __export(claims_exports, {
   issueGeneration: () => issueGeneration,
   keyOf: () => keyOf,
   lookup: () => lookup,
+  resolveAdmission: () => resolveAdmission,
   setMetadata: () => setMetadata,
-  sweep: () => sweep
+  sweep: () => sweep,
+  validateGeneration: () => validateGeneration
 });
 import { createHash as createHash2, createHmac, randomBytes } from "node:crypto";
 function issueGeneration(s, now, principal, options = {}) {
@@ -489,7 +491,7 @@ function issueGeneration(s, now, principal, options = {}) {
   st.authorityId = options.authorityId ?? st.authorityId ?? "local";
   const nonce = `g${randomBytes(16).toString("hex")}`;
   const admitUntil = now + limitsOf(s).generationAdmitMs;
-  const rec = { principal: { ...principal }, incarnation: s.incarnation ?? null, issuedAt: now, admitUntil, spaceId: s.spaceId ?? null, authorityId: st.authorityId };
+  const rec = { primaryEpoch: options.primaryEpoch ?? s.primaryEpoch ?? 1, principal: { ...principal }, incarnation: s.incarnation ?? null, issuedAt: now, admitUntil, spaceId: s.spaceId ?? null, authorityId: st.authorityId };
   const generation = `${nonce}.${createHmac("sha256", st.signingKey).update(canonicalJson({ nonce, ...rec })).digest("hex")}`;
   const added = bytesOf2(rec) + bytesOf2(generation) + 2;
   if (claimBytes(s) + added > limitsOf(s).maxClaimBytes) throw new LimitError("the generation exceeds maxClaimBytes");
@@ -514,13 +516,7 @@ function admit(s, now, r, method, args, deadline, resultBytes = 1024) {
     if (c.resultExpired || c.decidedAt !== void 0 && c.decidedAt + limitsOf(s).claimResultMs <= now) throw new ResultExpired(`request ${r.requestId} was decided; its result is no longer kept`);
     return c.state === "cancelled" ? { kind: "cancelled", key } : { kind: "done", key, result: c.result ?? null };
   }
-  if (s.invalidGenerations?.[r.generation]) throw new IncarnationChanged("generation belongs to restored data");
-  const g = st.generations[r.generation];
-  if (!g) throw new RequestExpired(`generation ${r.generation} is unknown or expired`);
-  if (g.incarnation !== (s.incarnation ?? null)) throw new IncarnationChanged(`generation ${r.generation} belongs to an earlier incarnation of this space`);
-  if (g.spaceId !== (s.spaceId ?? null) || g.authorityId !== st.authorityId || !st.signingKey || r.generation !== `${r.generation.split(".")[0]}.${createHmac("sha256", st.signingKey).update(canonicalJson({ nonce: r.generation.split(".")[0], ...g })).digest("hex")}`) throw new RequestExpired("the generation signature or binding is invalid");
-  if (!samePrincipal(g.principal, r.principal)) throw new RequestExpired(`generation ${r.generation} was issued to another principal`);
-  if (now > g.admitUntil) throw new RequestExpired(`generation ${r.generation} no longer admits new requests`);
+  validateGeneration(s, now, r);
   const lim = limitsOf(s);
   const rec = { method, argHash: hash5, deadline, state: "pending", generation: r.generation, requestId: r.requestId, principal: { ...r.principal }, reservedResultBytes: resultBytes };
   const added = bytesOf2(rec) + bytesOf2(key) + 2;
@@ -609,6 +605,32 @@ function setMetadata(s, key, meta) {
   const delta = bytesOf2(c) - before;
   if (claimBytes(s) + delta > limitsOf(s).maxClaimBytes) throw new LimitError("authenticated claim metadata exceeds budget");
   st.bytes += delta;
+}
+function validateGeneration(s, now, r) {
+  checkPrincipal(r.principal);
+  const st = s.rpc;
+  if (!st) throw new RequestExpired("generation is unknown");
+  if (s.invalidGenerations?.[r.generation]) throw new IncarnationChanged("generation belongs to restored data");
+  const g = st.generations[r.generation];
+  if (!g) throw new RequestExpired(`generation ${r.generation} is unknown or expired`);
+  if (g.incarnation !== (s.incarnation ?? null)) throw new IncarnationChanged(`generation ${r.generation} belongs to an earlier incarnation of this space`);
+  if (g.spaceId !== (s.spaceId ?? null) || g.authorityId !== st.authorityId || !st.signingKey || r.generation !== `${r.generation.split(".")[0]}.${createHmac("sha256", st.signingKey).update(canonicalJson({ nonce: r.generation.split(".")[0], ...g })).digest("hex")}`) throw new RequestExpired("the generation signature or binding is invalid");
+  if (!samePrincipal(g.principal, r.principal)) throw new RequestExpired(`generation ${r.generation} was issued to another principal`);
+  if (now > g.admitUntil) throw new RequestExpired(`generation ${r.generation} no longer admits new requests`);
+  return g;
+}
+function resolveAdmission(s, now, r, method, argumentHash, primaryEpoch) {
+  assertAdminIdle(s);
+  if (!r.requestId || !method || !/^[a-f0-9]{64}$/.test(argumentHash) || !Number.isSafeInteger(primaryEpoch) || primaryEpoch < 0) throw new TypeError("invalid admission resolution binding");
+  const key = keyOf(s, r), known = s.rpc?.claims[key] ?? s.restoredClaims?.[key];
+  if (known) {
+    if (known.method !== method || known.argHash !== argumentHash) throw new RequestConflict("resolution changed original method/arguments");
+    return lookup(s, r, now);
+  }
+  const generation = validateGeneration(s, now, r);
+  if (generation.primaryEpoch !== primaryEpoch || s.primaryEpoch !== void 0 && s.primaryEpoch !== primaryEpoch) throw new IncarnationChanged("missing request cannot be resolved across epochs or legacy generations");
+  if (s.restore || s.authorityTransition || s.membership?.state === "recoveryBlocked") throw new IncarnationChanged("missing request requires uninterrupted current history");
+  return { state: "notAdmitted", spaceId: s.spaceId ?? null, authorityId: s.rpc.authorityId, incarnation: s.incarnation ?? null, primaryEpoch, generation: r.generation, requestId: r.requestId, method, argumentHash };
 }
 var encoder2, bytesOf2, RequestConflict, RequestExpired, ResultExpired, IncarnationChanged, OperationCancelled, rpc, samePrincipal, checkPrincipal, argHash, keyOf;
 var init_claims = __esm({
@@ -2272,12 +2294,22 @@ var init_client = __esm({
         }, this.ctx);
       }
       /** A new request generation for `principal`, in this space. Request ids are admitted while it is open. */
-      issueGeneration(principal) {
+      issueGeneration(principal, options = {}) {
         return this.host.commit(async (tx) => {
           const s = await this.doc(tx), key = await hostKey(tx, this.now());
           this.options.authorization?.check();
-          return issueGeneration(s, this.now(), principal, { key, authorityId: this.options.authorityId });
+          return issueGeneration(s, this.now(), principal, { key, authorityId: this.options.authorityId, primaryEpoch: options.primaryEpoch });
         }, this.ctx);
+      }
+      /** Resolve a journaled identity; a miss only authorizes retry of that same identity on this epoch. */
+      async resolveOperation(target, method, argumentHash, primaryEpoch) {
+        if (this.options.consumer && canonicalPrincipal(target.principal) !== canonicalPrincipal(this.options.consumer)) throw new PermissionError("another principal request");
+        const view3 = await this.host.commit(async (tx) => {
+          const s = await this.doc(tx);
+          this.options.authorization?.check();
+          return plain(resolveAdmission(s, this.now(), target, method, argumentHash, primaryEpoch));
+        }, this.ctx);
+        return view3.state === "pending" && !view3.restoredHistory ? this.pollOperation(target) : view3;
       }
       /** State of a known request, read without a commit. An unknown id is RequestExpired, never a new operation. */
       async pollOperation(target) {
@@ -2654,7 +2686,7 @@ var init_service = __esm({
     init_paging();
     init_mailbox();
     PROTOCOL_VERSION = 1;
-    METHODS = ["hello", "generation", "write", "read", "take", "pollOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"];
+    METHODS = ["hello", "generation", "write", "read", "take", "pollOperation", "resolveOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"];
     MUTATING = ["write", "read", "take", "cancelOperation", "txn", "lease", "wait", "notify", "ack"];
     StaticIdentity = class {
       table;
@@ -2668,10 +2700,10 @@ var init_service = __esm({
     DEFAULT_POLICY = {
       roles: {
         admin: { methods: "*" },
-        host: { methods: ["hello", "generation", "write", "read", "take", "pollOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"] },
-        member: { methods: ["hello", "generation", "write", "read", "take", "pollOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"] },
-        resolution: { methods: ["hello", "pollOperation", "cancelOperation", "txn", "lease"] },
-        observer: { methods: ["hello", "generation", "read", "pollOperation", "cancelOperation", "readAll", "count", "stats", "changes", "notify", "events", "ack"] },
+        host: { methods: ["hello", "generation", "write", "read", "take", "pollOperation", "resolveOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"] },
+        member: { methods: ["hello", "generation", "write", "read", "take", "pollOperation", "resolveOperation", "cancelOperation", "readAll", "count", "stats", "txn", "lease", "changes", "wait", "notify", "events", "ack"] },
+        resolution: { methods: ["hello", "pollOperation", "resolveOperation", "cancelOperation", "txn", "lease"] },
+        observer: { methods: ["hello", "generation", "read", "pollOperation", "resolveOperation", "cancelOperation", "readAll", "count", "stats", "changes", "notify", "events", "ack"] },
         // own read and notify results, never a write
         unpaired: { methods: ["hello", "generation"] }
         // a device in the enrollment group: nothing but its own pairing (enroll.ts handles `enroll` and `enrollStatus` before the service)
@@ -2814,7 +2846,7 @@ var init_service = __esm({
           case "hello":
             return this.hello(a, c);
           case "generation": {
-            const g = await client.issueGeneration(c.id.principal);
+            const g = await client.issueGeneration(c.id.principal, { primaryEpoch: await this.o.epochForSpace?.(c.space) ?? this.o.primaryEpoch });
             return { generation: g.generation, admitUntil: g.admitUntil };
           }
           case "write": {
@@ -2833,6 +2865,15 @@ var init_service = __esm({
             return this.readTake(method, a, c);
           case "pollOperation":
             return this.poll(a, c);
+          case "resolveOperation": {
+            const target = this.target(a.targetRequest, c.id), method2 = str(a.method, "method"), hash5 = str(a.argumentHash, "argumentHash"), epoch2 = int(a.primaryEpoch, "primaryEpoch");
+            const current = await this.o.epochForSpace?.(c.space) ?? this.o.primaryEpoch;
+            if (epoch2 > current) throw new IncarnationChanged("resolution epoch is ahead of Member");
+            const view3 = await client.resolveOperation(target, method2, hash5, epoch2);
+            if (view3.state === "notAdmitted" && epoch2 !== current) throw new IncarnationChanged("missing request requires current Member epoch");
+            if ("result" in view3 && view3.result && isObj(view3.result) && Array.isArray(view3.result.types)) this.checkTypes(grant2, view3.result.types, "this retained result");
+            return view3;
+          }
           case "cancelOperation": {
             const t = this.target(a.targetRequest, c.id);
             return await client.cancelOperation(t, { request });
@@ -3047,7 +3088,7 @@ var init_grants = __esm({
     init_service();
     init_core();
     bytes = (g) => Buffer.from("pi-spaces/grant/v1\n" + canonicalJson(g));
-    RESOLUTION = /* @__PURE__ */ new Set(["hello", "pollOperation", "cancelOperation", "txn", "lease", "rotationStatus"]);
+    RESOLUTION = /* @__PURE__ */ new Set(["hello", "pollOperation", "resolveOperation", "cancelOperation", "txn", "lease", "rotationStatus"]);
     GrantDenied = class extends PermissionError {
     };
     GrantAuthority = class {
@@ -5411,6 +5452,9 @@ var RemoteSpace = class {
   async requestBound(call) {
     return this.send(call);
   }
+  async resolveOperation(target, method, argumentHash, primaryEpoch) {
+    return await this.send({ method: "resolveOperation", args: { targetRequest: target, method, argumentHash, primaryEpoch } });
+  }
   async requestGeneration() {
     return await this.rawCall("generation");
   }
@@ -6724,10 +6768,16 @@ var DelegationVerifier = class {
         requestId: d.targetRequest.requestId
       };
       reference = s.rpc?.claims[keyOf(s, r)] ?? s.restoredClaims?.[keyOf(s, r)];
-      if (!reference || reference.method !== d.targetRequest.method || reference.argHash !== d.targetRequest.argumentHash || (reference.policyVersion ?? 1) !== d.targetRequest.policyVersion || d.policyVersion !== d.targetRequest.policyVersion)
+      const missingResolution = call.method === "resolveOperation" && !reference;
+      if (missingResolution) {
+        if (d.policyVersion !== d.targetRequest.policyVersion || call.args?.method !== d.targetRequest.method || call.args?.argumentHash !== d.targetRequest.argumentHash || call.args?.primaryEpoch !== d.targetPrimaryEpoch) throw new DelegationDenied("missing resolution binding differs");
+        resolveAdmission(s, this.now(), r, d.targetRequest.method, d.targetRequest.argumentHash, d.targetPrimaryEpoch);
+      }
+      if (!missingResolution && (!reference || reference.method !== d.targetRequest.method || reference.argHash !== d.targetRequest.argumentHash || (reference.policyVersion ?? 1) !== d.targetRequest.policyVersion || d.policyVersion !== d.targetRequest.policyVersion))
         throw new DelegationDenied("targetRequest does not name own bound claim");
-      if (call.method === "pollOperation" || call.method === "cancelOperation") {
+      if (call.method === "pollOperation" || call.method === "resolveOperation" || call.method === "cancelOperation") {
         const a = call.args?.targetRequest;
+        if (call.method === "resolveOperation" && (call.args?.method !== d.targetRequest.method || call.args?.argumentHash !== d.targetRequest.argumentHash || call.args?.primaryEpoch !== d.targetPrimaryEpoch)) throw new DelegationDenied("wire resolution binding differs");
         if (!a || a.generation !== r.generation || a.requestId !== r.requestId)
           throw new DelegationDenied("wire targetRequest differs");
       } else if (call.method === "txn" || call.method === "lease") {
@@ -6741,7 +6791,7 @@ var DelegationVerifier = class {
           throw new DelegationDenied("events renewal must name own waiter registration");
       } else
         throw new DelegationDenied("targetRequest forbidden for this follow-up");
-    } else if (["pollOperation", "cancelOperation"].includes(call.method) || (call.method === "txn" && call.args?.action !== "begin" || call.method === "lease"))
+    } else if (["pollOperation", "resolveOperation", "cancelOperation"].includes(call.method) || (call.method === "txn" && call.args?.action !== "begin" || call.method === "lease"))
       throw new DelegationDenied("follow-up requires targetRequest");
     const epoch2 = s.primaryEpoch ?? 1;
     if (!positive(d.targetPrimaryEpoch) || call.frame?.primaryEpoch !== void 0 && call.frame.primaryEpoch !== d.targetPrimaryEpoch || d.targetPrimaryEpoch > epoch2 || d.targetPrimaryEpoch < epoch2 && !reference)
@@ -8440,6 +8490,7 @@ var FederationRpc = class {
           grant: g,
           targetRequest: [
             "pollOperation",
+            "resolveOperation",
             "cancelOperation",
             "events",
             "txn",
@@ -8482,18 +8533,36 @@ var FederationRpc = class {
   }
   async invoke(s) {
     const id = await this.member(s.target), r = await this.remote(id, s.principal, s.policyVersion, s.targetRequest);
-    const result = await r.requestBound({
-      method: s.method,
-      args: s.args,
-      request: { generation: s.generation, requestId: s.requestId },
-      frame: { authorityId: s.target.authorityId, primaryEpoch: s.target.primaryEpoch }
-    });
+    try {
+      await r.requestBound({
+        method: s.method,
+        args: s.args,
+        request: { generation: s.generation, requestId: s.requestId },
+        frame: { authorityId: s.target.authorityId, primaryEpoch: s.target.primaryEpoch }
+      });
+    } catch (e) {
+      if (e instanceof RequestConflict || e instanceof RequestExpired || e instanceof ResultExpired || e instanceof IncarnationChanged || e instanceof PermissionError) return this.receipt(s, "needsReview", void 0, e.constructor.name);
+      throw e;
+    }
     return this.resolve(s);
   }
   async resolve(s) {
     const id = await this.member(s.target), r = await this.remote(id, s.principal, s.policyVersion, this.reference(s));
     try {
-      const v = await r.pollOperation({ generation: s.generation, requestId: s.requestId });
+      const ref = this.reference(s);
+      let v;
+      try {
+        v = await r.resolveOperation({ generation: s.generation, requestId: s.requestId }, ref.method, ref.argumentHash, s.target.primaryEpoch);
+      } catch (e) {
+        if (e instanceof RemoteError && e.code === "UnsupportedMethod") v = await r.pollOperation({ generation: s.generation, requestId: s.requestId });
+        else throw e;
+      }
+      if (!v || typeof v !== "object") return this.receipt(s, "needsReview", void 0, "invalid resolution response");
+      if (v.state === "notAdmitted") {
+        if (v.spaceId !== s.target.spaceId || v.authorityId !== s.target.authorityId || v.incarnation !== s.target.dataIncarnation || v.primaryEpoch !== s.target.primaryEpoch || v.generation !== s.generation || v.requestId !== s.requestId || v.method !== ref.method || v.argumentHash !== ref.argumentHash) return this.receipt(s, "needsReview", void 0, "invalid current-epoch admission proof");
+        return this.receipt(s, "notAdmitted");
+      }
+      if (!["pending", "done", "cancelled"].includes(v.state) || v.method !== ref.method) return this.receipt(s, "needsReview", void 0, "invalid retained claim response");
       if (v.resultExpired || v.unknownOutcome || v.restoredHistory)
         return this.receipt(s, "needsReview", void 0, "retained outcome unavailable");
       return this.receipt(
@@ -8503,9 +8572,10 @@ var FederationRpc = class {
         v.error?.code
       );
     } catch (e) {
-      if (e instanceof RequestExpired || e instanceof ResultExpired || e instanceof IncarnationChanged || e instanceof PermissionError)
+      if (e instanceof RequestConflict || e instanceof RequestExpired || e instanceof ResultExpired || e instanceof IncarnationChanged || e instanceof PermissionError)
         return this.receipt(s, "needsReview", void 0, e.constructor.name);
       if (e instanceof RemoteError && [
+        "RequestConflict",
         "RequestExpired",
         "ResultExpired",
         "IncarnationChanged",
