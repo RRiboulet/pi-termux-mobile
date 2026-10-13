@@ -5304,6 +5304,19 @@ init_service();
 init_auth();
 init_mailbox();
 import { performance } from "node:perf_hooks";
+var proofQueues = /* @__PURE__ */ new WeakMap();
+function orderedProof(transport, run) {
+  const previous = proofQueues.get(transport) ?? Promise.resolve();
+  const result = previous.then(run);
+  const tail = result.then(() => {
+  }, () => {
+  });
+  proofQueues.set(transport, tail);
+  void tail.then(() => {
+    if (proofQueues.get(transport) === tail) proofQueues.delete(transport);
+  });
+  return result;
+}
 function inProcessTransport(service, conn) {
   return { request: (text2) => service.handleText(text2, conn) };
 }
@@ -5499,14 +5512,14 @@ var RemoteSpace = class {
   authenticate() {
     const signer = this.o.signer;
     if (!signer) return Promise.reject(new UnsupportedOperation("this RemoteSpace has no signer"));
-    this.proving ??= (async () => {
+    this.proving ??= orderedProof(this.t, async () => {
       const ch = await this.send({ method: "challenge", args: { protocol: AUTH_PROTOCOL } });
       if (ch.gateHostId !== this.o.expectedGateHostId) throw new RemoteError("AuthorityMismatch", `the challenge comes from host ${ch.gateHostId}, not from ${this.o.expectedGateHostId}`);
       if (ch.observedPeerId !== this.o.ownPeerId) throw new RemoteError("AuthorityMismatch", `the host saw peer ${ch.observedPeerId} on this connection, not ${this.o.ownPeerId}: a challenge for another peer is not signed`);
       const { expiresAt: _expires, ...challenge } = ch;
       const signature = Buffer.from(await signer.sign(signedBytes(challenge))).toString("base64");
       return this.send({ method: "prove", args: { keyId: signer.keyId, signature, challenge } });
-    })().finally(() => {
+    }).finally(() => {
       this.proving = void 0;
     });
     return this.proving;
