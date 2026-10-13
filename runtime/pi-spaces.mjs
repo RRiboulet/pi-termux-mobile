@@ -8121,16 +8121,22 @@ var FederatedSpace = class {
         await this.save(op);
         continue;
       }
-      const spec = await this.o.io.step(
-        member,
-        op.principal,
-        method,
-        a,
-        op.policyVersion,
-        op.kind === "txn" && a.originId ? (await this.router(a.originId).get((await this.get(
-          a.originId
-        )).children[member])).steps[0] : void 0
-      );
+      let spec;
+      try {
+        spec = await this.o.io.step(
+          member,
+          op.principal,
+          method,
+          a,
+          op.policyVersion,
+          op.kind === "txn" && a.originId ? (await this.router(a.originId).get((await this.get(
+            a.originId
+          )).children[member])).steps[0] : void 0
+        );
+      } catch (e) {
+        if (e instanceof TransportFailure) throw new FederationPending(op.id);
+        throw e;
+      }
       const expected = (await this.o.state()).members[member]?.target;
       if (!expected || hash4(spec.target) !== hash4(expected) || hash4(spec.principal) !== hash4(op.principal))
         throw new RoutingConflict("target/principal adapter binding mismatch");
