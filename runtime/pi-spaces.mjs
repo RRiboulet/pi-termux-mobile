@@ -8391,6 +8391,7 @@ var FederatedSpace = class {
 
 // src/federation-rpc.ts
 init_claims();
+init_core();
 var FederationRpc = class {
   protocol = "pi-spaces-rpc-v1";
   o;
@@ -8502,6 +8503,8 @@ var FederationRpc = class {
         v.error?.code
       );
     } catch (e) {
+      if (e instanceof RequestExpired || e instanceof ResultExpired || e instanceof IncarnationChanged || e instanceof PermissionError)
+        return this.receipt(s, "needsReview", void 0, e.constructor.name);
       if (e instanceof RemoteError && [
         "RequestExpired",
         "ResultExpired",
