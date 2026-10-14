@@ -3759,6 +3759,70 @@ init_canonical();
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, lstatSync as lstatSync2, mkdirSync as mkdirSync2 } from "node:fs";
 import { dirname as dirname2 } from "node:path";
+
+// src/erasure-register-policy.ts
+var digest = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+function barrier(value, spaceId, reject) {
+  if (!value || value.spaceId !== spaceId || !Number.isSafeInteger(value.epoch) || value.epoch < 1 || !["pending", "sealed"].includes(value.state) || !digest(value.commandHash) || !Number.isSafeInteger(value.archiveDeadline) || value.archiveDeadline < 0 || typeof value.archivesPending !== "boolean") reject("invalid independent erasure barrier");
+}
+function catalog(value, spaceId, reject) {
+  if (!value || value.spaceId !== spaceId || !Array.isArray(value.artifacts) || value.artifacts.length > 128)
+    reject("invalid erasure archive catalog");
+  const ids = /* @__PURE__ */ new Set();
+  for (const a of value.artifacts) {
+    if (!a || typeof a.id !== "string" || !a.id || a.id.length > 128 || ids.has(a.id) || !digest(a.sha256) || !Number.isSafeInteger(a.epoch) || a.epoch < 0 || !["backup", "backend-history"].includes(a.kind) || !["retained", "quarantined", "destroyed"].includes(a.state) || a.deleteBefore !== void 0 && (!Number.isSafeInteger(a.deleteBefore) || a.deleteBefore < 0))
+      reject("invalid erasure archive binding");
+    ids.add(a.id);
+  }
+}
+function validateErasureRegisterUpdate(key, next, prior, read, reject) {
+  if (key.startsWith("erasure:")) {
+    const spaceId = key.slice("erasure:".length);
+    if (!spaceId || spaceId.length > 128) reject("invalid erasure space");
+    barrier(next, spaceId, reject);
+    if (prior) {
+      barrier(prior, spaceId, reject);
+      if (next.epoch === prior.epoch) {
+        if (next.commandHash !== prior.commandHash || next.archiveDeadline !== prior.archiveDeadline || prior.state === "sealed" && next.state !== "sealed" || !prior.archivesPending && next.archivesPending)
+          reject("erasure barrier cannot regress or change its binding");
+      } else if (next.epoch !== prior.epoch + 1 || prior.state !== "sealed" || prior.archivesPending || next.state !== "pending" || !next.archivesPending || next.commandHash === prior.commandHash) {
+        reject("erasure epoch requires completed preceding deletion and archives");
+      }
+    } else if (next.epoch !== 1 || next.state !== "pending" || !next.archivesPending) {
+      reject("first erasure epoch must start pending at one");
+    }
+    const artifacts = read("erasure-archives:" + spaceId);
+    if (artifacts) catalog(artifacts, spaceId, reject);
+    const remaining = (artifacts?.artifacts ?? []).filter((a) => a.epoch < next.epoch && a.state !== "destroyed");
+    if (next.state === "sealed" && (remaining.some((a) => a.state !== "quarantined") || next.archivesPending !== remaining.length > 0)) reject("erasure seal does not match archive retirement");
+    if (next.state === "pending" && !next.archivesPending) reject("pending erasure must retain archive barrier");
+  } else if (key.startsWith("erasure-archives:")) {
+    const spaceId = key.slice("erasure-archives:".length);
+    if (!spaceId || spaceId.length > 128) reject("invalid erasure space");
+    catalog(next, spaceId, reject);
+    if (prior) catalog(prior, spaceId, reject);
+    const floor = read("erasure:" + spaceId);
+    if (floor) barrier(floor, spaceId, reject);
+    const previous = new Map((prior?.artifacts ?? []).map((a) => [a.id, a]));
+    for (const a of next.artifacts) {
+      const old = previous.get(a.id);
+      if (!old) {
+        if (a.state !== "retained" || a.deleteBefore !== void 0 || (floor ? floor.state !== "sealed" || a.epoch !== floor.epoch : a.epoch !== 0))
+          reject("new archive must match completed deletion epoch");
+      } else {
+        previous.delete(a.id);
+        const rank = { retained: 0, quarantined: 1, destroyed: 2 };
+        if (old.sha256 !== a.sha256 || old.epoch !== a.epoch || old.kind !== a.kind || rank[a.state] < rank[old.state] || old.deleteBefore !== void 0 && a.deleteBefore !== old.deleteBefore)
+          reject("archive binding or retirement cannot regress");
+        if (a.state === "quarantined" && (!floor || a.epoch >= floor.epoch || a.deleteBefore !== floor.archiveDeadline))
+          reject("archive quarantine requires current deletion deadline");
+      }
+    }
+    if (previous.size) reject("archive retirement records cannot be removed");
+  }
+}
+
+// src/recovery-register.ts
 var RegisterConflict = class extends Error {
 };
 var SqliteRecoveryRegister = class {
@@ -3783,8 +3847,14 @@ var SqliteRecoveryRegister = class {
     const encoded = canonicalJson(value);
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const prior = this.db.prepare("SELECT version FROM records WHERE key=?").get(key);
+      const prior = this.db.prepare("SELECT version,value FROM records WHERE key=?").get(key);
       if ((prior?.version ?? null) !== expected) throw new RegisterConflict("register version changed");
+      validateErasureRegisterUpdate(key, JSON.parse(encoded), prior ? JSON.parse(prior.value) : null, (relatedKey) => {
+        const related = this.db.prepare("SELECT value FROM records WHERE key=?").get(relatedKey);
+        return related ? JSON.parse(related.value) : null;
+      }, (message) => {
+        throw new RegisterConflict(message);
+      });
       const version = (expected ?? 0) + 1;
       this.db.prepare("INSERT INTO records(key,version,value) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET version=excluded.version,value=excluded.value").run(key, version, encoded);
       this.db.exec("COMMIT");
@@ -8821,7 +8891,7 @@ init_canonical();
 init_spaces();
 init_core();
 import { createHash as createHash14 } from "node:crypto";
-var digest = (value) => createHash14("sha256").update(canonicalJson(value)).digest("hex");
+var digest2 = (value) => createHash14("sha256").update(canonicalJson(value)).digest("hex");
 var MemberTransitionInstaller = class {
   o;
   constructor(o) {
@@ -8838,7 +8908,7 @@ var MemberTransitionInstaller = class {
     for (const permit of Object.values(boot.value.spaces)) if (permit.durability === "sync" || !["local", "primary"].includes(permit.role) || ![t.expectedAuthorityId, t.newAuthorityId].includes(permit.authorityId)) throw new RecoveryBlocked("single-mode transition cannot reconcile replicas or another authority");
     const priorAck = await o.installed.get(`member-ack:${t.recoveryId}:${o.hostId}`);
     if (priorAck) {
-      if (boot.value.state !== "active" || priorAck.value.bootDigest !== digest(boot.value)) throw new RecoveryBlocked("installed ACK no longer matches the external member boot configuration");
+      if (boot.value.state !== "active" || priorAck.value.bootDigest !== digest2(boot.value)) throw new RecoveryBlocked("installed ACK no longer matches the external member boot configuration");
       for (const i of infos) {
         const local2 = await o.installed.get(`installed:${o.hostId}:${i.spaceId}`), s = await snapshotSpace(o.host, i.spaceId, o.ctx);
         if (canonicalJson(local2?.value ?? null) !== canonicalJson(boot.value.spaces[i.spaceId]) || s?.acceptedAuthorityId !== t.newAuthorityId || s.primaryEpoch !== 1 || s.incarnation !== boot.value.spaces[i.spaceId].dataIncarnation) throw new RecoveryBlocked("member local configuration disagrees with persisted ACK");
@@ -8942,7 +9012,7 @@ var MemberTransitionInstaller = class {
     }
     const next = { hostId: o.hostId, state: "active", spaces: spaces2 };
     if (canonicalJson(boot.value) !== canonicalJson(next)) await o.external.compareAndSet(key, boot.version, next);
-    const ack = { hostId: o.hostId, recoveryId: t.recoveryId, authorityId: t.newAuthorityId, bootDigest: digest(next), spaces: tuples };
+    const ack = { hostId: o.hostId, recoveryId: t.recoveryId, authorityId: t.newAuthorityId, bootDigest: digest2(next), spaces: tuples };
     const localKey = `member-ack:${t.recoveryId}:${o.hostId}`, local = await o.installed.get(localKey);
     if (local && canonicalJson(local.value) !== canonicalJson(ack)) throw new RecoveryBlocked("member ACK conflicts with local installation");
     if (!local) await o.installed.compareAndSet(localKey, null, ack);
@@ -8964,7 +9034,7 @@ init_canonical();
 init_enroll();
 init_core();
 var ControlRecoveryJobs = defineDoc5({ kind: "pi-spaces.control-recovery-jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
-var digest2 = (v) => createHash15("sha256").update(canonicalJson(v)).digest("hex");
+var digest3 = (v) => createHash15("sha256").update(canonicalJson(v)).digest("hex");
 var ControlRecoveryController = class {
   o;
   constructor(o) {
@@ -8992,7 +9062,7 @@ var ControlRecoveryController = class {
   async submit(request) {
     await this.quiesced();
     if (!request || ![request.recoveryId, request.controlSpaceId, request.snapshotRef, request.expectedAuthorityId, request.expectedDataIncarnation, request.targetHostId].every((v) => typeof v === "string" && v.length > 0 && v.length <= 256) || request.targetHostId !== this.o.hostId || !Number.isSafeInteger(request.expectedPrimaryEpoch) || request.expectedPrimaryEpoch < 1 || !Array.isArray(request.confirmedMembers) || request.confirmedMembers.length > 128 || !request.confirmedMembers.every((v) => typeof v === "string" && v.length > 0 && v.length <= 128) || new Set(request.confirmedMembers).size !== request.confirmedMembers.length || !request.confirmedMembers.includes(this.o.hostId)) throw new RecoveryBlocked("invalid control recovery identity or confirmed member set");
-    const argsHash = digest2(request), prior = (await this.o.host.snapshot(ControlRecoveryJobs, this.o.ctx))?.jobs[request.recoveryId];
+    const argsHash = digest3(request), prior = (await this.o.host.snapshot(ControlRecoveryJobs, this.o.ctx))?.jobs[request.recoveryId];
     if (prior) {
       if (prior.argsHash !== argsHash) throw new RegisterConflict("control recovery id has different arguments");
       return plain(prior);
@@ -9062,7 +9132,7 @@ var ControlRecoveryController = class {
     const versions = /* @__PURE__ */ new Map();
     for (const host of r.confirmedMembers) {
       const ack = await o.external.get(`authority-ack:${id}:${host}`), memberBoot = await o.external.get(`boot:${host}`);
-      if (!ack || !memberBoot || ack.value.authorityId !== t.newAuthorityId || ack.value.hostId !== host || ack.value.recoveryId !== id || memberBoot.value.state !== "active" || digest2(memberBoot.value) !== ack.value.bootDigest) throw new RecoveryBlocked(`member ${host} has no matching durable installation ACK`);
+      if (!ack || !memberBoot || ack.value.authorityId !== t.newAuthorityId || ack.value.hostId !== host || ack.value.recoveryId !== id || memberBoot.value.state !== "active" || digest3(memberBoot.value) !== ack.value.bootDigest) throw new RecoveryBlocked(`member ${host} has no matching durable installation ACK`);
       versions.set(`boot:${host}`, memberBoot.version);
       versions.set(`authority-ack:${id}:${host}`, ack.version);
     }
@@ -9453,7 +9523,7 @@ import { createHash as createHash17 } from "node:crypto";
 init_routing_semantics();
 var hash6 = (value) => createHash17("sha256").update(canonicalJson(value)).digest("hex");
 var copy7 = (v) => JSON.parse(JSON.stringify(v));
-var evidenceKey = (root, id, digest4) => hash6([root, id, "entry-digests", digest4.slice(0, 2)]);
+var evidenceKey = (root, id, digest5) => hash6([root, id, "entry-digests", digest5.slice(0, 2)]);
 var RootHistoryErasure = class {
   o;
   constructor(o) {
@@ -9601,7 +9671,7 @@ var RootHistoryErasure = class {
 
 // src/erasure-archives.ts
 init_canonical();
-var digest3 = (v) => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
+var digest4 = (v) => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
 var ErasureArchiveController = class {
   o;
   constructor(o) {
@@ -9615,24 +9685,24 @@ var ErasureArchiveController = class {
   }
   async registerArchive(spaceId, artifact) {
     await this.o.authorize();
-    if (!spaceId || spaceId.length > 128 || !artifact.id || artifact.id.length > 128 || !digest3(artifact.sha256) || !Number.isSafeInteger(artifact.epoch) || artifact.epoch < 0 || !["backup", "backend-history"].includes(artifact.kind)) throw Error("invalid owned archive");
+    if (!spaceId || spaceId.length > 128 || !artifact.id || artifact.id.length > 128 || !digest4(artifact.sha256) || !Number.isSafeInteger(artifact.epoch) || artifact.epoch < 0 || !["backup", "backend-history"].includes(artifact.kind)) throw Error("invalid owned archive");
     const floor = await this.o.register.get("erasure:" + spaceId);
     if (floor && (floor.value.state !== "sealed" || floor.value.epoch !== artifact.epoch)) throw Error("archive does not match completed deletion epoch");
-    const current = await this.catalog(spaceId), catalog = current?.value ?? { spaceId, artifacts: [] }, old = catalog.artifacts.find((a2) => a2.id === artifact.id);
+    const current = await this.catalog(spaceId), catalog2 = current?.value ?? { spaceId, artifacts: [] }, old = catalog2.artifacts.find((a2) => a2.id === artifact.id);
     if (old) {
       if (canonicalJson({ ...old, state: void 0 }) !== canonicalJson({ ...artifact, state: void 0 })) throw Error("archive ID changed binding");
       return old;
     }
-    if (catalog.artifacts.length >= 128) throw Error("archive catalog is full");
+    if (catalog2.artifacts.length >= 128) throw Error("archive catalog is full");
     const a = { ...artifact, state: "retained" };
-    catalog.artifacts.push(a);
+    catalog2.artifacts.push(a);
     await this.o.authorize();
-    await this.o.register.compareAndSet("erasure-archives:" + spaceId, current?.version ?? null, catalog);
+    await this.o.register.compareAndSet("erasure-archives:" + spaceId, current?.version ?? null, catalog2);
     return a;
   }
   async begin(spaceId, commandHash2, retentionMs) {
     await this.o.authorize();
-    if (!spaceId || spaceId.length > 128 || !digest3(commandHash2) || !Number.isSafeInteger(retentionMs) || retentionMs < 0 || retentionMs > 864e5) throw Error("bounded deletion retention required");
+    if (!spaceId || spaceId.length > 128 || !digest4(commandHash2) || !Number.isSafeInteger(retentionMs) || retentionMs < 0 || retentionMs > 864e5) throw Error("bounded deletion retention required");
     const old = await this.o.register.get("erasure:" + spaceId);
     if (old?.value.commandHash === commandHash2) return old.value;
     if (old?.value.state === "pending") throw Error("another deletion is pending");
@@ -9647,12 +9717,12 @@ var ErasureArchiveController = class {
     if (!floor || floor.value.commandHash !== commandHash2) throw Error("unknown deletion");
     const current = await this.catalog(spaceId);
     if (!current) return;
-    const catalog = current.value;
-    for (const a of catalog.artifacts) if (a.epoch < floor.value.epoch && a.state !== "destroyed") {
+    const catalog2 = current.value;
+    for (const a of catalog2.artifacts) if (a.epoch < floor.value.epoch && a.state !== "destroyed") {
       a.state = "quarantined";
       a.deleteBefore = floor.value.archiveDeadline;
     }
-    await this.o.register.compareAndSet("erasure-archives:" + spaceId, current.version, catalog);
+    await this.o.register.compareAndSet("erasure-archives:" + spaceId, current.version, catalog2);
   }
   async destroyDue(spaceId, commandHash2, force = false) {
     await this.o.authorize();
@@ -9661,12 +9731,12 @@ var ErasureArchiveController = class {
     for (; ; ) {
       const current = await this.catalog(spaceId);
       if (!current) break;
-      const catalog = current.value, a = catalog.artifacts.find((a2) => a2.epoch < floor.value.epoch && a2.state !== "destroyed" && (force || this.now() >= (a2.deleteBefore ?? floor.value.archiveDeadline)));
+      const catalog2 = current.value, a = catalog2.artifacts.find((a2) => a2.epoch < floor.value.epoch && a2.state !== "destroyed" && (force || this.now() >= (a2.deleteBefore ?? floor.value.archiveDeadline)));
       if (!a) break;
       await this.o.authorize();
       await this.o.destroy(structuredClone(a));
       a.state = "destroyed";
-      await this.o.register.compareAndSet("erasure-archives:" + spaceId, current.version, catalog);
+      await this.o.register.compareAndSet("erasure-archives:" + spaceId, current.version, catalog2);
     }
   }
   async seal(spaceId, commandHash2, completedEpoch) {
@@ -9674,15 +9744,15 @@ var ErasureArchiveController = class {
     const floor = await this.o.register.get("erasure:" + spaceId);
     if (!floor || floor.value.commandHash !== commandHash2 || floor.value.epoch !== completedEpoch) throw Error("deletion receipt does not match floor");
     await this.o.verifyDeletion(spaceId, completedEpoch, commandHash2);
-    const catalog = await this.catalog(spaceId);
-    const remaining = (catalog?.value.artifacts ?? []).filter((a) => a.epoch < completedEpoch && a.state !== "destroyed");
+    const catalog2 = await this.catalog(spaceId);
+    const remaining = (catalog2?.value.artifacts ?? []).filter((a) => a.epoch < completedEpoch && a.state !== "destroyed");
     if (remaining.some((a) => a.state !== "quarantined")) throw Error("old archive was not quarantined");
     const value = { ...floor.value, state: "sealed", archivesPending: remaining.length > 0 };
     await this.o.register.compareAndSet("erasure:" + spaceId, floor.version, value);
     return value;
   }
   async assertRestore(spaceId, artifactId) {
-    const catalog = await this.catalog(spaceId), a = catalog?.value.artifacts.find((a2) => a2.id === artifactId), floor = await this.o.register.get("erasure:" + spaceId);
+    const catalog2 = await this.catalog(spaceId), a = catalog2?.value.artifacts.find((a2) => a2.id === artifactId), floor = await this.o.register.get("erasure:" + spaceId);
     if (!a || a.state !== "retained" || floor && (floor.value.state !== "sealed" || a.epoch !== floor.value.epoch)) throw Error("archive restore is blocked by deletion policy");
     return a;
   }
