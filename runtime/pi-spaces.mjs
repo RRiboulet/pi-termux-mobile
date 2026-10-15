@@ -2304,13 +2304,21 @@ var init_client = __esm({
       }
       /** Resolve a journaled identity; a miss only authorizes retry of that same identity on this epoch. */
       async resolveOperation(target, method, argumentHash, primaryEpoch) {
+        return (await this.resolveOperationRecord(target, method, argumentHash, primaryEpoch)).resolution;
+      }
+      /** Resolve the SAME original claim and capture its space binding in one guarded storage commit. */
+      async resolveOperationRecord(target, method, argumentHash, primaryEpoch) {
         if (this.options.consumer && canonicalPrincipal(target.principal) !== canonicalPrincipal(this.options.consumer)) throw new PermissionError("another principal request");
-        const view3 = await this.host.commit(async (tx) => {
+        const record2 = await this.host.commit(async (tx) => {
           const s = await this.doc(tx);
           this.options.authorization?.check();
-          return plain(resolveAdmission(s, this.now(), target, method, argumentHash, primaryEpoch));
+          return plain({
+            binding: { spaceId: s.spaceId ?? null, authorityId: this.options.authorityId ?? "local", dataIncarnation: s.incarnation ?? null, primaryEpoch: s.primaryEpoch ?? primaryEpoch, principal: target.principal, generation: target.generation, requestId: target.requestId, method, argumentHash },
+            resolution: resolveAdmission(s, this.now(), target, method, argumentHash, primaryEpoch)
+          });
         }, this.ctx);
-        return view3.state === "pending" && !view3.restoredHistory ? this.pollOperation(target) : view3;
+        if (record2.resolution.state === "pending" && !record2.resolution.restoredHistory) record2.resolution = await this.pollOperation(target);
+        return record2;
       }
       /** State of a known request, read without a commit. An unknown id is RequestExpired, never a new operation. */
       async pollOperation(target) {
@@ -2673,15 +2681,95 @@ var init_client = __esm({
   }
 });
 
+// src/rpc-domain.ts
+function rpcDomain(call, principal) {
+  const a = call.args ?? {}, txn = a.txn ?? null;
+  switch (call.method) {
+    case "write":
+      return { method: "write", args: { entry: a.entry, txn, lease: duration(a.leaseMs, -1) } };
+    case "read":
+    case "take":
+      return {
+        method: call.method + (a.ifExists === true ? "IfExists" : ""),
+        args: {
+          tmpl: a.template ?? null,
+          timeout: duration(a.timeoutMs, 0),
+          deadline: a.deadline ?? null,
+          txn
+        }
+      };
+    case "txn":
+      return a.action === "begin" ? { method: "txn.begin", args: { lease: duration(a.leaseMs, -1) } } : { method: "txn." + a.action, args: { txn: a.id } };
+    case "lease":
+      return a.action === "renew" ? { method: "lease.renew", args: { leaseId: a.id, ms: duration(a.ms, -1) } } : { method: "lease.cancel", args: { leaseId: a.id } };
+    case "cancelOperation":
+      return {
+        method: call.method,
+        args: {
+          target: {
+            generation: a.targetRequest.generation,
+            requestId: a.targetRequest.requestId,
+            principal
+          }
+        }
+      };
+    case "notify":
+      return {
+        method: call.method,
+        args: {
+          tmpl: a.template ?? null,
+          txn,
+          lease: duration(a.leaseMs, -1),
+          handback: a.handback ?? null,
+          target: principalId(principal)
+        }
+      };
+    case "wait":
+      return {
+        method: call.method,
+        args: {
+          template: a.template ?? null,
+          ...a.deadline === void 0 ? {} : { deadline: a.deadline },
+          take: a.take !== false,
+          target: principalId(principal),
+          timeout: duration(a.timeoutMs, 0),
+          txnLeaseMs: duration(a.txnLeaseMs, -1),
+          handback: a.handback ?? null
+        }
+      };
+    case "ack":
+      return {
+        method: call.method,
+        args: {
+          mailboxEpoch: a.mailboxEpoch,
+          upTo: a.upTo,
+          principal
+        }
+      };
+    default:
+      return { method: call.method, args: a };
+  }
+}
+var duration;
+var init_rpc_domain = __esm({
+  "src/rpc-domain.ts"() {
+    "use strict";
+    init_core();
+    init_mailbox();
+    duration = (v, d) => v === void 0 ? d : v === null ? -1 : v === "forever" ? FOREVER : v;
+  }
+});
+
 // src/service.ts
 import { awaitWithContext as awaitWithContext2 } from "@earendil-works/chord/context";
-var PROTOCOL_VERSION, METHODS, MUTATING, StaticIdentity, DEFAULT_POLICY, Bad, Denied, fail, isObj, str, int, optInt, template, duration, principalKey, SpaceService, UnsupportedProtocol;
+var PROTOCOL_VERSION, METHODS, MUTATING, StaticIdentity, DEFAULT_POLICY, Bad, Denied, fail, isObj, str, int, optInt, template, duration2, principalKey, SpaceService, UnsupportedProtocol;
 var init_service = __esm({
   "src/service.ts"() {
     "use strict";
     init_routing_semantics();
     init_core();
     init_claims();
+    init_rpc_domain();
     init_client();
     init_spaces();
     init_paging();
@@ -2733,7 +2821,7 @@ var init_service = __esm({
       if (v.id !== void 0 && v.id !== null && typeof v.id !== "string") throw new Bad("template.id must be a string");
       return v;
     };
-    duration = (v, what, dflt) => {
+    duration2 = (v, what, dflt) => {
       if (v === void 0 || v === null) return dflt;
       if (v === "forever") return FOREVER;
       return int(v, what, 0);
@@ -2801,8 +2889,25 @@ var init_service = __esm({
           const frameBytes = Math.min(transportFrameBytes, (await client.configuration()).limits.maxFrameBytes);
           responseFrame = frameBytes;
           if ((rawBytes ?? encodedBytes(call)) > frameBytes) throw new ResourceExhausted("the request exceeds the space frame limit");
+          const includeClaim = isObj(frame2) && frame2.claimReceipt === true;
+          if (isObj(frame2) && frame2.claimReceipt !== void 0 && typeof frame2.claimReceipt !== "boolean") throw new Bad("claimReceipt must be boolean");
+          if (includeClaim) {
+            if (!request) throw new Bad("claim receipt requires an original effect request");
+            this.allowed(id, "resolveOperation");
+          }
           const result = await this.dispatch(method, args, { id, request, client, space, grant: grant2, frameBytes });
           const reply2 = { ok: true, result };
+          if (includeClaim && request) {
+            try {
+              const domain = rpcDomain(call, id.principal), epoch2 = await this.o.epochForSpace?.(space) ?? this.o.primaryEpoch;
+              const record2 = await client.resolveOperationRecord(request, domain.method, argHash(domain.method, domain.args), epoch2);
+              const resolutionGrant = this.allowed(id, "resolveOperation");
+              if ("result" in record2.resolution && isObj(record2.resolution.result) && Array.isArray(record2.resolution.result.types)) this.checkTypes(resolutionGrant, record2.resolution.result.types, "this retained result");
+              const hostId = this.o.hostId ?? (await this.o.host.snapshot(Registry, this.o.ctx))?.hostId;
+              if (hostId) reply2.claimReceipt = { protocol: "pi-spaces-claim-receipt-v1", hostId, ...record2 };
+            } catch {
+            }
+          }
           if (encodedBytes(reply2) > frameBytes) throw new ResourceExhausted("the configured frame cannot carry the result; use a compatible transport frame");
           return reply2;
         } catch (e) {
@@ -2858,7 +2963,7 @@ var init_service = __esm({
             })();
             if (!isObj(a.entry.fields)) throw new Bad("entry.fields must be an object");
             this.checkTypes(grant2, [type, ...types ?? []], `type ${type}`);
-            const lease = await client.write({ type, ...types ? { types } : {}, fields: a.entry.fields }, a.txn ?? null, duration(a.leaseMs, "leaseMs", ANY), { request });
+            const lease = await client.write({ type, ...types ? { types } : {}, fields: a.entry.fields }, a.txn ?? null, duration2(a.leaseMs, "leaseMs", ANY), { request });
             return lease;
           }
           case "read":
@@ -2896,7 +3001,7 @@ var init_service = __esm({
           }
           case "txn": {
             const action = str(a.action, "action");
-            if (action === "begin") return await client.createTransaction(duration(a.leaseMs, "leaseMs", ANY), { request });
+            if (action === "begin") return await client.createTransaction(duration2(a.leaseMs, "leaseMs", ANY), { request });
             const id = str(a.id, "id");
             if (action === "status") return await client.transactionState(id);
             if (action === "commit") {
@@ -2912,7 +3017,7 @@ var init_service = __esm({
           case "lease": {
             const action = str(a.action, "action");
             const id = str(a.id, "id");
-            if (action === "renew") return { expires: await client.renew(id, duration(a.ms, "ms", ANY), { request }) };
+            if (action === "renew") return { expires: await client.renew(id, duration2(a.ms, "ms", ANY), { request }) };
             if (action === "cancel") {
               await client.cancel(id, { request });
               return { state: "cancelled" };
@@ -2925,7 +3030,7 @@ var init_service = __esm({
             const t = template(a.template);
             this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this subscription");
             this.checkConsumer(a.consumer, c.id);
-            return await client.notify(t, { target: principalId(c.id.principal), lease: duration(a.leaseMs, "leaseMs", ANY), txn: a.txn ?? null, handback: a.handback ?? null, request });
+            return await client.notify(t, { target: principalId(c.id.principal), lease: duration2(a.leaseMs, "leaseMs", ANY), txn: a.txn ?? null, handback: a.handback ?? null, request });
           }
           case "wait": {
             const t = template(a.template);
@@ -2934,7 +3039,7 @@ var init_service = __esm({
             if (a.take !== void 0 && typeof a.take !== "boolean") throw new Bad("take must be boolean");
             const operationGrant = this.allowed(c.id, a.take === false ? "read" : "take");
             this.checkTypes(operationGrant, t?.type ? [t.type] : void 0, "this wait operation");
-            const id = await client.wait(t, { target: principalId(c.id.principal), timeout: duration(a.timeoutMs, "timeoutMs", NO_WAIT), ...a.deadline === void 0 ? {} : { deadline: int(a.deadline, "deadline", 0) }, take: a.take !== false, txnLeaseMs: duration(a.txnLeaseMs, "txnLeaseMs", ANY), handback: a.handback ?? null, request });
+            const id = await client.wait(t, { target: principalId(c.id.principal), timeout: duration2(a.timeoutMs, "timeoutMs", NO_WAIT), ...a.deadline === void 0 ? {} : { deadline: int(a.deadline, "deadline", 0) }, take: a.take !== false, txnLeaseMs: duration2(a.txnLeaseMs, "txnLeaseMs", ANY), handback: a.handback ?? null, request });
             return { id };
           }
           case "events": {
@@ -2998,7 +3103,7 @@ var init_service = __esm({
         const { client, request, grant: grant2 } = c;
         const t = template(a.template);
         if (grant2.types !== "*") this.checkTypes(grant2, t?.type ? [t.type] : void 0, "this template");
-        const timeout = duration(a.timeoutMs, "timeoutMs", NO_WAIT);
+        const timeout = duration2(a.timeoutMs, "timeoutMs", NO_WAIT);
         const waitMs = Math.min(optInt(a.waitMs, "waitMs", 0) ?? this.o.maxPollMs, this.o.maxPollMs);
         let view3 = await client.beginOperation(t, timeout, { txn: a.txn ?? null, request, resultBudget: c.frameBytes - 64, ...a.deadline === void 0 ? {} : { deadline: int(a.deadline, "deadline") } }, method === "take", a.ifExists === true);
         if (view3.state === "pending" && waitMs > 0) view3 = await this.poll({ targetRequest: { generation: request.generation, requestId: request.requestId }, waitMs }, c);
@@ -3401,6 +3506,7 @@ var init_enroll = __esm({
     init_claims();
     init_canonical();
     init_spaces();
+    init_spaces();
     init_auth();
     CONTROL_SPACE = "control";
     ENROLL_TTL_MS = 5 * 6e4;
@@ -3429,17 +3535,30 @@ var init_enroll = __esm({
       host;
       ctx;
       now;
-      constructor(host, ctx, now = Date.now) {
+      controlSpaceId;
+      constructor(host, ctx, now = Date.now, controlSpaceId) {
         this.host = host;
         this.ctx = ctx;
         this.now = now;
+        this.controlSpaceId = controlSpaceId;
       }
       async find(peerId, keyId) {
-        const info = (await listSpaces(this.host, this.ctx)).find((i) => i.alias === CONTROL_SPACE);
-        const s = info ? await snapshotSpace(this.host, info.spaceId, this.ctx) : void 0;
-        if (!s) return null;
-        const e = list(s, this.now(), { type: "PeerKey", fields: { peerId, keyId } })[0];
-        return e ? { ...fieldsOf(e), roles: [...fieldsOf(e).roles] } : null;
+        return (await this.findMany([{ peerId, keyId }]))[0];
+      }
+      async findMany(keys) {
+        return (await this.inspect(keys)).keys;
+      }
+      /** A freshly guarded Control snapshot and keys derived from that exact snapshot; nothing is retained. */
+      async inspect(keys) {
+        if (keys.length < 1 || keys.length > 32 || keys.some((k) => !k || typeof k.peerId !== "string" || !k.peerId || typeof k.keyId !== "string" || !k.keyId)) throw new TypeError("bounded explicit key lookup required");
+        const info = this.controlSpaceId ? void 0 : (await listSpaces(this.host, this.ctx)).find((i) => i.alias === CONTROL_SPACE);
+        const s = this.controlSpaceId ? await this.host.snapshot(NamedSpace, this.controlSpaceId, this.ctx) : info ? await snapshotSpace(this.host, info.spaceId, this.ctx) : void 0;
+        if (!s || this.controlSpaceId && s.spaceId !== this.controlSpaceId) return { state: void 0, keys: keys.map(() => null) };
+        const now = this.now();
+        return { state: s, keys: keys.map(({ peerId, keyId }) => {
+          const e = list(s, now, { type: "PeerKey", fields: { peerId, keyId } })[0];
+          return e ? { ...fieldsOf(e), roles: [...fieldsOf(e).roles] } : null;
+        }) };
       }
     };
     refuse = (message = "enrollment refused") => ({ ok: false, error: { code: "PermissionDenied", message } });
@@ -3825,6 +3944,20 @@ function validateErasureRegisterUpdate(key, next, prior, read, reject) {
 // src/recovery-register.ts
 var RegisterConflict = class extends Error {
 };
+function validateRegisterReadKeys(keys) {
+  if (!Array.isArray(keys) || !keys.length || keys.length > 32 || new Set(keys).size !== keys.length || keys.some((k) => typeof k !== "string" || !k || k.length > 512)) throw new RegisterConflict("invalid bounded register read keys");
+}
+async function readRegisterRecords(register, keys) {
+  if (!Array.isArray(keys) || !keys.length || new Set(keys).size !== keys.length) throw new RegisterConflict("invalid register read keys");
+  const records = {};
+  for (let offset = 0; offset < keys.length; offset += 32) {
+    const batch = keys.slice(offset, offset + 32);
+    validateRegisterReadKeys(batch);
+    if (register.getMany) Object.assign(records, await register.getMany(batch));
+    else for (const key of batch) records[key] = await register.get(key);
+  }
+  return records;
+}
 var SqliteRecoveryRegister = class {
   db;
   constructor(path) {
@@ -3841,6 +3974,22 @@ var SqliteRecoveryRegister = class {
   async get(key) {
     const r = this.db.prepare("SELECT version,value FROM records WHERE key=?").get(key);
     return r ? { version: r.version, value: JSON.parse(r.value) } : null;
+  }
+  async getMany(keys) {
+    validateRegisterReadKeys(keys);
+    this.db.exec("BEGIN");
+    try {
+      const read = this.db.prepare("SELECT version,value FROM records WHERE key=?");
+      const records = Object.fromEntries(keys.map((key) => {
+        const row = read.get(key);
+        return [key, row ? { version: row.version, value: JSON.parse(row.value) } : null];
+      }));
+      this.db.exec("COMMIT");
+      return records;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
   async compareAndSet(key, expected, value) {
     if (!key || expected !== null && (!Number.isSafeInteger(expected) || expected < 1)) throw new RegisterConflict("invalid register key/version");
@@ -3952,7 +4101,7 @@ async function serveSpace(service, o) {
     socket.on("error", () => socket.destroy());
     socket.on("close", () => open2.delete(socket));
   });
-  await new Promise((resolve, reject) => {
+  await new Promise((resolve2, reject) => {
     server.once("error", reject);
     if ("path" in o.listen) {
       server.listen(o.listen.path, () => {
@@ -3960,13 +4109,13 @@ async function serveSpace(service, o) {
           const path = o.listen.path;
           chmodSync2(path, 384);
           owned = lstatSync3(path);
-          resolve();
+          resolve2();
         } catch (e) {
           server.close();
           reject(e);
         }
       });
-    } else server.listen(o.listen.port, o.listen.host, resolve);
+    } else server.listen(o.listen.port, o.listen.host, resolve2);
   });
   return {
     address: () => server.address(),
@@ -3994,7 +4143,7 @@ async function prepareSocketPath(path) {
     throw e;
   }
   if (!old.isSocket()) throw new Error(`refusing to replace a non-socket path: ${path}`);
-  const stale = await new Promise((resolve, reject) => {
+  const stale = await new Promise((resolve2, reject) => {
     const probe2 = net.createConnection(path);
     const timer = setTimeout(() => {
       probe2.destroy();
@@ -4003,13 +4152,13 @@ async function prepareSocketPath(path) {
     probe2.once("connect", () => {
       clearTimeout(timer);
       probe2.destroy();
-      resolve(false);
+      resolve2(false);
     });
     probe2.once("error", (e) => {
       clearTimeout(timer);
       probe2.destroy();
       const code = e.code;
-      if (code === "ECONNREFUSED" || code === "ENOENT") resolve(true);
+      if (code === "ECONNREFUSED" || code === "ENOENT") resolve2(true);
       else reject(e);
     });
   });
@@ -4039,7 +4188,7 @@ function socketTransport(target, o = {}) {
   const connect = () => {
     if (closed) return Promise.reject(new Error("closed"));
     if (socket && !socket.destroyed) return Promise.resolve(socket);
-    connecting ??= new Promise((resolve, reject) => {
+    connecting ??= new Promise((resolve2, reject) => {
       const s = "path" in target ? net.createConnection(target.path) : net.createConnection({ port: target.port, host: target.host, ...o.localAddress ? { localAddress: o.localAddress } : {} });
       opening = s;
       const reader = new FrameReader(maxFrame - HEADER);
@@ -4048,7 +4197,7 @@ function socketTransport(target, o = {}) {
       s.once("connect", () => {
         clearTimeout(timer);
         socket = s;
-        resolve(s);
+        resolve2(s);
       });
       s.on("data", (chunk) => {
         try {
@@ -4084,9 +4233,9 @@ function socketTransport(target, o = {}) {
     async request(text2) {
       if (Buffer.byteLength(text2) + HEADER > maxFrame) throw new Error("request exceeds maxFrameBytes");
       const s = await connect();
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve2, reject) => {
         const id = nextId++ >>> 0 || nextId++;
-        pending.set(id, { socket: s, resolve, reject });
+        pending.set(id, { socket: s, resolve: resolve2, reject });
         s.write(frame(id, text2), (e) => {
           if (e) {
             pending.delete(id);
@@ -4554,7 +4703,9 @@ function dataRecoveryHandler(controller) {
 
 // src/erasure-barrier.ts
 async function checkErasureBarrier(register, spaceId, state, now = Date.now()) {
-  const record2 = await register.get("erasure:" + spaceId);
+  return validateErasureBarrier(await register.get("erasure:" + spaceId), spaceId, state, now);
+}
+function validateErasureBarrier(record2, spaceId, state, now) {
   if (!record2) {
     if ((state.erasureEpoch ?? 0) !== 0) throw Error("independent erasure barrier is missing");
     return null;
@@ -4610,16 +4761,21 @@ function installBootGuard(host, ctx, o) {
         };
       } });
       const result = await fn(proxy);
-      const current = await o.external.get(`boot:${o.hostId}`);
-      for (const [id, version] of checkedLocal) if ((await o.installed.get(`installed:${o.hostId}:${id}`))?.version !== version) throw new BootBlocked("local boot installation changed before commit");
-      for (const [id, version] of checkedErasure) if (((await o.external.get("erasure:" + id))?.version ?? null) !== version) throw new BootBlocked("independent erasure barrier changed before commit");
+      await Promise.all([...checkedLocal].map(async ([id, version]) => {
+        if ((await o.installed.get(`installed:${o.hostId}:${id}`))?.version !== version) throw new BootBlocked("local boot installation changed before commit");
+      }));
+      const records = await readRegisterRecords(o.external, [...[...checkedErasure.keys()].map((id) => "erasure:" + id), `boot:${o.hostId}`]);
+      const current = records[`boot:${o.hostId}`];
+      for (const [id, version] of checkedErasure) if ((records["erasure:" + id]?.version ?? null) !== version) throw new BootBlocked("independent erasure barrier changed before commit");
       if (!current || current.version !== external.version) throw new BootBlocked("external boot permission changed before commit");
       return result;
     }, context);
   };
   host.commit = guarded;
   const guardedSnapshot = (async (...args) => {
-    const external = await o.external.get(`boot:${o.hostId}`);
+    const namedId = args[0] === NamedSpace && typeof args[1] === "string" ? args[1] : void 0;
+    const start = namedId ? await readRegisterRecords(o.external, ["erasure:" + namedId, `boot:${o.hostId}`]) : void 0;
+    const external = start ? start[`boot:${o.hostId}`] : await o.external.get(`boot:${o.hostId}`);
     if (!external || external.value.state !== "active" || external.value.hostId !== o.hostId) throw new BootBlocked("external host boot authorization is absent or inactive");
     const state = await originalSnapshot(...args);
     if (state && (args[0] === Space || args[0] === NamedSpace)) {
@@ -4629,12 +4785,15 @@ function installBootGuard(host, ctx, o) {
       if ((permit.erasureEpoch ?? 0) !== (s.erasureEpoch ?? 0)) throw new BootBlocked("space deletion epoch disagrees with boot permission");
       let erasureVersion;
       try {
-        erasureVersion = await checkErasureBarrier(o.external, id, s, (o.now ?? Date.now)());
+        erasureVersion = start && namedId === id ? validateErasureBarrier(start["erasure:" + id], id, s, (o.now ?? Date.now)()) : await checkErasureBarrier(o.external, id, s, (o.now ?? Date.now)());
       } catch (e) {
         throw new BootBlocked(e.message);
       }
-      if (((await o.external.get("erasure:" + id))?.version ?? null) !== erasureVersion) throw new BootBlocked("independent erasure barrier changed during read");
       if ((await o.installed.get(`installed:${o.hostId}:${id}`))?.version !== local.version) throw new BootBlocked("local boot installation changed during read");
+      const records = await readRegisterRecords(o.external, ["erasure:" + id, `boot:${o.hostId}`]);
+      if ((records["erasure:" + id]?.version ?? null) !== erasureVersion) throw new BootBlocked("independent erasure barrier changed during read");
+      if (records[`boot:${o.hostId}`]?.version !== external.version) throw new BootBlocked("external boot permission changed during read");
+      return state;
     }
     if ((await o.external.get(`boot:${o.hostId}`))?.version !== external.version) throw new BootBlocked("external boot permission changed during read");
     return state;
@@ -4652,84 +4811,10 @@ init_canonical();
 init_claims();
 init_core();
 init_grants();
+init_rpc_domain();
+init_spaces();
 import { defineDocFamily as defineDocFamily2 } from "@earendil-works/pi-durable";
 import { randomUUID as randomUUID4 } from "node:crypto";
-
-// src/rpc-domain.ts
-init_core();
-init_mailbox();
-var duration2 = (v, d) => v === void 0 ? d : v === null ? -1 : v === "forever" ? FOREVER : v;
-function rpcDomain(call, principal) {
-  const a = call.args ?? {}, txn = a.txn ?? null;
-  switch (call.method) {
-    case "write":
-      return { method: "write", args: { entry: a.entry, txn, lease: duration2(a.leaseMs, -1) } };
-    case "read":
-    case "take":
-      return {
-        method: call.method + (a.ifExists === true ? "IfExists" : ""),
-        args: {
-          tmpl: a.template ?? null,
-          timeout: duration2(a.timeoutMs, 0),
-          deadline: a.deadline ?? null,
-          txn
-        }
-      };
-    case "txn":
-      return a.action === "begin" ? { method: "txn.begin", args: { lease: duration2(a.leaseMs, -1) } } : { method: "txn." + a.action, args: { txn: a.id } };
-    case "lease":
-      return a.action === "renew" ? { method: "lease.renew", args: { leaseId: a.id, ms: duration2(a.ms, -1) } } : { method: "lease.cancel", args: { leaseId: a.id } };
-    case "cancelOperation":
-      return {
-        method: call.method,
-        args: {
-          target: {
-            generation: a.targetRequest.generation,
-            requestId: a.targetRequest.requestId,
-            principal
-          }
-        }
-      };
-    case "notify":
-      return {
-        method: call.method,
-        args: {
-          tmpl: a.template ?? null,
-          txn,
-          lease: duration2(a.leaseMs, -1),
-          handback: a.handback ?? null,
-          target: principalId(principal)
-        }
-      };
-    case "wait":
-      return {
-        method: call.method,
-        args: {
-          template: a.template ?? null,
-          ...a.deadline === void 0 ? {} : { deadline: a.deadline },
-          take: a.take !== false,
-          target: principalId(principal),
-          timeout: duration2(a.timeoutMs, 0),
-          txnLeaseMs: duration2(a.txnLeaseMs, -1),
-          handback: a.handback ?? null
-        }
-      };
-    case "ack":
-      return {
-        method: call.method,
-        args: {
-          mailboxEpoch: a.mailboxEpoch,
-          upTo: a.upTo,
-          principal
-        }
-      };
-    default:
-      return { method: call.method, args: a };
-  }
-}
-
-// src/delegation.ts
-init_spaces();
 var bytes2 = (kind, v) => Buffer.from("pi-spaces/" + kind + "/v1\n" + canonicalJson(v));
 var same2 = (a, b) => canonicalJson(a) === canonicalJson(b);
 var positive = (n) => Number.isSafeInteger(n) && Number(n) > 0;
@@ -5289,7 +5374,7 @@ var RemoteSpace = class {
    * Send `call`; a transport failure repeats the very same call (same request identity, same arguments). `ok:false` replies
    * are answers, never retried: they throw. Returns the result. `onExhausted` turns "attempts used up" into the caller's error.
    */
-  async send(call, onExhausted, end) {
+  async send(call, onExhausted, end, mapReply) {
     call = plain(call);
     let last;
     let reproved = false;
@@ -5301,7 +5386,7 @@ var RemoteSpace = class {
       try {
         const r = await this.roundTrip({ ...call, ...this.o.space === void 0 ? {} : { space: this.o.space } }, end);
         if (!r.ok) throw toError(r.error);
-        return r.result;
+        return mapReply ? mapReply(r) : r.result;
       } catch (e) {
         if (e instanceof RemoteError && e.code === "ProofRequired" && this.o.signer && !reproved) {
           reproved = true;
@@ -5322,6 +5407,9 @@ var RemoteSpace = class {
   /** Router adapter entry point: preserves externally journaled request identity. */
   async requestBound(call) {
     return this.send(call);
+  }
+  async requestBoundWithClaim(call) {
+    return await this.send({ ...call, frame: { ...call.frame, claimReceipt: true } }, void 0, void 0, (r) => ({ result: r.result, claimReceipt: r.claimReceipt ?? null }));
   }
   async resolveOperation(target, method, argumentHash, primaryEpoch) {
     return await this.send({ method: "resolveOperation", args: { targetRequest: target, method, argumentHash, primaryEpoch } });
@@ -6228,7 +6316,8 @@ var FederatedSpace = class {
       registrations: {},
       cursor: 0,
       candidates: {},
-      ...q.txn ? { userTxn: copy4(q.txn) } : {}
+      ...q.txn ? { userTxn: copy4(q.txn) } : {},
+      ...ids.length === 1 && kind !== "race" ? { budgetWithParent: true } : {}
     };
     await this.change(q.id, async (d, tx) => {
       if (this.o.controlSpaceId) {
@@ -6242,10 +6331,18 @@ var FederatedSpace = class {
         throw new RoutingConflict("composite operation history full");
       if (d.operations[q.id])
         throw new RoutingConflict("concurrent admission");
+      if (op.budgetWithParent) await this.router(op.id).reserveFutureIn(tx, child(op.id, "budget"), 1, 64 * 1024);
       d.operations[q.id] = op;
       d.reservedBytes += 128 * 1024;
     });
     return op;
+  }
+  async transactionOriginStep(originId, member) {
+    const origin = await this.get(originId);
+    if (!origin || origin.kind !== "txn" || origin.phase !== "done" || origin.members[0] !== member) throw new RoutingConflict("transaction origin changed");
+    const command = await this.router(originId).get(origin.children[member]);
+    if (!command || command.state !== "completed" || !command.steps[0]) throw new RoutingConflict("transaction origin claim unavailable");
+    return command.steps[0];
   }
   async save(op) {
     if (Buffer.byteLength(JSON.stringify(op)) > 128 * 1024)
@@ -6255,10 +6352,19 @@ var FederatedSpace = class {
       d.operations[op.id] = copy4(op);
     });
   }
+  async storeParentIn(tx, op) {
+    if (Buffer.byteLength(JSON.stringify(op)) > 128 * 1024) throw new RoutingConflict("operation result/event budget exceeded");
+    await this.layoutIn(tx);
+    const layout = await tx.doc(FederationJournalLayout, this.o.id, null);
+    if (layout.reconciliation) throw new RoutingConflict("restore reconciliation blocks Parent completion");
+    const partition = operationPartition(op.id, this.partitions), d = await tx.doc(FederationOperations, parentJournalKey(this.o.id, this.partitions, partition), null);
+    if (d.operations[op.id]?.hash !== op.hash) throw new RoutingConflict("missing or conflicting parent history");
+    d.operations[op.id] = copy4(op);
+  }
   async admit(op) {
     if (op.phase !== "admitting")
       return op;
-    await this.router(op.id).reserveFuture(
+    if (!op.budgetWithParent) await this.router(op.id).reserveFuture(
       child(op.id, "budget"),
       op.members.length * (op.kind === "race" ? 4 : 1),
       64 * 1024
@@ -6289,26 +6395,37 @@ var FederatedSpace = class {
           method,
           a,
           op.policyVersion,
-          op.kind === "txn" && a.originId ? (await this.router(a.originId).get((await this.get(
-            a.originId
-          )).children[member])).steps[0] : void 0
+          op.kind === "txn" && a.originId || op.userTxn?.originId ? await this.transactionOriginStep(op.kind === "txn" ? a.originId : op.userTxn.originId, member) : void 0
         );
       } catch (e) {
         if (e instanceof TransportFailure) throw new FederationPending(op.id);
         throw e;
       }
       const expected = (await this.o.state()).members[member]?.target;
-      if (!expected || hash3(spec.target) !== hash3(expected) || hash3(spec.principal) !== hash3(op.principal))
+      if (!expected || hash3(spec.target) !== hash3(expected) || hash3(spec.principal) !== hash3(op.principal) || spec.method !== method || hash3(spec.args) !== hash3(a) || spec.policyVersion !== void 0 && spec.policyVersion !== op.policyVersion)
         throw new RoutingConflict("target/principal adapter binding mismatch");
+      let attached = false;
       await this.router(op.id).submit(
         { id, area: "federation", steps: [spec] },
-        child(op.id, "budget")
+        child(op.id, "budget"),
+        op.members.length === 1 && op.kind !== "race" ? async (command, tx, context) => {
+          const next = { ...copy4(op), children: { ...op.children, [member]: id }, phase: "ready" };
+          if (Buffer.byteLength(JSON.stringify(next)) > context.roomBytes) return;
+          if (command.id !== id || command.steps.length !== 1) throw new RoutingConflict("Child admission changed binding");
+          await this.storeParentIn(tx, next);
+          Object.assign(op, next);
+          attached = true;
+        } : void 0
       );
-      op.children[member] = id;
+      if (!attached) {
+        op.children[member] = id;
+        await this.save(op);
+      }
+    }
+    if (op.phase !== "ready") {
+      op.phase = "ready";
       await this.save(op);
     }
-    op.phase = "ready";
-    await this.save(op);
     return op;
   }
   async finish(op, result) {
@@ -6328,7 +6445,18 @@ var FederatedSpace = class {
       throw new FederationUnavailable("operation needs explicit review");
     op = await this.admit(op);
     for (; op.cursor < op.members.length; op.cursor++) {
-      const m = op.members[op.cursor], c = await this.router(op.id).advance(op.children[m]);
+      const m = op.members[op.cursor];
+      let finalized = false;
+      const c = await this.router(op.id).advance(op.children[m], op.members.length === 1 ? async (command, tx, context) => {
+        if (command.id !== op.children[m] || command.steps.length !== 1 || command.steps[0].state !== "done") throw new RoutingConflict("Child completion changed binding");
+        const next = { ...copy4(op), phase: "done", result: copy4(command.steps[0].result ?? null) };
+        if (Buffer.byteLength(JSON.stringify(next)) > context.roomBytes) return;
+        await this.storeParentIn(tx, next);
+        context.releaseFuture(child(op.id, "budget"));
+        Object.assign(op, next);
+        finalized = true;
+      } : void 0);
+      if (finalized) return copy4(op.result);
       if (c.state === "needsReview" || c.state === "failed") {
         op.phase = "needsReview";
         await this.save(op);
@@ -6881,7 +7009,7 @@ var specOf = (c) => ({
   area: c.area,
   blocksArea: c.blocksArea,
   steps: c.steps.map(
-    ({ target, principal, generation, method, args, resultBudgetBytes, policyVersion, targetRequest }) => ({ target, principal, generation, method, args, resultBudgetBytes, policyVersion, targetRequest })
+    ({ target, principal, generation, method, args, resultBudgetBytes, policyVersion, targetRequest, generationAdmitUntil }) => ({ target, principal, generation, method, args, resultBudgetBytes, policyVersion, targetRequest, generationAdmitUntil })
   )
 });
 var RouterController = class {
@@ -6961,6 +7089,7 @@ var RouterController = class {
         throw new RouterBlocked("target authority/epoch mismatch");
       if (!["write", "read", "take", "txn", "lease", "wait", "notify", "cancelOperation"].includes(x.method))
         throw new TypeError("non-idempotent command operation");
+      if (x.generationAdmitUntil !== void 0 && (!Number.isSafeInteger(x.generationAdmitUntil) || x.generationAdmitUntil < 0)) throw new TypeError("invalid generation admission deadline");
       canonicalJson(x.args);
       const resultBudgetBytes = x.resultBudgetBytes ?? this.limits.defaultResultBytes;
       if (!Number.isSafeInteger(resultBudgetBytes) || resultBudgetBytes < 64)
@@ -6991,32 +7120,58 @@ var RouterController = class {
       );
     return c;
   }
-  /** Reserve future child effects before admitting a composite operation. IDs are never recycled. */
-  async reserveFuture(id, slots, bytesPerSlot = this.limits.maxCommandBytes) {
-    ident(id);
-    if (!Number.isSafeInteger(slots) || slots < 1 || !Number.isSafeInteger(bytesPerSlot) || bytesPerSlot < 1024 || bytesPerSlot > this.limits.maxCommandBytes) throw new RouterBudgetExceeded("invalid future reservation");
-    await this.serial(async () => {
-      if (!this.ready) throw new RouterBlocked("router is recovering");
-      await this.change(async (i) => {
-        i.future ??= {};
-        if (i.future[id]) return;
-        const count2 = Object.values(i.future).reduce((n, r) => n + r.slots, 0);
-        if (Object.keys(i.refs).length + count2 + slots > this.limits.maxCommands || i.reservedBytes + slots * bytesPerSlot + this.limits.maxIndexBytes > this.limits.maxJournalBytes) throw new RouterBudgetExceeded("future child budget unavailable");
-        i.future[id] = { slots, bytesPerSlot };
-        i.reservedBytes += slots * bytesPerSlot;
-      });
-    });
-  }
-  async releaseFuture(id) {
-    await this.serial(() => this.change(async (i) => {
+  hookContext(i, c) {
+    return { roomBytes: this.limits.maxCommitBytes - bytes4(i) - bytes4(c) - 8192, releaseFuture: (id) => {
+      ident(id);
       const r = i.future?.[id];
       if (r) {
         i.reservedBytes -= r.slots * r.bytesPerSlot;
         delete i.future[id];
       }
-    }));
+    } };
   }
-  async submit(spec, futureId) {
+  reserveFutureValue(i, id, slots, bytesPerSlot) {
+    ident(id);
+    if (!Number.isSafeInteger(slots) || slots < 1 || !Number.isSafeInteger(bytesPerSlot) || bytesPerSlot < 1024 || bytesPerSlot > this.limits.maxCommandBytes) throw new RouterBudgetExceeded("invalid future reservation");
+    i.future ??= {};
+    if (i.future[id]) return;
+    const count2 = Object.values(i.future).reduce((n, r) => n + r.slots, 0);
+    if (Object.keys(i.refs).length + count2 + slots > this.limits.maxCommands || i.reservedBytes + slots * bytesPerSlot + this.limits.maxIndexBytes > this.limits.maxJournalBytes) throw new RouterBudgetExceeded("future child budget unavailable");
+    i.future[id] = { slots, bytesPerSlot };
+    i.reservedBytes += slots * bytesPerSlot;
+    if (bytes4(i) > this.limits.maxIndexBytes) throw new RouterBudgetExceeded("router index exceeds budget");
+  }
+  /** Only inside a caller-owned transaction with fresh authority guards before/after commit. */
+  async reserveFutureIn(tx, id, slots, bytesPerSlot = this.limits.maxCommandBytes) {
+    if (!this.ready) throw new RouterBlocked("router is recovering");
+    const i = await tx.doc(RouterJournal, this.o.routerId, null);
+    if (i.mode !== "ready" || i.authorityId !== this.o.authorityId || hash5(i.limits) !== hash5(this.limits)) throw new RouterBlocked("reservation owner or budget changed");
+    this.reserveFutureValue(i, id, slots, bytesPerSlot);
+  }
+  /** Reserve future child effects before admitting a composite operation. IDs are never recycled. */
+  async reserveFuture(id, slots, bytesPerSlot = this.limits.maxCommandBytes) {
+    await this.serial(async () => {
+      if (!this.ready) throw new RouterBlocked("router is recovering");
+      await this.change(async (i) => this.reserveFutureValue(i, id, slots, bytesPerSlot));
+    });
+  }
+  async releaseFuture(id) {
+    await this.serial(async () => {
+      ident(id);
+      await this.o.assertAuthority();
+      const current = await this.o.host.snapshot(RouterJournal, this.o.routerId, this.o.ctx);
+      if (current?.authorityId !== this.o.authorityId) throw new RouterBlocked("reservation owner changed");
+      if (!current.future?.[id]) return;
+      await this.change(async (i) => {
+        const r = i.future?.[id];
+        if (r) {
+          i.reservedBytes -= r.slots * r.bytesPerSlot;
+          delete i.future[id];
+        }
+      });
+    });
+  }
+  async submit(spec, futureId, admitted) {
     const c = this.normalize(spec);
     return this.serial(async () => {
       if (!this.ready) throw new RouterBlocked("router is recovering");
@@ -7053,6 +7208,7 @@ var RouterController = class {
           reservedBytes: c.reservedBytes
         };
         i.reservedBytes += c.reservedBytes;
+        await admitted?.(copy6(c), tx, this.hookContext(i, c));
         return copy6(c);
       });
     });
@@ -7067,7 +7223,7 @@ var RouterController = class {
     return this.change(async (i, tx) => {
       const d = await tx.doc(RouterCommands, commandKey(this.o.routerId, id), null);
       if (!d.command || !i.refs[id]) throw new RouterBlocked("missing command history");
-      f(d.command);
+      await f(d.command, tx, i);
       if (bytes4(d.command) > d.command.reservedBytes)
         throw new RouterBudgetExceeded("reserved command bytes exceeded");
       i.refs[id].state = d.command.state;
@@ -7084,8 +7240,8 @@ var RouterController = class {
       if (s.argHash !== argHash(s.method, s.args) || s.requestId !== "router-" + hash5([this.o.routerId, c.id, n]))
         throw new RouterBlocked("subrequest binding corrupted");
   }
-  async applyReceipt(id, n, r) {
-    return this.update(id, (c) => {
+  async applyReceipt(id, n, r, completed) {
+    return this.update(id, async (c, tx, i) => {
       const s = c.steps[n];
       if (hash5(r.target) !== hash5(s.target) || hash5(r.principal) !== hash5(s.principal) || r.method !== s.method || r.generation !== s.generation || r.requestId !== s.requestId || r.argHash !== s.argHash) {
         s.state = "needsReview";
@@ -7120,9 +7276,10 @@ var RouterController = class {
       } else
         s.state = r.outcome === "notAdmitted" ? "prepared" : "pending";
       if (c.steps.every((x) => x.state === "done")) c.state = "completed";
+      if (c.state === "completed") await completed?.(copy6(c), tx, this.hookContext(i, c));
     });
   }
-  async resolve(c, n) {
+  async resolve(c, n, completed) {
     let receipt;
     await this.o.assertAuthority();
     try {
@@ -7133,7 +7290,7 @@ var RouterController = class {
         d.steps[n].evidence = "resolution transport unavailable";
       });
     }
-    return this.applyReceipt(c.id, n, receipt);
+    return this.applyReceipt(c.id, n, receipt, completed);
   }
   /** Cold-start only: initialize empty journals in bounded, fenced commits; recover retained work normally. */
   static async recoverMany(controllers) {
@@ -7198,7 +7355,7 @@ var RouterController = class {
       this.ready = true;
     });
   }
-  async advance(id) {
+  async advance(id, completed) {
     ident(id);
     return this.serial(async () => {
       if (!this.ready) throw new RouterBlocked("router is recovering");
@@ -7210,7 +7367,7 @@ var RouterController = class {
         const n = c.steps.findIndex((s) => s.state !== "done");
         if (n < 0) throw new RouterBlocked("inconsistent command state");
         if (c.steps[n].state !== "prepared") {
-          c = await this.resolve(c, n);
+          c = await this.resolve(c, n, completed);
           if (terminal(c.state)) break;
           if (c.steps[n].state !== "prepared") return c;
         }
@@ -7240,7 +7397,7 @@ var RouterController = class {
           this.ready = false;
           throw e;
         }
-        c = await this.applyReceipt(id, n, receipt);
+        c = await this.applyReceipt(id, n, receipt, completed);
         if (c.steps[n].state !== "done") return c;
       }
       return c;
@@ -7334,8 +7491,10 @@ async function memberReferencesIn(tx, o, memberId, spaceId) {
 }
 
 // src/federation-rpc.ts
+init_canonical();
 init_claims();
 init_core();
+init_rpc_domain();
 var FederationRpc = class {
   protocol = "pi-spaces-rpc-v1";
   o;
@@ -7401,11 +7560,15 @@ var FederationRpc = class {
     const state = await this.o.state(), m = state.members[id];
     if (!m)
       throw new Error("Member missing");
-    const version = policyVersion ?? state.policy.policyVersion, ref = origin ? this.reference(origin) : void 0, r = await this.remote(id, p), g = await r.requestGeneration();
+    const version = policyVersion ?? state.policy.policyVersion, ref = origin && !["take", "read", "write"].includes(method) ? this.reference(origin) : void 0;
+    const a = args, b = origin?.args, txn = origin?.result;
+    const reuse = origin?.state === "done" && origin.policyVersion === version && origin.method === "txn" && b?.action === "begin" && txn?.id && (["take", "read", "write"].includes(method) && a?.txn === txn.id || method === "txn" && ["commit", "abort"].includes(a?.action) && a.id === txn.id) && canonicalJson(origin.target) === canonicalJson(m.target) && canonicalJson(origin.principal) === canonicalJson(p) && Number.isSafeInteger(origin.generationAdmitUntil) && origin.generationAdmitUntil > (this.o.now ?? Date.now)() + 2e3;
+    const g = reuse ? { generation: origin.generation, admitUntil: origin.generationAdmitUntil } : await (await this.remote(id, p)).requestGeneration();
     return {
       target: m.target,
       principal: p,
       generation: g.generation,
+      ...Number.isSafeInteger(g.admitUntil) ? { generationAdmitUntil: g.admitUntil } : {},
       method,
       args,
       policyVersion: version,
@@ -7427,8 +7590,9 @@ var FederationRpc = class {
   }
   async invoke(s) {
     const id = await this.member(s.target), r = await this.remote(id, s.principal, s.policyVersion, s.targetRequest);
+    let answer;
     try {
-      await r.requestBound({
+      answer = await r.requestBoundWithClaim({
         method: s.method,
         args: s.args,
         request: { generation: s.generation, requestId: s.requestId },
@@ -7438,7 +7602,26 @@ var FederationRpc = class {
       if (e instanceof RequestConflict || e instanceof RequestExpired || e instanceof ResultExpired || e instanceof IncarnationChanged || e instanceof PermissionError || e instanceof TransactionError || e instanceof CompletionViolation) return this.receipt(s, "needsReview", void 0, e.constructor.name);
       throw e;
     }
+    const witness = answer.claimReceipt;
+    if (witness) {
+      const ref = this.reference(s), b = witness.binding;
+      if (witness.protocol !== "pi-spaces-claim-receipt-v1" || witness.hostId !== s.target.hostId || !b || !b.principal || typeof b.principal !== "object" || typeof b.principal.peerId !== "string" || b.spaceId !== s.target.spaceId || b.authorityId !== s.target.authorityId || b.dataIncarnation !== s.target.dataIncarnation || b.primaryEpoch !== s.target.primaryEpoch || canonicalJson(b.principal) !== canonicalJson(s.principal) || b.generation !== s.generation || b.requestId !== s.requestId || b.method !== ref.method || b.argumentHash !== ref.argumentHash)
+        return this.receipt(s, "needsReview", void 0, "inline claim binding mismatch");
+      if (witness.resolution?.state === "notAdmitted") return this.receipt(s, "needsReview", void 0, "effect replied without retained admission");
+      return this.checkedResolution(s, witness.resolution);
+    }
     return this.resolve(s);
+  }
+  checkedResolution(s, v) {
+    const ref = this.reference(s);
+    if (!v || typeof v !== "object") return this.receipt(s, "needsReview", void 0, "invalid resolution response");
+    if (v.state === "notAdmitted") {
+      if (v.spaceId !== s.target.spaceId || v.authorityId !== s.target.authorityId || v.incarnation !== s.target.dataIncarnation || v.primaryEpoch !== s.target.primaryEpoch || v.generation !== s.generation || v.requestId !== s.requestId || v.method !== ref.method || v.argumentHash !== ref.argumentHash) return this.receipt(s, "needsReview", void 0, "invalid current-epoch admission proof");
+      return this.receipt(s, "notAdmitted");
+    }
+    if (!["pending", "done", "cancelled"].includes(v.state) || v.method !== ref.method) return this.receipt(s, "needsReview", void 0, "invalid retained claim response");
+    if (v.resultExpired || v.unknownOutcome || v.restoredHistory) return this.receipt(s, "needsReview", void 0, "retained outcome unavailable");
+    return this.receipt(s, v.error ? "failed" : v.state === "done" ? "done" : v.state === "cancelled" ? "cancelled" : "pending", v.result, v.error?.code);
   }
   async resolve(s) {
     const id = await this.member(s.target), r = await this.remote(id, s.principal, s.policyVersion, this.reference(s));
@@ -7451,20 +7634,7 @@ var FederationRpc = class {
         if (e instanceof RemoteError && e.code === "UnsupportedMethod") v = await r.pollOperation({ generation: s.generation, requestId: s.requestId });
         else throw e;
       }
-      if (!v || typeof v !== "object") return this.receipt(s, "needsReview", void 0, "invalid resolution response");
-      if (v.state === "notAdmitted") {
-        if (v.spaceId !== s.target.spaceId || v.authorityId !== s.target.authorityId || v.incarnation !== s.target.dataIncarnation || v.primaryEpoch !== s.target.primaryEpoch || v.generation !== s.generation || v.requestId !== s.requestId || v.method !== ref.method || v.argumentHash !== ref.argumentHash) return this.receipt(s, "needsReview", void 0, "invalid current-epoch admission proof");
-        return this.receipt(s, "notAdmitted");
-      }
-      if (!["pending", "done", "cancelled"].includes(v.state) || v.method !== ref.method) return this.receipt(s, "needsReview", void 0, "invalid retained claim response");
-      if (v.resultExpired || v.unknownOutcome || v.restoredHistory)
-        return this.receipt(s, "needsReview", void 0, "retained outcome unavailable");
-      return this.receipt(
-        s,
-        v.error ? "failed" : v.state === "done" ? "done" : v.state === "cancelled" ? "cancelled" : "pending",
-        v.result,
-        v.error?.code
-      );
+      return this.checkedResolution(s, v);
     } catch (e) {
       if (e instanceof RequestConflict || e instanceof RequestExpired || e instanceof ResultExpired || e instanceof IncarnationChanged || e instanceof PermissionError || e instanceof TransactionError || e instanceof CompletionViolation)
         return this.receipt(s, "needsReview", void 0, e.constructor.name);
@@ -7528,8 +7698,14 @@ async function createFederationController(o) {
     return t;
   };
   const now = o.now ?? Date.now, guard = async () => {
-    await o.assertAuthority();
-    const t = inCommit.getStore() ? cachedLease : await lease();
+    let t;
+    if (!inCommit.getStore() && o.authorizeLease) {
+      t = await o.authorizeLease();
+      cachedLease = structuredClone(t);
+    } else {
+      await o.assertAuthority();
+      t = inCommit.getStore() ? cachedLease : await lease();
+    }
     if (!t) throw new Error("RouterLease was not validated before journal commit");
     const l = t.lease;
     if (t.issuer !== o.controlPeerId || t.algorithm !== o.controlSigner.algorithm || !verifyDetached(
@@ -7539,8 +7715,8 @@ async function createFederationController(o) {
       t.signature
     ) || l.authorityId !== o.authorityId || l.controlSpaceId !== o.controlSpaceId || l.routerPeerId !== o.routerPeerId || l.routerKeyId !== o.routerSigner.keyId || now() >= l.expiresAt - 2e3)
       throw new Error("RouterLease does not authorize journal owner");
-    const control2 = await snapshotSpace(o.host, o.controlSpaceId, o.ctx);
-    if (!control2 || control2.authorityCounters?.routerEpoch !== l.routerEpoch || (control2.primaryEpoch ?? 1) !== l.controlPrimaryEpoch)
+    const control2 = await o.host.snapshot(NamedSpace, o.controlSpaceId, o.ctx);
+    if (!control2 || control2.spaceId !== o.controlSpaceId || control2.authorityCounters?.routerEpoch !== l.routerEpoch || (control2.primaryEpoch ?? 1) !== l.controlPrimaryEpoch)
       throw new Error("RouterLease was superseded by Control");
   };
   const policy = new FederationPolicyAuthority({
@@ -7643,16 +7819,28 @@ async function createConfiguredRoot(o) {
   const interval = cfg.statusIntervalMs ?? 1e4;
   if (!Number.isSafeInteger(interval) || interval < 1e3 || interval > 15e3) throw new BootBlocked("Root status interval must be 1000..15000 ms");
   const signer = loadFileSigner(cfg.keyFile), hostSigner = loadFileSigner(cfg.hostKeyFile), sockets = /* @__PURE__ */ new Map();
+  const controlState = () => o.host.snapshot(NamedSpace, o.controlSpaceId, o.ctx);
   const assertRoot = async () => {
-    const [, b, s, local] = await Promise.all([o.assertControl(), o.external.get("boot:" + o.hostId), snapshotSpace(o.host, o.controlSpaceId, o.ctx), o.installed.get("installed:" + o.hostId + ":" + o.controlSpaceId)]), permit = b?.value.spaces?.[o.controlSpaceId];
-    if (b?.value.state !== "active" || b.value.hostId !== o.hostId || !s || !permit || permit.state !== "active" || permit.authorityId !== o.authorityId || permit.dataIncarnation !== s.incarnation || (permit.primaryEpoch ?? 1) !== (s.primaryEpoch ?? 1) || permit.authorityMarker && s.acceptedAuthorityId !== o.authorityId || !["local", "primary"].includes(permit.role) || !local || canonicalJson(local.value) !== canonicalJson(permit)) throw new BootBlocked("Root lacks matching independent/local Control boot permission");
+    const requests = [{ peerId: o.peerId, keyId: signer.keyId }, { peerId: o.peerId, keyId: hostSigner.keyId }], readControl = async () => o.keys instanceof SpaceKeyDirectory ? o.keys.inspect(requests) : { state: await controlState(), keys: o.keys.findMany ? await o.keys.findMany(requests) : await Promise.all(requests.map((k2) => o.keys.find(k2.peerId, k2.keyId))) };
+    let b, view3, local, records;
+    if (o.checkControlAuthority) {
+      [view3, local] = await Promise.all([readControl(), o.installed.get("installed:" + o.hostId + ":" + o.controlSpaceId)]);
+      records = await readRegisterRecords(o.external, ["erasure:" + o.controlSpaceId, "authority:" + o.controlSpaceId, "boot:" + o.hostId]);
+      o.checkControlAuthority(records["authority:" + o.controlSpaceId]);
+      b = records["boot:" + o.hostId];
+    } else {
+      [, b, view3, local] = await Promise.all([o.assertControl(), o.external.get("boot:" + o.hostId), readControl(), o.installed.get("installed:" + o.hostId + ":" + o.controlSpaceId)]);
+    }
+    const s = view3.state, permit = b?.value.spaces?.[o.controlSpaceId];
+    if (b?.value.state !== "active" || b.value.hostId !== o.hostId || !s || s.spaceId !== o.controlSpaceId || !permit || permit.state !== "active" || permit.authorityId !== o.authorityId || permit.dataIncarnation !== s.incarnation || (permit.primaryEpoch ?? 1) !== (s.primaryEpoch ?? 1) || permit.authorityMarker && s.acceptedAuthorityId !== o.authorityId || !["local", "primary"].includes(permit.role) || !local || canonicalJson(local.value) !== canonicalJson(permit)) throw new BootBlocked("Root lacks matching independent/local Control boot permission");
     if ((permit.erasureEpoch ?? 0) !== (s.erasureEpoch ?? 0)) throw new BootBlocked("Root deletion epoch disagrees with its permit");
     try {
-      await checkErasureBarrier(o.external, o.controlSpaceId, s);
+      if (records) validateErasureBarrier(records["erasure:" + o.controlSpaceId], o.controlSpaceId, s, Date.now());
+      else await checkErasureBarrier(o.external, o.controlSpaceId, s);
     } catch (e) {
       throw new BootBlocked(e.message);
     }
-    const [k, hk] = await Promise.all([o.keys.find(o.peerId, signer.keyId), o.keys.find(o.peerId, hostSigner.keyId)]);
+    const [k, hk] = view3.keys;
     if (!k || k.state !== "active" || k.publicKey !== signer.publicKey || k.algorithm !== signer.algorithm || !k.roles.includes("router")) throw new BootBlocked("Root needs its active enrolled router key");
     if (!hk || hk.state !== "active" || hk.publicKey !== hostSigner.publicKey || hk.algorithm !== hostSigner.algorithm || !hk.roles.includes("host")) throw new BootBlocked("Root needs its separate active enrolled host key");
     const own = await o.directory.lookup(o.ownAddress);
@@ -7661,11 +7849,11 @@ async function createConfiguredRoot(o) {
       const peer = await o.directory.lookup(m.address.host);
       if (!peer || peer.id !== m.peerId || m.target.authorityId !== o.authorityId) throw new BootBlocked("Root Member overlay or authority pin disagrees");
     }));
+    return { router: k, host: hk };
   };
   const adminContext = new AsyncLocalStorage2();
   const connection = async (keySigner = hostSigner) => {
-    await assertRoot();
-    const k = await o.keys.find(o.peerId, keySigner.keyId), peer = await o.directory.lookup(o.ownAddress);
+    const verified = await assertRoot(), k = keySigner.keyId === signer.keyId ? verified.router : keySigner.keyId === hostSigner.keyId ? verified.host : null, peer = await o.directory.lookup(o.ownAddress);
     if (!peer || peer.id !== o.peerId || !k || k.state !== "active" || k.publicKey !== keySigner.publicKey || k.algorithm !== keySigner.algorithm) throw new BootBlocked("Root local proven key or overlay binding changed");
     return { peerId: o.peerId, overlayIp: peer.ip, credentials: { roles: peer.groups.flatMap((g) => o.groupRoles[g] ?? []) }, state: { proof: { keyId: k.keyId, principal: k.principal, roles: k.roles, scope: k.scope, at: Date.now() } } };
   };
@@ -7680,8 +7868,7 @@ async function createConfiguredRoot(o) {
     writeFileSync2(cfg.leaseFile + ".tmp", JSON.stringify(t) + "\n", { mode: 384 });
     renameSync(cfg.leaseFile + ".tmp", cfg.leaseFile);
   };
-  const lease = async () => {
-    await assertRoot();
+  const retainLease = async () => {
     if (!current || Date.now() + 45e3 >= current.lease.expiresAt) {
       const prior = current ?? retained;
       current = await o.leases.issue(o.peerId, signer.keyId, prior ? { id: prior.lease.id, routerEpoch: prior.lease.routerEpoch, token: prior } : void 0);
@@ -7689,6 +7876,10 @@ async function createConfiguredRoot(o) {
       save(current);
     }
     return current;
+  };
+  const lease = async () => {
+    await assertRoot();
+    return retainLease();
   };
   const transport = (id) => {
     const m = cfg.members[id];
@@ -7703,7 +7894,9 @@ async function createConfiguredRoot(o) {
   let timer, stopped = false, active2 = Promise.resolve();
   try {
     await assertRoot();
-    const controller = await createFederationController({ host: o.host, ctx: o.ctx, id: cfg.id, journalPartitions: cfg.journalPartitions, controlSpaceId: o.controlSpaceId, authorityId: o.authorityId, routerPeerId: o.peerId, routerSigner: signer, controlPeerId: o.peerId, controlSigner: o.controlSigner, controlPublicKey: o.controlSigner.publicKey, transport, lease, grant: grant2, assertAuthority: assertRoot, authorizeAdmin: async () => {
+    const controller = await createFederationController({ host: o.host, ctx: o.ctx, id: cfg.id, journalPartitions: cfg.journalPartitions, controlSpaceId: o.controlSpaceId, authorityId: o.authorityId, routerPeerId: o.peerId, routerSigner: signer, controlPeerId: o.peerId, controlSigner: o.controlSigner, controlPublicKey: o.controlSigner.publicKey, transport, lease, grant: grant2, assertAuthority: async () => {
+      await assertRoot();
+    }, authorizeLease: lease, authorizeAdmin: async () => {
       await assertRoot();
       if (!cfg.allowMembershipCommands || !cfg.adminPeer || adminContext.getStore() !== cfg.adminPeer.peerId) throw new BootBlocked("native Root requires a provisioned Supervisor administrator context");
       await o.directory.refresh();
@@ -8219,6 +8412,7 @@ async function startFederationHost(host, ctx, o) {
   const proof = new ProvingService(noticeService ?? service, { gateHostId: o.hostId, keys: o.keys, now: o.now });
   let chain = proof;
   let stopSupervisor;
+  let supervisor;
   let stopMaintenance;
   let gate;
   try {
@@ -8308,17 +8502,18 @@ async function startFederationHost(host, ctx, o) {
           return { phase: r.phase, memberId: r.member.id, ...r.error ? { error: r.error } : {}, ...r.policy ? { policyVersion: r.policy.policyVersion } : {} };
         };
       }
-      stopSupervisor = await new Supervisor(o.control.host, ctx, {
+      supervisor = new Supervisor(o.control.host, ctx, {
         now: o.now,
         ...Object.keys(asyncCommands).length ? { asyncCommands } : {},
         ...o.control.routing ? { commands: { setPolicy: async (tx, args) => {
           const p = await o.control.routing.applyIn(tx, args.policy, Number(args.expectedVersion));
           return { policyVersion: p.policyVersion };
         } } } : {}
-      }).start();
+      });
     }
     stopMaintenance = await startService(host, ctx, { now: o.now });
     gate = await startGate(chain, { ...o, keys: o.keys });
+    if (supervisor) stopSupervisor = await supervisor.start();
     let closed = false;
     return { ...gate, service: chain, close: async () => {
       if (closed) return;
@@ -8349,20 +8544,21 @@ import { createHash as createHash13 } from "node:crypto";
 var TlsRecoveryRegister = class {
   o;
   constructor(o) {
+    if (o.unixPath && (!o.unixPath.startsWith("/") || !o.serverName)) throw Error("Unix register transport requires an absolute socket path and pinned TLS server name");
     this.o = o;
   }
   call(call) {
     const o = this.o, body = JSON.stringify(call) + "\n";
     if (Buffer.byteLength(body) > 256 * 1024) return Promise.reject(new Error("register request exceeds budget"));
-    return new Promise((resolve, reject) => {
-      const socket = tls.connect({ host: o.host, port: o.port, servername: o.serverName, ca: privateFile(o.caFile), cert: privateFile(o.certFile), key: privateFile(o.keyFile), rejectUnauthorized: true, minVersion: "TLSv1.3" });
+    return new Promise((resolve2, reject) => {
+      const socket = tls.connect({ ...o.unixPath ? { path: o.unixPath } : { host: o.host, port: o.port }, servername: o.serverName, ca: privateFile(o.caFile), cert: privateFile(o.certFile), key: privateFile(o.keyFile), rejectUnauthorized: true, minVersion: "TLSv1.3" });
       let input = Buffer.alloc(0), done = false;
       const finish2 = (error, value) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         socket.destroy();
-        error ? reject(error) : resolve(value);
+        error ? reject(error) : resolve2(value);
       };
       const timer = setTimeout(() => finish2(new Error("independent TLS register timed out")), o.timeoutMs ?? 6e3);
       socket.on("secureConnect", () => socket.write(body));
@@ -8390,6 +8586,17 @@ var TlsRecoveryRegister = class {
   }
   get(key) {
     return this.call({ method: "get", key });
+  }
+  async getMany(keys) {
+    validateRegisterReadKeys(keys);
+    if (!this.o.batchReads) {
+      const records2 = {};
+      for (const key of keys) records2[key] = await this.get(key);
+      return records2;
+    }
+    const records = await this.call({ method: "getMany", keys });
+    if (!records || typeof records !== "object" || Array.isArray(records) || Object.keys(records).length !== keys.length || keys.some((key) => !Object.hasOwn(records, key) || records[key] !== null && (!Number.isSafeInteger(records[key]?.version) || records[key].version < 1 || !Object.hasOwn(records[key], "value")))) throw Error("invalid register batch response");
+    return records;
   }
   compareAndSet(key, expected, value) {
     return this.call({ method: "compareAndSet", key, expectedVersion: expected, value });
@@ -8426,9 +8633,12 @@ async function serveTlsRegister(register, o) {
       started = true;
       try {
         const c = JSON.parse(input.subarray(0, end).toString("utf8"));
-        if (typeof c.key !== "string" || !c.key || c.key.length > 512) throw new Error("invalid register key");
+        if (c.method !== "getMany" && (typeof c.key !== "string" || !c.key || c.key.length > 512)) throw new Error("invalid register key");
         let result;
-        if (c.method === "get") result = await register.get(c.key);
+        if (c.method === "getMany") {
+          validateRegisterReadKeys(c.keys);
+          result = register.getMany ? await register.getMany(c.keys) : Object.fromEntries(await Promise.all(c.keys.map(async (key) => [key, await register.get(key)])));
+        } else if (c.method === "get") result = await register.get(c.key);
         else if (c.method === "compareAndSet" && (policy.operator || policy.writeKeys?.includes(c.key))) result = await register.compareAndSet(c.key, c.expectedVersion, c.value);
         else throw new Error("certificate has no CAS permission for this register key");
         socket.end(JSON.stringify({ ok: true, result }) + "\n");
@@ -8440,16 +8650,16 @@ async function serveTlsRegister(register, o) {
   server.maxConnections = 64;
   server.on("tlsClientError", () => {
   });
-  await new Promise((resolve, reject) => {
+  await new Promise((resolve2, reject) => {
     server.once("error", reject);
     server.listen(o.port, o.host, () => {
       server.removeListener("error", reject);
-      resolve();
+      resolve2();
     });
   });
   return { address: () => server.address(), close: async () => {
     for (const s of open2) s.destroy();
-    await new Promise((resolve, reject) => server.close((e) => e ? reject(e) : resolve()));
+    await new Promise((resolve2, reject) => server.close((e) => e ? reject(e) : resolve2()));
   } };
 }
 
@@ -8468,7 +8678,7 @@ var SshRecoveryRegister = class {
   call(call) {
     const key = call.key;
     if (typeof key !== "string" || !key || key.length > 512) return Promise.reject(new Error("invalid register key"));
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const child2 = spawn("ssh", ["-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", this.target, this.operator ? "pi-spaces-register-operator" : "pi-spaces-register-read"], { stdio: ["pipe", "pipe", "ignore"] });
       let output = Buffer.alloc(0), settled = false;
       const finish2 = (error, value) => {
@@ -8476,7 +8686,7 @@ var SshRecoveryRegister = class {
         settled = true;
         clearTimeout(timer);
         child2.kill();
-        error ? reject(error) : resolve(value);
+        error ? reject(error) : resolve2(value);
       };
       const timer = setTimeout(() => finish2(new Error("independent SSH register timed out")), this.timeoutMs);
       child2.on("error", (e) => finish2(e));
@@ -8580,7 +8790,7 @@ function sshRecoveryTransport(target, timeoutMs = 1e4) {
     for (const c of active2) c.kill();
   }, async request(text2) {
     if (closed || Buffer.byteLength(text2) > 256 * 1024) throw new Error("recovery transport is closed or request exceeds budget");
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const child2 = spawn2("ssh", ["-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", target, "pi-spaces-recovery"], { stdio: ["pipe", "pipe", "ignore"] });
       active2.add(child2);
       let output = Buffer.alloc(0), done = false;
@@ -8590,7 +8800,7 @@ function sshRecoveryTransport(target, timeoutMs = 1e4) {
         clearTimeout(timer);
         active2.delete(child2);
         child2.kill();
-        error ? reject(error) : resolve(reply2);
+        error ? reject(error) : resolve2(reply2);
       };
       const timer = setTimeout(() => finish2(new Error("recovery SSH timed out; resolve the existing request identity")), timeoutMs);
       child2.on("error", (e) => finish2(e));
@@ -8615,7 +8825,7 @@ async function verifySshFence(register, hostId, targets) {
   if (!target || !/^[A-Za-z0-9_.@:-]+$/.test(target) || target.startsWith("-")) throw new RecoveryBlocked("no independently provisioned fencing endpoint for this host");
   const boot = await register.get(`boot:${hostId}`);
   if (!boot || Object.values(boot.value.spaces).some((s) => s.durability === "sync" || !["local", "primary"].includes(s.role))) throw new RecoveryBlocked("F15 is restricted to single-space hosting without replicas");
-  const status = await new Promise((resolve, reject) => {
+  const status = await new Promise((resolve2, reject) => {
     const process2 = spawn3("ssh", ["-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", target, "pi-spaces-fence-status"], { stdio: ["ignore", "pipe", "ignore"] });
     let output = "", settled = false;
     const finish2 = (error, value) => {
@@ -8623,7 +8833,7 @@ async function verifySshFence(register, hostId, targets) {
       settled = true;
       clearTimeout(timer);
       process2.kill();
-      error ? reject(error) : resolve(value);
+      error ? reject(error) : resolve2(value);
     };
     const timer = setTimeout(() => finish2(new RecoveryBlocked("independent fencing status timed out")), 1e4);
     process2.on("error", (e) => finish2(e));
@@ -8718,7 +8928,7 @@ async function startConfiguredFederation(host, ctx, configFile) {
     if (config.mode === "control") {
       if (config.hostId !== config.controlHostId || (await host.snapshot(Registry, ctx))?.aliases.control !== config.controlSpaceId) throw new Error("configured control host or space identity disagrees with provisioned state");
       if (config.control.algorithm !== signer.algorithm || controlPublicKey !== signer.publicKey) throw new Error("provisioned control signer disagrees with installed authority");
-      keys = new SpaceKeyDirectory(host, ctx);
+      keys = new SpaceKeyDirectory(host, ctx, Date.now, config.controlSpaceId);
       control2 = { host, authority: new GrantAuthority({ authorityId, hostId: config.hostId, signer, keys, identity, allowAOnly: async () => {
         const state = await snapshotSpace(host, config.controlSpaceId, ctx), policy = await external.get(`access:${authorityId}`);
         return policy ? policy.value.authorityId === authorityId && policy.value.aOnlyAllowed === true : state?.restore?.kind !== "control";
@@ -8736,10 +8946,10 @@ async function startConfiguredFederation(host, ctx, configFile) {
       controlRemote = remote;
       keys = { find: (peerId, keyId) => remote.lookupPeerKey(peerId, keyId) };
     }
-    const assertControl = async () => {
-      const a = await external.get(`authority:${config.controlSpaceId}`);
+    const checkControlAuthority = (a) => {
       if (a?.value.state !== "active" || a.value.authorityId !== authorityId || a.value.hostId !== config.controlHostId || a.value.supervisorKey !== controlPublicKey) throw new BootBlocked("control authority changed");
     };
+    const assertControl = async () => checkControlAuthority(await external.get(`authority:${config.controlSpaceId}`));
     const controlPeer = config.mode === "control" ? ownPeer : await directory.lookup(config.control.address.host);
     if (!controlPeer) throw new BootBlocked("control peer unavailable in provisioned directory");
     if (control2) {
@@ -8763,7 +8973,7 @@ async function startConfiguredFederation(host, ctx, configFile) {
     let root;
     if (config.root) {
       try {
-        root = await createConfiguredRoot({ host, ctx, hostId: config.hostId, peerId: config.peerId, ownAddress: config.listen.host, authorityId, controlSpaceId: config.controlSpaceId, controlSigner: signer, keys, directory, groupRoles, external, installed, grants: control2.authority, leases: control2.leases, root: config.root, assertControl });
+        root = await createConfiguredRoot({ host, ctx, hostId: config.hostId, peerId: config.peerId, ownAddress: config.listen.host, authorityId, controlSpaceId: config.controlSpaceId, controlSigner: signer, keys, directory, groupRoles, external, installed, grants: control2.authority, leases: control2.leases, root: config.root, assertControl, checkControlAuthority });
         control2.membership = root.membership;
         control2.profiles = root.profiles;
         control2.withAdmin = root.withAdmin;
@@ -9260,6 +9470,9 @@ async function startMemberRecoveryOnly(host, ctx, configFile, assertQuiesced) {
   }
 }
 
+// src/index.ts
+init_rpc_domain();
+
 // src/data-admin.ts
 init_canonical();
 init_mailbox();
@@ -9523,7 +9736,7 @@ import { createHash as createHash17 } from "node:crypto";
 init_routing_semantics();
 var hash6 = (value) => createHash17("sha256").update(canonicalJson(value)).digest("hex");
 var copy7 = (v) => JSON.parse(JSON.stringify(v));
-var evidenceKey = (root, id, digest5) => hash6([root, id, "entry-digests", digest5.slice(0, 2)]);
+var evidenceKey = (root, id, digest6) => hash6([root, id, "entry-digests", digest6.slice(0, 2)]);
 var RootHistoryErasure = class {
   o;
   constructor(o) {
@@ -9757,6 +9970,162 @@ var ErasureArchiveController = class {
     return a;
   }
 };
+
+// src/distributed-erasure.ts
+init_canonical();
+import { createHash as createHash18 } from "node:crypto";
+var digest5 = (v) => createHash18("sha256").update(canonicalJson(v)).digest("hex");
+var clone2 = (v) => structuredClone(v);
+var DistributedPrincipalErasure = class {
+  o;
+  constructor(o) {
+    this.o = o;
+  }
+  validate(p) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(p.id) || !p.principal || typeof p.principal.peerId !== "string" || !p.principal.peerId || p.principal.peerId.length > 128 || p.principal.agentId !== void 0 && (typeof p.principal.agentId !== "string" || !p.principal.agentId || p.principal.agentId.length > 128) || Object.keys(p.principal).some((k) => !["peerId", "agentId"].includes(k)) || !Number.isSafeInteger(p.retentionMs) || p.retentionMs < 0 || p.retentionMs > 864e5 || !p.participants.length || p.participants.length > 32 || p.participants.filter((t) => t.root).length !== 1 || new Set(p.participants.map((t) => t.spaceId)).size !== p.participants.length) throw Error("invalid distributed erasure plan");
+    for (const t of p.participants) if (["hostId", "spaceId", "authorityId", "dataIncarnation"].some((k) => typeof t[k] !== "string" || !t[k] || t[k].length > 128) || !Number.isSafeInteger(t.primaryEpoch) || t.primaryEpoch < 1 || t.root !== void 0 && typeof t.root !== "boolean" || t.authorityId !== p.participants[0].authorityId) throw Error("invalid pinned erasure target");
+  }
+  async advance(input) {
+    const p = clone2(input);
+    this.validate(p);
+    await this.o.authorize();
+    const key = "erasure-command:" + p.id, record2 = await this.o.register.get(key), hash7 = digest5(p);
+    if (record2 && record2.value.hash !== hash7) throw Error("erasure command changed binding");
+    if (!record2) {
+      const initial = { hash: hash7, commandHash: digest5([p.id, p.principal]), phase: "fencing", cursor: 0, epochs: {}, entryIds: [] };
+      await this.o.register.compareAndSet(key, null, initial);
+      return clone2(initial);
+    }
+    const s = clone2(record2.value);
+    if (s.phase === "completed") return s;
+    const next = (phase) => {
+      s.phase = phase;
+      s.cursor = 0;
+    };
+    if (s.phase === "fencing") {
+      await this.o.driver.fence(p);
+      await this.o.driver.assertFenced(p);
+      next("floors");
+    } else if (s.phase === "releasing") {
+      for (const t of p.participants) {
+        const f = await this.o.register.get("erasure:" + t.spaceId);
+        if (f?.value.state !== "sealed" || f.value.commandHash !== s.commandHash || f.value.epoch !== s.epochs[t.spaceId]) throw Error("all erasure floors must remain sealed before release");
+      }
+      await this.o.driver.release(p, s.epochs);
+      s.entryIds = [];
+      next("completed");
+    } else {
+      await this.o.driver.assertFenced(p);
+      const phase = s.phase, t = p.participants[s.cursor];
+      switch (s.phase) {
+        case "floors":
+          s.epochs[t.spaceId] = (await this.o.archives.begin(t.spaceId, s.commandHash, p.retentionMs)).epoch;
+          break;
+        case "evidence": {
+          const ids = await this.o.driver.evidence(t, p);
+          if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id || id.length > 256)) throw Error("invalid erasure evidence");
+          s.entryIds = [.../* @__PURE__ */ new Set([...s.entryIds, ...ids])];
+          if (s.entryIds.length > 4096) throw Error("erasure evidence exceeds coordinator budget");
+          break;
+        }
+        case "local":
+          await this.o.driver.eraseLocal(t, p);
+          break;
+        case "root":
+          await this.o.driver.eraseRoot(p.participants.find((t2) => t2.root), p, s.entryIds);
+          next("stamp");
+          break;
+        case "stamp":
+          await this.o.driver.stamp(t, p, s.epochs[t.spaceId], s.commandHash);
+          break;
+        case "archives":
+          await this.o.archives.quarantine(t.spaceId, s.commandHash);
+          await this.o.archives.destroyDue(t.spaceId, s.commandHash, true);
+          break;
+        case "seal":
+          await this.o.archives.seal(t.spaceId, s.commandHash, s.epochs[t.spaceId]);
+          break;
+      }
+      if (phase !== "root") {
+        s.cursor++;
+        if (s.cursor === p.participants.length) {
+          const phases = ["floors", "evidence", "local", "root", "stamp", "archives", "seal", "releasing"];
+          next(phases[phases.indexOf(s.phase) + 1]);
+        }
+      }
+      await this.o.driver.assertFenced(p);
+    }
+    await this.o.authorize();
+    await this.o.register.compareAndSet(key, record2.version, s);
+    return clone2(s);
+  }
+  async execute(plan) {
+    for (; ; ) {
+      const result = await this.advance(plan);
+      if (result.phase === "completed") return result;
+    }
+  }
+};
+
+// src/erasure-sqlite.ts
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+import { lstatSync as lstatSync6, realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { apply as apply2 } from "@earendil-works/chord/delta";
+async function compactErasedSqlite(path, assertExclusiveFenced) {
+  await assertExclusiveFenced();
+  const absolute = resolve(path), stat = lstatSync6(absolute);
+  if (!stat.isFile() || stat.isSymbolicLink() || realpathSync(absolute) !== absolute) throw Error("owned regular SQLite file required");
+  const db = new DatabaseSync2(absolute);
+  let documents = 0, revisionsRemoved = 0;
+  try {
+    db.exec("PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON");
+    if (db.prepare("SELECT version FROM durable_schema WHERE singleton=1").get()?.version !== 1) throw Error("unsupported durable SQLite schema");
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const revisions = db.prepare("SELECT seq,kind,version,content FROM document_revisions WHERE document_id=? ORDER BY seq");
+      for (const row of db.prepare("SELECT id,kind,retired_at FROM documents WHERE scope_kind='session'").all()) {
+        const kind = JSON.parse(row.kind);
+        if (typeof kind !== "string" || !kind.startsWith("pi-spaces.")) continue;
+        const rows = revisions.all(row.id);
+        if (row.retired_at !== null) {
+          db.prepare("DELETE FROM document_revisions WHERE document_id=?").run(row.id);
+          revisionsRemoved += rows.length;
+          continue;
+        }
+        let base = -1;
+        for (let i = 0; i < rows.length; i++) if (rows[i].kind === "base") base = i;
+        if (base < 0) throw Error("missing durable document base");
+        let value = JSON.parse(rows[base].content);
+        const version = rows[base].version;
+        for (const r of rows.slice(base + 1)) {
+          if (r.kind !== "delta" || r.version !== version) throw Error("invalid durable document revision chain");
+          value = apply2(value, JSON.parse(r.content));
+        }
+        const last = rows.at(-1);
+        db.prepare("DELETE FROM document_revisions WHERE document_id=?").run(row.id);
+        db.prepare("INSERT INTO document_revisions(document_id,seq,kind,version,content) VALUES(?,?,'base',?,?)").run(row.id, last.seq, version, JSON.stringify(value));
+        documents++;
+        revisionsRemoved += rows.length - 1;
+      }
+      await assertExclusiveFenced();
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    const checkpoint = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    if (checkpoint && Number(checkpoint.busy) !== 0) throw Error("SQLite history checkpoint is busy; remain fenced");
+    db.exec("VACUUM");
+    const finalCheckpoint = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    if (finalCheckpoint && Number(finalCheckpoint.busy) !== 0) throw Error("compacted SQLite checkpoint is busy; remain fenced");
+    await assertExclusiveFenced();
+    if (db.prepare("PRAGMA integrity_check").get()?.integrity_check !== "ok") throw Error("compacted SQLite integrity check failed");
+    return { documents, revisionsRemoved, completed: true };
+  } finally {
+    db.close();
+  }
+}
 
 // src/index.ts
 var MAX_WAIT_MS = 6e4;
@@ -10183,6 +10552,7 @@ export {
   DelegationDenied,
   DelegationVerifier,
   DirectoryDown,
+  DistributedPrincipalErasure,
   ENROLLABLE_ROLES,
   ENROLL_TTL_MS,
   EnrollmentService,
@@ -10273,6 +10643,7 @@ export {
   canonicalJson,
   checkErasureBarrier,
   claims_exports as claims,
+  compactErasedSqlite,
   completeRestore,
   controlRecoveryHandler,
   core_exports as core,
