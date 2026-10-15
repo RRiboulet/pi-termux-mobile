@@ -4072,6 +4072,14 @@ async function serveSpace(service, o) {
     const reader = new FrameReader(maxFrame - HEADER);
     let inflight = 0;
     let conn;
+    const identify = () => conn ??= Promise.resolve().then(() => o.connection ? o.connection(socket) : {}).then((c) => {
+      if (c === null) {
+        socket.destroy();
+        throw new Error("refused");
+      }
+      return c;
+    });
+    if (o.identifyOnConnect) void identify().catch(() => socket.destroy());
     const reply2 = (id, text2) => {
       if (!socket.destroyed) socket.write(frame(id, text2));
     };
@@ -4083,14 +4091,7 @@ async function serveSpace(service, o) {
             return;
           }
           inflight++;
-          conn ??= Promise.resolve(o.connection ? o.connection(socket) : {}).then((c) => {
-            if (c === null) {
-              socket.destroy();
-              throw new Error("refused");
-            }
-            return c;
-          });
-          conn.then((c) => service.handleText(text2, c, maxFrame - HEADER)).then((r) => reply2(id, r), (e) => reply2(id, JSON.stringify({ ok: false, error: { code: "Internal", message: e instanceof Error ? e.message : String(e) } }))).finally(() => {
+          identify().then((c) => service.handleText(text2, c, maxFrame - HEADER)).then((r) => reply2(id, r), (e) => reply2(id, JSON.stringify({ ok: false, error: { code: "Internal", message: e instanceof Error ? e.message : String(e) } }))).finally(() => {
             inflight--;
           });
         });
@@ -8078,6 +8079,7 @@ async function startGate(service, o) {
   const server = await serveSpace(service, {
     listen: o.listen,
     connection: identify,
+    identifyOnConnect: true,
     ...o.maxFrameBytes === void 0 ? {} : { maxFrameBytes: o.maxFrameBytes },
     ...o.maxConnections === void 0 ? {} : { maxConnections: o.maxConnections },
     ...o.idleMs === void 0 ? {} : { idleMs: o.idleMs }
