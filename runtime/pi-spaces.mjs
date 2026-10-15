@@ -10133,8 +10133,8 @@ async function compactErasedSqlite(path, assertExclusiveFenced) {
 init_canonical();
 init_claims();
 init_core();
-import { createHash as createHash19 } from "node:crypto";
-import { defineDocFamily as defineDocFamily12 } from "@earendil-works/pi-durable";
+import { createHash as createHash19, randomBytes as randomBytes10 } from "node:crypto";
+import { defineDocFamily as defineDocFamily13 } from "@earendil-works/pi-durable";
 
 // src/replication-clock.ts
 var ReplicationClockError = class extends Error {
@@ -10158,15 +10158,21 @@ function advanceHybridClock(local, now, remote, maxFutureMs = 6e4) {
   return { physical, logical };
 }
 
+// src/entry-replication-transfer.ts
+import { defineDocFamily as defineDocFamily12 } from "@earendil-works/pi-durable";
+var EntrySnapshotTransfers = defineDocFamily12({ kind: "pi-spaces.entry-snapshot-transfers", version: 1, scope: "session", family: true, initial: () => ({ retainedBytes: 0, transfers: {} }) });
+var EntrySnapshotChunks = defineDocFamily12({ kind: "pi-spaces.entry-snapshot-chunk", version: 1, scope: "session", family: true, initial: () => ({ page: null }) });
+
 // src/entry-replication.ts
 var ReplicationConflict = class extends Error {
 };
-var EntryReplicas = defineDocFamily12({
+var EntryReplicas = defineDocFamily13({
   kind: "pi-spaces.entry-replica",
-  version: 1,
+  version: 2,
   scope: "session",
   family: true,
-  initial: () => ({ config: null, configHash: "", clock: { physical: 0, logical: 0 }, lastWallTime: 0, seq: 0, events: [] })
+  initial: () => ({ config: null, configHash: "", clock: { physical: 0, logical: 0 }, lastWallTime: 0, seq: 0, events: [], segments: [] }),
+  migrate: (v) => ({ ...v, segments: v.segments ?? [] })
 });
 function assertJson(v, depth = 0, parents = /* @__PURE__ */ new Set()) {
   if (depth > 64) throw new ReplicationConflict("JSON nesting exceeds 64 levels");
@@ -10205,6 +10211,17 @@ function configOf(input) {
   if (bytes6(c) > 8192) throw new ResourceExhausted("replica configuration exceeds 8 KiB");
   return c;
 }
+var snapshotCaches = /* @__PURE__ */ new WeakMap();
+var sha = (v) => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
+var chunkKey = (documentKey, snapshotId, index) => hash7([documentKey, snapshotId, index]);
+var pageHash = (page) => {
+  const { sha256, ...body } = page;
+  return hash7(body);
+};
+var manifestSeed = (manifest) => {
+  const { seedHash, rootHash, ...body } = manifest;
+  return hash7(body);
+};
 var EntryReplicationController = class {
   o;
   config;
@@ -10270,34 +10287,44 @@ var EntryReplicationController = class {
     if (2 * bytes6(events) + 16384 > this.maxBatchBytes) throw new ResourceExhausted("replication batch exceeds atomic import budget");
   }
   append(s, incoming, now) {
-    let added = 0;
+    const known = new Map(s.events.map((e) => [entryChangeId(e), e])), requests = new Set(s.events.map((e) => canonical([e.originReplicaId, e.incarnation, e.requestId]))), accepted = [];
     for (const event of incoming) {
       this.validateEvent(event, now);
-      const old = s.events.find((e) => entryChangeId(e) === entryChangeId(event));
+      const k = entryChangeId(event), old = known.get(k);
       if (old) {
         if (canonical(old) !== canonical(event)) throw new ReplicationConflict("immutable change ID reused");
         continue;
       }
-      for (const e of s.events) if (origin(e) === origin(event)) {
-        if (e.requestId === event.requestId) throw new ReplicationConflict("origin request ID reused");
-        const cmp = compareHybridClock(e.clock, event.clock);
-        if (e.seq < event.seq ? cmp >= 0 : cmp <= 0) throw new ReplicationConflict("origin clock is not strictly monotonic");
-      }
-      if (event.mutation.kind === "remove") for (const tag of event.mutation.tags) {
-        const observed = s.events.find((e) => entryChangeId(e) === tag);
-        if (observed && (observed.mutation.kind !== "add" || observed.mutation.type !== event.mutation.type)) throw new ReplicationConflict("remove references another type or a non-add");
-      }
-      for (const e of s.events) if (e.mutation.kind === "remove" && e.mutation.tags.includes(entryChangeId(event)) && (event.mutation.kind !== "add" || event.mutation.type !== e.mutation.type)) throw new ReplicationConflict("observed tag changed type");
+      const request = canonical([event.originReplicaId, event.incarnation, event.requestId]);
+      if (requests.has(request)) throw new ReplicationConflict("origin request ID reused");
+      known.set(k, event);
+      requests.add(request);
+      accepted.push(event);
+    }
+    const origins = /* @__PURE__ */ new Map();
+    for (const event of known.values()) {
+      const k = origin(event), items = origins.get(k) ?? [];
+      items.push(event);
+      origins.set(k, items);
+    }
+    for (const items of origins.values()) {
+      items.sort((a, b) => a.seq - b.seq);
+      for (let n = 1; n < items.length; n++) if (compareHybridClock(items[n - 1].clock, items[n].clock) >= 0) throw new ReplicationConflict("origin clock is not strictly monotonic");
+    }
+    for (const event of known.values()) if (event.mutation.kind === "remove") for (const tag of event.mutation.tags) {
+      const observed = known.get(tag);
+      if (observed && (observed.mutation.kind !== "add" || observed.mutation.type !== event.mutation.type)) throw new ReplicationConflict("remove references another type or a non-add");
+    }
+    for (const event of accepted) {
       s.events.push(copy8(event));
       s.clock = advanceHybridClock(s.clock, now, event.clock);
       if (event.originReplicaId === this.config.replicaId && event.incarnation === this.config.incarnation) s.seq = Math.max(s.seq, event.seq);
-      added++;
     }
-    if (added) {
+    if (accepted.length) {
       s.lastWallTime = Math.max(s.lastWallTime, now);
       if (bytes6(s) > this.maxHistoryBytes) throw new ResourceExhausted("replica history is full; no tombstone or dedup record was discarded");
     }
-    return added;
+    return accepted.length;
   }
   async mutate(requestId, mutation) {
     const m = copy8(mutation);
@@ -10309,15 +10336,17 @@ var EntryReplicationController = class {
       await this.check("local");
       const s = await tx.doc(EntryReplicas, this.documentKey, null);
       this.bind(s);
-      const old = s.events.find((e) => e.originReplicaId === this.config.replicaId && e.incarnation === this.config.incarnation && e.requestId === requestId);
+      const logical = await this.materializeIn(tx, s), previous = logical.events.length;
+      const old = logical.events.find((e) => e.originReplicaId === this.config.replicaId && e.incarnation === this.config.incarnation && e.requestId === requestId);
       if (old) {
         if (old.argumentHash !== argumentHash) throw new RequestConflict("replication request changed arguments");
+        await this.check("local");
         return copy8(old);
       }
       const now = this.now();
       this.clockSafe(s, now);
       if (m.kind === "remove") for (const tag of m.tags) {
-        const e = s.events.find((e2) => entryChangeId(e2) === tag);
+        const e = logical.events.find((e2) => entryChangeId(e2) === tag);
         if (!e || e.mutation.kind !== "add" || e.mutation.type !== m.type) throw new ReplicationConflict("local remove can only remove observed adds of its type");
       }
       if (!Number.isSafeInteger(s.seq + 1)) throw new ReplicationConflict("origin sequence exhausted");
@@ -10325,7 +10354,10 @@ var EntryReplicationController = class {
       this.budget([event]);
       s.config ??= copy8(this.config);
       s.configHash = this.configHash;
-      this.append(s, [event], now);
+      logical.config = copy8(this.config);
+      logical.configHash = this.configHash;
+      this.append(logical, [event], now);
+      this.persistOverlay(s, logical, previous);
       await this.check("local");
       return copy8(event);
     }, this.o.ctx);
@@ -10342,17 +10374,53 @@ var EntryReplicationController = class {
       const now = this.now();
       s.config ??= copy8(this.config);
       s.configHash = this.configHash;
-      const added = this.append(s, events, now);
+      const logical = await this.materializeIn(tx, s), previous = logical.events.length;
+      const added = this.append(logical, events, now);
+      this.persistOverlay(s, logical, previous);
       await this.check("import");
-      return { added, revision: s.events.length };
+      return { added, revision: logical.events.length };
     }, this.o.ctx);
+  }
+  async materialize(base, load) {
+    const result = copy8(base), events = [], seen = /* @__PURE__ */ new Map();
+    let through = 0;
+    const add = (items) => {
+      for (const e of items) {
+        const k = entryChangeId(e), h = hash7(e), old = seen.get(k);
+        if (old && old !== h) throw new ReplicationConflict("stored change ID conflict");
+        if (!old) {
+          events.push(copy8(e));
+          seen.set(k, h);
+        }
+      }
+    };
+    for (const segment of base.segments ?? []) {
+      if (segment.overlayThrough < through || segment.overlayThrough > base.events.length) throw new ReplicationConflict("invalid stored overlay boundary");
+      add(base.events.slice(through, segment.overlayThrough));
+      through = segment.overlayThrough;
+      const pages = await this.stagedEvents(segment.manifest, load);
+      add(pages);
+    }
+    add(base.events.slice(through));
+    result.events = events;
+    return result;
+  }
+  materializeIn(tx, base) {
+    return this.materialize(base, (key2) => tx.doc(EntrySnapshotChunks, key2, null));
+  }
+  persistOverlay(base, logical, previous) {
+    base.events.push(...copy8(logical.events.slice(previous)));
+    base.clock = copy8(logical.clock);
+    base.seq = logical.seq;
+    base.lastWallTime = logical.lastWallTime;
   }
   async state(action) {
     await this.check(action);
-    const s = await this.o.host.snapshot(EntryReplicas, this.documentKey, this.o.ctx);
-    if (s) this.bind(s);
+    const base = await this.o.host.snapshot(EntryReplicas, this.documentKey, this.o.ctx);
+    if (base) this.bind(base);
+    const state = base ? await this.materialize(base, (key2) => this.o.host.snapshot(EntrySnapshotChunks, key2, this.o.ctx)) : void 0;
     await this.check(action);
-    return s;
+    return state;
   }
   async read() {
     const s = await this.state("read"), now = this.now();
@@ -10403,6 +10471,236 @@ var EntryReplicationController = class {
     const { sha256, ...body } = v;
     if (sha256 !== hash7(body)) throw new ReplicationConflict("snapshot hash mismatch");
     return this.importChanges(v.events);
+  }
+  snapshotId(value) {
+    if (typeof value !== "string" || !/^ss[0-9a-f]{32}$/.test(value)) throw new ReplicationConflict("invalid snapshot ID");
+  }
+  cache() {
+    let byDocument = snapshotCaches.get(this.o.host);
+    if (!byDocument) {
+      byDocument = /* @__PURE__ */ new Map();
+      snapshotCaches.set(this.o.host, byDocument);
+    }
+    let cache = byDocument.get(this.documentKey);
+    if (!cache) {
+      cache = /* @__PURE__ */ new Map();
+      byDocument.set(this.documentKey, cache);
+    }
+    return cache;
+  }
+  bindManifest(m) {
+    if (m.spaceId !== this.config.spaceId || m.authorityId !== this.config.authorityId || m.configHash !== this.configHash || !this.config.members.some((p) => p.replicaId === m.sourceReplicaId && p.incarnation === m.sourceIncarnation)) throw new ReplicationConflict("snapshot binding changed");
+  }
+  validateManifest(m) {
+    if (!m || !exact(m, ["version", "id", "spaceId", "authorityId", "configHash", "sourceReplicaId", "sourceIncarnation", "revision", "eventCount", "bytes", "pageBytes", "pageCount", "expiresAt", "seedHash", "rootHash"]) || m.version !== 1 || !/^ss[0-9a-f]{32}$/.test(m.id) || m.spaceId !== this.config.spaceId || m.authorityId !== this.config.authorityId || m.configHash !== this.configHash || !this.config.members.some((p) => p.replicaId === m.sourceReplicaId && p.incarnation === m.sourceIncarnation) || !number(m.revision) || m.revision !== m.eventCount || !number(m.eventCount) || !number(m.bytes) || m.bytes < 2 || m.bytes > this.maxHistoryBytes || !number(m.pageBytes) || m.pageBytes < 1024 || 2 * m.pageBytes + 16384 > this.maxBatchBytes || !number(m.pageCount) || m.pageCount < 1 || m.pageCount > 2048 || !number(m.expiresAt) || !sha(m.seedHash) || !sha(m.rootHash) || manifestSeed(m) !== m.seedHash) throw new ReplicationConflict("invalid snapshot manifest or binding");
+  }
+  validatePage(m, p, index, offset, previousHash) {
+    if (!p || !exact(p, ["snapshotId", "index", "offset", "next", "events", "previousHash", "sha256"]) || p.snapshotId !== m.id || p.index !== index || p.offset !== offset || p.next !== index + 1 || p.previousHash !== previousHash || !Array.isArray(p.events) || p.events.length > 1024 || !p.events.length && m.eventCount !== 0 || !sha(p.sha256) || pageHash(p) !== p.sha256 || bytes6(p) > m.pageBytes || offset + p.events.length > m.eventCount) throw new ReplicationConflict("snapshot page changed, is out of order or exceeds budget");
+  }
+  async stagedEvents(m, load, count2 = m.pageCount) {
+    const events = [];
+    let chain = m.seedHash;
+    for (let n = 0; n < count2; n++) {
+      const chunk = await load(chunkKey(this.documentKey, m.id, n));
+      if (!chunk?.page) throw new ReplicationConflict("snapshot page is missing");
+      this.validatePage(m, chunk.page, n, events.length, chain);
+      events.push(...copy8(chunk.page.events));
+      chain = chunk.page.sha256;
+    }
+    if (count2 === m.pageCount && (chain !== m.rootHash || events.length !== m.eventCount || bytes6(events) !== m.bytes)) throw new ReplicationConflict("snapshot is incomplete or its final hash changed");
+    return events;
+  }
+  async startSnapshot(pageBytes = Math.floor((this.maxBatchBytes - 16384) / 2)) {
+    if (!number(pageBytes) || pageBytes < 1024 || 2 * pageBytes + 16384 > this.maxBatchBytes) throw new ReplicationConflict("invalid snapshot page budget");
+    const state = await this.state("export"), events = copy8(state?.events ?? []), now = this.now(), cache = this.cache();
+    for (const [key2, v] of cache) if (v.manifest.expiresAt <= now) cache.delete(key2);
+    const manifest = { version: 1, id: "ss" + randomBytes10(16).toString("hex"), spaceId: this.config.spaceId, authorityId: this.config.authorityId, configHash: this.configHash, sourceReplicaId: this.config.replicaId, sourceIncarnation: this.config.incarnation, revision: events.length, eventCount: events.length, bytes: bytes6(events), pageBytes, pageCount: 0, expiresAt: now + 6e4, seedHash: "", rootHash: "" };
+    if (!Number.isSafeInteger(manifest.expiresAt) || manifest.bytes > 64 * 1024 * 1024) throw new ResourceExhausted("snapshot cache byte bound exceeded");
+    const pages = [];
+    let offset = 0;
+    do {
+      const page = { snapshotId: manifest.id, index: pages.length, offset, next: pages.length + 1, events: [], previousHash: "0".repeat(64), sha256: "0".repeat(64) };
+      while (offset < events.length && page.events.length < 1024) {
+        const e = events[offset];
+        page.events.push(e);
+        if (bytes6(page) > pageBytes) {
+          page.events.pop();
+          if (!page.events.length) throw new ResourceExhausted("one change does not fit snapshot page");
+          break;
+        }
+        offset++;
+      }
+      pages.push(page);
+      if (pages.length > 2048) throw new ResourceExhausted("snapshot exceeds 2048 pages");
+    } while (offset < events.length);
+    manifest.pageCount = pages.length;
+    manifest.seedHash = manifestSeed(manifest);
+    let chain = manifest.seedHash;
+    for (const page of pages) {
+      page.previousHash = chain;
+      page.sha256 = pageHash(page);
+      chain = page.sha256;
+    }
+    manifest.rootHash = chain;
+    while (cache.size >= 16 || [...cache.values()].reduce((n, v) => n + v.manifest.bytes, 0) + manifest.bytes > 64 * 1024 * 1024) {
+      const first = cache.keys().next().value;
+      if (first === void 0) throw new ResourceExhausted("snapshot cache is full");
+      cache.delete(first);
+    }
+    cache.set(manifest.id, { manifest, pages });
+    return copy8(manifest);
+  }
+  async snapshotPage(snapshotId, index) {
+    this.snapshotId(snapshotId);
+    await this.check("export");
+    const v = this.cache().get(snapshotId);
+    if (!v || v.manifest.expiresAt <= this.now()) {
+      this.cache().delete(snapshotId);
+      throw new SnapshotExpired("snapshot token expired; start a new snapshot");
+    }
+    this.bindManifest(v.manifest);
+    if (!number(index) || index >= v.pages.length) throw new ReplicationConflict("invalid snapshot page index");
+    await this.check("export");
+    if (v.manifest.expiresAt <= this.now()) throw new SnapshotExpired("snapshot token expired");
+    return copy8(v.pages[index]);
+  }
+  async beginSnapshotImport(input) {
+    const manifest = copy8(input);
+    this.validateManifest(manifest);
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), old = ledger.transfers[manifest.id];
+      if (old) {
+        if (canonical(old.manifest) !== canonical(manifest)) throw new ReplicationConflict("snapshot ID changed manifest");
+        await this.check("import");
+        return copy8(old);
+      }
+      if (this.now() >= manifest.expiresAt) throw new SnapshotExpired("snapshot expired before import");
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      const reservedBytes = manifest.bytes + manifest.pageCount * 1024;
+      if (Object.values(ledger.transfers).some((t) => t.phase === "receiving" || t.phase === "aborting") || Object.keys(ledger.transfers).length >= 16 || (base.segments?.length ?? 0) >= 16 || ledger.retainedBytes + reservedBytes > 2 * this.maxHistoryBytes) throw new ResourceExhausted("snapshot transfer or retained staging capacity exhausted");
+      const transfer = { manifest, phase: "receiving", nextPage: 0, nextOffset: 0, chainHash: manifest.seedHash, receivedBytes: 2, reservedBytes, cleanupCursor: 0 };
+      ledger.transfers[manifest.id] = copy8(transfer);
+      ledger.retainedBytes += reservedBytes;
+      await this.check("import");
+      if (this.now() >= manifest.expiresAt) throw new SnapshotExpired("snapshot expired during import admission");
+      return copy8(transfer);
+    }, this.o.ctx);
+  }
+  async snapshotImportStatus(snapshotId) {
+    this.snapshotId(snapshotId);
+    await this.check("import");
+    const ledger = await this.o.host.snapshot(EntrySnapshotTransfers, this.documentKey, this.o.ctx), transfer = ledger?.transfers[snapshotId];
+    if (!transfer) throw new ReplicationConflict("unknown snapshot import");
+    this.bindManifest(transfer.manifest);
+    await this.check("import");
+    return copy8(transfer);
+  }
+  async importSnapshotPage(snapshotId, input) {
+    this.snapshotId(snapshotId);
+    const page = copy8(input);
+    if (bytes6(page) > Math.floor((this.maxBatchBytes - 16384) / 2)) throw new ResourceExhausted("snapshot page exceeds atomic staging budget");
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = ledger.transfers[snapshotId];
+      if (!t) throw new ReplicationConflict("unknown snapshot import");
+      this.bindManifest(t.manifest);
+      if (page.snapshotId !== snapshotId || !number(page.index) || page.index >= t.manifest.pageCount) throw new ReplicationConflict("page belongs to another import");
+      if (page.index < t.nextPage) {
+        const prior = await tx.doc(EntrySnapshotChunks, chunkKey(this.documentKey, snapshotId, page.index), null);
+        if (t.phase !== "receiving" && t.phase !== "completed" || canonical(prior.page) !== canonical(page)) throw new ReplicationConflict("duplicate page changed content");
+        await this.check("import");
+        return copy8(t);
+      }
+      if (t.phase !== "receiving" || this.now() >= t.manifest.expiresAt) throw new SnapshotExpired("snapshot no longer accepts pages");
+      this.validatePage(t.manifest, page, t.nextPage, t.nextOffset, t.chainHash);
+      this.budget(page.events);
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      const logical = await this.materializeIn(tx, base), staged = await this.stagedEvents(t.manifest, (key2) => tx.doc(EntrySnapshotChunks, key2, null), t.nextPage);
+      this.append(logical, [...staged, ...page.events], this.now());
+      let observedClock = copy8(base.clock);
+      for (const event of page.events) {
+        observedClock = advanceHybridClock(observedClock, this.now(), event.clock);
+        if (event.originReplicaId === this.config.replicaId && event.incarnation === this.config.incarnation) base.seq = Math.max(base.seq, event.seq);
+      }
+      base.clock = observedClock;
+      base.lastWallTime = Math.max(base.lastWallTime, this.now());
+      const chunk = await tx.doc(EntrySnapshotChunks, chunkKey(this.documentKey, snapshotId, page.index), null);
+      if (chunk.page !== null) throw new ReplicationConflict("staging page is already occupied");
+      chunk.page = copy8(page);
+      t.receivedBytes += bytes6(page.events) - 2 + (t.nextOffset > 0 && page.events.length > 0 ? 1 : 0);
+      t.nextPage++;
+      t.nextOffset += page.events.length;
+      t.chainHash = page.sha256;
+      if (t.nextPage === t.manifest.pageCount && (t.nextOffset !== t.manifest.eventCount || t.receivedBytes !== t.manifest.bytes || t.chainHash !== t.manifest.rootHash)) throw new ReplicationConflict("final snapshot page does not match manifest");
+      await this.check("import");
+      if (this.now() >= t.manifest.expiresAt) throw new SnapshotExpired("snapshot expired during page admission");
+      return copy8(t);
+    }, this.o.ctx);
+  }
+  async finishSnapshotImport(snapshotId) {
+    this.snapshotId(snapshotId);
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = ledger.transfers[snapshotId];
+      if (!t) throw new ReplicationConflict("unknown snapshot import");
+      this.bindManifest(t.manifest);
+      if (t.phase === "completed") {
+        await this.check("import");
+        return copy8(t.result);
+      }
+      if (t.phase !== "receiving" || t.nextPage !== t.manifest.pageCount) throw new ReplicationConflict("snapshot import is incomplete");
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      const logical = await this.materializeIn(tx, base), events = await this.stagedEvents(t.manifest, (key2) => tx.doc(EntrySnapshotChunks, key2, null));
+      const now = this.now();
+      this.clockSafe(logical, now);
+      const added = this.append(logical, events, now);
+      const segments = [...base.segments ?? [], { manifest: copy8(t.manifest), overlayThrough: base.events.length }];
+      if (segments.length > 16 || bytes6({ ...logical, segments, config: this.config, configHash: this.configHash }) > this.maxHistoryBytes) throw new ResourceExhausted("published snapshot exceeds retained history budget");
+      base.config ??= copy8(this.config);
+      base.configHash = this.configHash;
+      base.segments = segments;
+      base.clock = copy8(logical.clock);
+      base.seq = logical.seq;
+      base.lastWallTime = logical.lastWallTime;
+      t.phase = "completed";
+      t.result = { added, revision: logical.events.length, sourceRevision: t.manifest.revision };
+      await this.check("import");
+      return copy8(t.result);
+    }, this.o.ctx);
+  }
+  async abortSnapshotImport(snapshotId) {
+    this.snapshotId(snapshotId);
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = ledger.transfers[snapshotId];
+      if (!t) throw new ReplicationConflict("unknown snapshot import");
+      this.bindManifest(t.manifest);
+      if (t.phase === "completed") throw new ReplicationConflict("published generation cannot be aborted");
+      if (t.phase === "aborted") {
+        await this.check("import");
+        return copy8(t);
+      }
+      t.phase = "aborting";
+      if (t.cleanupCursor < t.nextPage) {
+        const chunk = await tx.doc(EntrySnapshotChunks, chunkKey(this.documentKey, snapshotId, t.cleanupCursor), null);
+        chunk.page = null;
+        t.cleanupCursor++;
+      }
+      if (t.cleanupCursor === t.nextPage) {
+        t.phase = "aborted";
+        ledger.retainedBytes -= t.reservedBytes;
+      }
+      await this.check("import");
+      return copy8(t);
+    }, this.o.ctx);
   }
 };
 
@@ -10837,6 +11135,8 @@ export {
   EnrollmentService,
   EntryReplicas,
   EntryReplicationController,
+  EntrySnapshotChunks,
+  EntrySnapshotTransfers,
   ErasureArchiveController,
   FOREVER,
   FederatedSpace,
