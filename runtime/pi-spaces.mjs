@@ -10134,7 +10134,7 @@ init_canonical();
 init_claims();
 init_core();
 import { createHash as createHash19, randomBytes as randomBytes10 } from "node:crypto";
-import { defineDocFamily as defineDocFamily13 } from "@earendil-works/pi-durable";
+import { defineDocFamily as defineDocFamily14 } from "@earendil-works/pi-durable";
 
 // src/replication-clock.ts
 var ReplicationClockError = class extends Error {
@@ -10163,10 +10163,121 @@ import { defineDocFamily as defineDocFamily12 } from "@earendil-works/pi-durable
 var EntrySnapshotTransfers = defineDocFamily12({ kind: "pi-spaces.entry-snapshot-transfers", version: 1, scope: "session", family: true, initial: () => ({ retainedBytes: 0, transfers: {} }) });
 var EntrySnapshotChunks = defineDocFamily12({ kind: "pi-spaces.entry-snapshot-chunk", version: 1, scope: "session", family: true, initial: () => ({ page: null }) });
 
+// src/entry-replication-stream.ts
+init_canonical();
+import { defineDocFamily as defineDocFamily13 } from "@earendil-works/pi-durable";
+var EntryStreamCheckpoints = defineDocFamily13({ kind: "pi-spaces.entry-stream-checkpoints", version: 1, scope: "session", family: true, initial: () => ({ links: {} }) });
+var EntryStreamCursorConflict = class extends Error {
+  cursor;
+  constructor(cursor) {
+    super("source cursor changed; reload the durable checkpoint");
+    this.cursor = cursor;
+  }
+};
+var EntryReplicationUnavailable = class extends Error {
+};
+var canonical = (v) => canonicalJson(v);
+var EntryReplicationPump = class {
+  o;
+  running = false;
+  pageBytes;
+  pollMs;
+  retryMs;
+  maxRetryMs;
+  callTimeoutMs;
+  constructor(o) {
+    this.o = { ...o, identity: structuredClone(o.identity) };
+    this.pageBytes = o.pageBytes ?? Math.floor((o.target.maxBatchBytes - 16384) / 2);
+    this.pollMs = o.pollMs ?? 1e3;
+    this.retryMs = o.retryMs ?? 100;
+    this.maxRetryMs = o.maxRetryMs ?? 5e3;
+    this.callTimeoutMs = o.callTimeoutMs ?? 5e3;
+    if (!Number.isSafeInteger(this.pageBytes) || this.pageBytes < 1024 || 2 * this.pageBytes + 16384 > o.target.maxBatchBytes || [this.pollMs, this.retryMs, this.maxRetryMs, this.callTimeoutMs].some((n) => !Number.isSafeInteger(n) || n < 10 || n > 6e4) || this.maxRetryMs < this.retryMs) throw new Error("invalid replication pump bounds");
+  }
+  async call(fn, signal) {
+    if (signal?.aborted) throw new DOMException("replication stopped", "AbortError");
+    const controller = new AbortController();
+    let timer, stop = () => {
+    };
+    try {
+      return await Promise.race([Promise.resolve().then(() => fn(controller.signal)), new Promise((_, reject) => {
+        stop = () => {
+          reject(new DOMException("replication stopped", "AbortError"));
+          controller.abort();
+        };
+        signal?.addEventListener("abort", stop, { once: true });
+        timer = setTimeout(() => {
+          reject(new EntryReplicationUnavailable("source read timed out"));
+          controller.abort();
+        }, this.callTimeoutMs);
+        if (signal?.aborted) stop();
+      })]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+      controller.abort();
+    }
+  }
+  async step(signal) {
+    const description = await this.call((s) => this.o.source.describe(s), signal);
+    if (!description || canonical(description.source) !== canonical(this.o.identity) || !Number.isSafeInteger(description.revision) || description.revision < 0) throw new Error("replication source identity changed");
+    const checkpoint = await this.o.target.startStreamImport(this.o.identity, this.o.snapshotId);
+    const page = await this.call((s) => this.o.source.changes(checkpoint.cursor, this.pageBytes, s), signal);
+    if (signal?.aborted) throw new DOMException("replication stopped", "AbortError");
+    if (!page || page.after !== checkpoint.cursor || canonical(page.source) !== canonical(this.o.identity)) throw new Error("replication page does not match requested source or cursor");
+    try {
+      const result = await this.o.target.importStreamPage(page);
+      return { ...result, status: page.events.length ? "applied" : "idle", more: page.more };
+    } catch (error) {
+      if (!(error instanceof EntryStreamCursorConflict)) throw error;
+      const current = await this.o.target.streamImportStatus(this.o.identity);
+      if (!current) throw error;
+      return { added: 0, revision: null, cursor: current.cursor, status: "raced", more: true };
+    }
+  }
+  async wait(ms2, signal) {
+    if (signal.aborted) return;
+    await new Promise((resolve2) => {
+      let timer;
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        resolve2();
+      };
+      timer = setTimeout(done, ms2);
+      signal.addEventListener("abort", done, { once: true });
+      if (signal.aborted) done();
+    });
+  }
+  /** Only explicitly temporary source failures retry. A target/storage/authorization failure stops the worker. */
+  async run(signal) {
+    if (this.running) throw new Error("replication pump is already running");
+    this.running = true;
+    let retry = this.retryMs;
+    try {
+      while (!signal.aborted) {
+        try {
+          const result = await this.step(signal);
+          retry = this.retryMs;
+          this.o.onProgress?.(result);
+          if (!signal.aborted && (result.status !== "applied" || !result.more)) await this.wait(result.status === "raced" ? this.retryMs : this.pollMs, signal);
+        } catch (error) {
+          if (signal.aborted) break;
+          if (!(error instanceof EntryReplicationUnavailable)) throw error;
+          await this.wait(retry, signal);
+          retry = Math.min(this.maxRetryMs, retry * 2);
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+};
+
 // src/entry-replication.ts
 var ReplicationConflict = class extends Error {
 };
-var EntryReplicas = defineDocFamily13({
+var EntryReplicas = defineDocFamily14({
   kind: "pi-spaces.entry-replica",
   version: 2,
   scope: "session",
@@ -10188,16 +10299,16 @@ var copy8 = (v) => {
   assertJson(v);
   return JSON.parse(JSON.stringify(v));
 };
-var canonical = (v) => canonicalJson(v);
-var bytes6 = (v) => Buffer.byteLength(canonical(v));
-var hash7 = (v) => createHash19("sha256").update(canonical(v)).digest("hex");
+var canonical2 = (v) => canonicalJson(v);
+var bytes6 = (v) => Buffer.byteLength(canonical2(v));
+var hash7 = (v) => createHash19("sha256").update(canonical2(v)).digest("hex");
 var id = (v) => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
 var number = (v) => Number.isSafeInteger(v) && v >= 0;
 var exact = (v, keys) => Object.keys(v).sort().join(",") === [...keys].sort().join(",");
-var entryChangeId = (e) => canonical([e.originReplicaId, e.incarnation, e.seq]);
-var origin = (e) => canonical([e.originReplicaId, e.incarnation]);
+var entryChangeId = (e) => canonical2([e.originReplicaId, e.incarnation, e.seq]);
+var origin = (e) => canonical2([e.originReplicaId, e.incarnation]);
 var contractHash = (c) => hash7({ spaceId: c.spaceId, authorityId: c.authorityId, members: c.members, rules: c.rules });
-var key = (rule, fields) => canonical([rule.type, rule.keyFields.map((k) => {
+var key = (rule, fields) => canonical2([rule.type, rule.keyFields.map((k) => {
   if (!Object.hasOwn(fields, k)) throw new ReplicationConflict("missing lww key field");
   return fields[k];
 })]);
@@ -10233,7 +10344,7 @@ var EntryReplicationController = class {
     this.o = o;
     this.config = configOf(o.config);
     this.configHash = contractHash(this.config);
-    this.documentKey = canonical([this.config.spaceId, this.config.replicaId, this.config.incarnation]);
+    this.documentKey = canonical2([this.config.spaceId, this.config.replicaId, this.config.incarnation]);
     this.maxHistoryBytes = o.maxHistoryBytes ?? 16 * 1024 * 1024;
     this.maxBatchBytes = o.maxBatchBytes ?? 192 * 1024;
     if (!Number.isSafeInteger(this.maxHistoryBytes) || this.maxHistoryBytes < 16384 || this.maxHistoryBytes > 64 * 1024 * 1024 || !Number.isSafeInteger(this.maxBatchBytes) || this.maxBatchBytes < 32768 || this.maxBatchBytes > 192 * 1024) throw new ReplicationConflict("invalid replication byte limits");
@@ -10252,7 +10363,7 @@ var EntryReplicationController = class {
     await this.o.assertActive();
   }
   bind(s) {
-    if (s.config && (s.configHash !== this.configHash || canonical(s.config) !== canonical(this.config))) throw new ReplicationConflict("stored replica configuration changed; explicit rebuild required");
+    if (s.config && (s.configHash !== this.configHash || canonical2(s.config) !== canonical2(this.config))) throw new ReplicationConflict("stored replica configuration changed; explicit rebuild required");
   }
   validateMutation(m) {
     if (!m || !id(m.type) || !m.owner || !exact(m.owner, m.owner.agentId === void 0 ? ["peerId"] : ["peerId", "agentId"]) || !id(m.owner.peerId) || m.owner.agentId !== void 0 && !id(m.owner.agentId)) throw new ReplicationConflict("invalid mutation identity");
@@ -10267,7 +10378,7 @@ var EntryReplicationController = class {
         } catch {
           throw new ReplicationConflict("invalid observed tag");
         }
-        if (!Array.isArray(v) || v.length !== 3 || !number(v[2]) || v[2] < 1 || !this.config.members.some((p) => p.replicaId === v[0] && p.incarnation === v[1]) || canonical(v) !== tag) throw new ReplicationConflict("unknown tag origin");
+        if (!Array.isArray(v) || v.length !== 3 || !number(v[2]) || v[2] < 1 || !this.config.members.some((p) => p.replicaId === v[0] && p.incarnation === v[1]) || canonical2(v) !== tag) throw new ReplicationConflict("unknown tag origin");
       }
     } else {
       const hasLease = m.kind === "put" || m.kind === "add";
@@ -10287,15 +10398,15 @@ var EntryReplicationController = class {
     if (2 * bytes6(events) + 16384 > this.maxBatchBytes) throw new ResourceExhausted("replication batch exceeds atomic import budget");
   }
   append(s, incoming, now) {
-    const known = new Map(s.events.map((e) => [entryChangeId(e), e])), requests = new Set(s.events.map((e) => canonical([e.originReplicaId, e.incarnation, e.requestId]))), accepted = [];
+    const known = new Map(s.events.map((e) => [entryChangeId(e), e])), requests = new Set(s.events.map((e) => canonical2([e.originReplicaId, e.incarnation, e.requestId]))), accepted = [];
     for (const event of incoming) {
       this.validateEvent(event, now);
       const k = entryChangeId(event), old = known.get(k);
       if (old) {
-        if (canonical(old) !== canonical(event)) throw new ReplicationConflict("immutable change ID reused");
+        if (canonical2(old) !== canonical2(event)) throw new ReplicationConflict("immutable change ID reused");
         continue;
       }
-      const request = canonical([event.originReplicaId, event.incarnation, event.requestId]);
+      const request = canonical2([event.originReplicaId, event.incarnation, event.requestId]);
       if (requests.has(request)) throw new ReplicationConflict("origin request ID reused");
       known.set(k, event);
       requests.add(request);
@@ -10362,6 +10473,17 @@ var EntryReplicationController = class {
       return copy8(event);
     }, this.o.ctx);
   }
+  async importIn(tx, events) {
+    const s = await tx.doc(EntryReplicas, this.documentKey, null);
+    this.bind(s);
+    const now = this.now();
+    s.config ??= copy8(this.config);
+    s.configHash = this.configHash;
+    const logical = await this.materializeIn(tx, s), previous = logical.events.length;
+    const added = this.append(logical, events, now);
+    this.persistOverlay(s, logical, previous);
+    return { added, revision: logical.events.length };
+  }
   async importChanges(input) {
     const events = copy8(input);
     if (!Array.isArray(events) || events.length > 1024) throw new ResourceExhausted("bounded event array required");
@@ -10369,16 +10491,9 @@ var EntryReplicationController = class {
     await this.check("import");
     return this.o.host.commit(async (tx) => {
       await this.check("import");
-      const s = await tx.doc(EntryReplicas, this.documentKey, null);
-      this.bind(s);
-      const now = this.now();
-      s.config ??= copy8(this.config);
-      s.configHash = this.configHash;
-      const logical = await this.materializeIn(tx, s), previous = logical.events.length;
-      const added = this.append(logical, events, now);
-      this.persistOverlay(s, logical, previous);
+      const result = await this.importIn(tx, events);
       await this.check("import");
-      return { added, revision: logical.events.length };
+      return result;
     }, this.o.ctx);
   }
   async materialize(base, load) {
@@ -10572,7 +10687,7 @@ var EntryReplicationController = class {
       await this.check("import");
       const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), old = ledger.transfers[manifest.id];
       if (old) {
-        if (canonical(old.manifest) !== canonical(manifest)) throw new ReplicationConflict("snapshot ID changed manifest");
+        if (canonical2(old.manifest) !== canonical2(manifest)) throw new ReplicationConflict("snapshot ID changed manifest");
         await this.check("import");
         return copy8(old);
       }
@@ -10611,7 +10726,7 @@ var EntryReplicationController = class {
       if (page.snapshotId !== snapshotId || !number(page.index) || page.index >= t.manifest.pageCount) throw new ReplicationConflict("page belongs to another import");
       if (page.index < t.nextPage) {
         const prior = await tx.doc(EntrySnapshotChunks, chunkKey(this.documentKey, snapshotId, page.index), null);
-        if (t.phase !== "receiving" && t.phase !== "completed" || canonical(prior.page) !== canonical(page)) throw new ReplicationConflict("duplicate page changed content");
+        if (t.phase !== "receiving" && t.phase !== "completed" || canonical2(prior.page) !== canonical2(page)) throw new ReplicationConflict("duplicate page changed content");
         await this.check("import");
         return copy8(t);
       }
@@ -10700,6 +10815,107 @@ var EntryReplicationController = class {
       }
       await this.check("import");
       return copy8(t);
+    }, this.o.ctx);
+  }
+  streamIdentity() {
+    const body = { version: 1, spaceId: this.config.spaceId, authorityId: this.config.authorityId, configHash: this.configHash, replicaId: this.config.replicaId, incarnation: this.config.incarnation };
+    return { ...body, streamId: hash7(body) };
+  }
+  validateStream(source) {
+    if (!source || !exact(source, ["version", "spaceId", "authorityId", "configHash", "replicaId", "incarnation", "streamId"]) || source.version !== 1 || source.spaceId !== this.config.spaceId || source.authorityId !== this.config.authorityId || source.configHash !== this.configHash || !this.config.members.some((m) => m.replicaId === source.replicaId && m.incarnation === source.incarnation) || !sha(source.streamId)) throw new ReplicationConflict("stream identity or binding changed");
+    const { streamId, ...body } = source;
+    if (streamId !== hash7(body)) throw new ReplicationConflict("stream identity hash changed");
+  }
+  streamPageHash(page) {
+    return hash7({ source: page.source, after: page.after, next: page.next, events: page.events });
+  }
+  async describeStream() {
+    const state = await this.state("export");
+    return { source: this.streamIdentity(), revision: state?.events.length ?? 0 };
+  }
+  async streamChanges(after, maxBytes = Math.floor((this.maxBatchBytes - 16384) / 2)) {
+    const state = await this.state("export"), events = state?.events ?? [];
+    if (!number(after) || after > events.length || !number(maxBytes) || maxBytes < 1024 || maxBytes > 256 * 1024) throw new ReplicationConflict("invalid stream cursor or page budget");
+    const page = { source: this.streamIdentity(), after, next: after, headRevision: events.length, more: after < events.length, events: [], sha256: "0".repeat(64) };
+    for (let n = after; n < events.length && page.events.length < 1024; n++) {
+      const candidate = { ...page, events: [...page.events, copy8(events[n])], next: n + 1, more: n + 1 < events.length };
+      if (bytes6(candidate) > maxBytes) {
+        if (!page.events.length) throw new ResourceExhausted("next change does not fit stream page");
+        break;
+      }
+      Object.assign(page, candidate);
+    }
+    page.sha256 = this.streamPageHash(page);
+    return page;
+  }
+  async startStreamImport(input, snapshotId) {
+    const source = copy8(input);
+    this.validateStream(source);
+    if (snapshotId !== void 0) this.snapshotId(snapshotId);
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      const ledger = await tx.doc(EntryStreamCheckpoints, this.documentKey, null), old = ledger.links[source.streamId];
+      if (old && canonical2(old.source) !== canonical2(source)) throw new ReplicationConflict("stored stream source changed");
+      let seed = 0;
+      if (snapshotId !== void 0) {
+        const transfers = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = transfers.transfers[snapshotId];
+        if (!t || t.phase !== "completed" || !t.result || t.manifest.sourceReplicaId !== source.replicaId || t.manifest.sourceIncarnation !== source.incarnation) throw new ReplicationConflict("stream seed requires completed snapshot from this source");
+        this.bindManifest(t.manifest);
+        if (t.result.sourceRevision !== t.manifest.revision || !base.segments?.some((s) => s.manifest.id === snapshotId && canonical2(s.manifest) === canonical2(t.manifest))) throw new ReplicationConflict("stream seed snapshot is not published");
+        seed = t.result.sourceRevision;
+      }
+      if (!old) {
+        if (Object.keys(ledger.links).length >= 32) throw new ResourceExhausted("stream checkpoint capacity exhausted");
+        ledger.links[source.streamId] = { source, cursor: seed, last: null, ...snapshotId ? { seedSnapshotId: snapshotId } : {} };
+      } else if (seed > old.cursor) {
+        old.cursor = seed;
+        old.seedSnapshotId = snapshotId;
+        old.last = null;
+      }
+      await this.check("import");
+      return copy8(ledger.links[source.streamId]);
+    }, this.o.ctx);
+  }
+  async streamImportStatus(input) {
+    const source = copy8(input);
+    this.validateStream(source);
+    await this.check("import");
+    const ledger = await this.o.host.snapshot(EntryStreamCheckpoints, this.documentKey, this.o.ctx), checkpoint = ledger?.links[source.streamId];
+    if (checkpoint && canonical2(checkpoint.source) !== canonical2(source)) throw new ReplicationConflict("stored stream source changed");
+    await this.check("import");
+    return checkpoint ? copy8(checkpoint) : null;
+  }
+  async importStreamPage(input) {
+    const page = copy8(input);
+    if (!page || !exact(page, ["source", "after", "next", "headRevision", "more", "events", "sha256"])) throw new ReplicationConflict("invalid stream page");
+    this.validateStream(page.source);
+    if (!number(page.after) || !number(page.next) || !number(page.headRevision) || page.after > page.next || page.next > page.headRevision || typeof page.more !== "boolean" || page.more !== page.next < page.headRevision || !Array.isArray(page.events) || page.events.length > 1024 || page.next - page.after !== page.events.length || !page.events.length && page.more || !sha(page.sha256) || this.streamPageHash(page) !== page.sha256 || bytes6(page) > 256 * 1024) throw new ReplicationConflict("stream page range or hash changed");
+    this.budget(page.events);
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      const ledger = await tx.doc(EntryStreamCheckpoints, this.documentKey, null), checkpoint = ledger.links[page.source.streamId];
+      if (!checkpoint || canonical2(checkpoint.source) !== canonical2(page.source)) throw new ReplicationConflict("stream is not initialized with this source");
+      if (page.after !== checkpoint.cursor) {
+        if (checkpoint.last?.after === page.after && checkpoint.last.next === page.next) {
+          if (checkpoint.last.sha256 !== page.sha256) throw new ReplicationConflict("decided stream page changed content");
+          await this.check("import");
+          return copy8(checkpoint.last.result);
+        }
+        throw new EntryStreamCursorConflict(checkpoint.cursor);
+      }
+      const applied = await this.importIn(tx, page.events), result = { ...applied, cursor: page.next };
+      if (page.events.length) {
+        checkpoint.cursor = page.next;
+        checkpoint.last = { after: page.after, next: page.next, sha256: page.sha256, result: copy8(result) };
+      }
+      await this.check("import");
+      return result;
     }, this.o.ctx);
   }
 };
@@ -11135,8 +11351,12 @@ export {
   EnrollmentService,
   EntryReplicas,
   EntryReplicationController,
+  EntryReplicationPump,
+  EntryReplicationUnavailable,
   EntrySnapshotChunks,
   EntrySnapshotTransfers,
+  EntryStreamCheckpoints,
+  EntryStreamCursorConflict,
   ErasureArchiveController,
   FOREVER,
   FederatedSpace,
