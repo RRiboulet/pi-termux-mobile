@@ -80,3 +80,35 @@ test('paired status after rotation proves the current key and rejects a revoked 
     await assert.rejects(client.call('enrollStatus'), /key revoked/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('admin commands keep their command ID across a lost reply and a reopen, and only offered kinds are sent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mobile-admin-')), file = join(dir, 'profile.json');
+  const written = [], results = new Map(); let lose = true;
+  const remote = {
+    authenticate: async () => {},
+    write: async entry => { written.push(structuredClone(entry.fields)); const id = entry.fields.commandId; if (!results.has(id)) results.set(id, { commandId: id, kind: entry.fields.kind, state: 'completed', result: { runId: 'r', state: 'paused' } }); if (lose) { lose = false; throw new Error('reply lost'); } },
+    readAll: async template => results.has(template.fields.commandId) ? [{ type: 'Result', fields: results.get(template.fields.commandId) }] : [],
+  };
+  const connect = async () => ({ close() {}, remote });
+  try {
+    const client = new MobileSpaces(file, {}); client.connect = connect;
+    client.save({ alias: 'a', keyId: 'k', peerId: 'phone', controlHostId: 'control', endpoint: 'tcp://100.1.2.3:4711', state: 'prepared' });
+    await assert.rejects(client.call('admin', { kind: 'pauseRun', args: { runId: 'r' } }), /pair the device/);
+    client.save({ ...client.read(), state: 'paired' });
+    await assert.rejects(client.call('admin', { kind: 'rotateKey', args: {} }), /not offered on the phone/);
+    await assert.rejects(client.call('admin', { kind: 'pauseRun', args: { runId: 'r' } }), /Ausgang wird geprüft/);
+    const [op] = Object.values(client.read().operations);
+    assert.equal(op.state, 'unknown'); assert.equal(written[0].commandId, op.commandId, 'the ID was stored before the send');
+    const reopened = new MobileSpaces(file, {}); reopened.connect = connect;
+    const listed = (await reopened.call('operations')).operations;
+    assert.equal(listed[0].commandId, op.commandId); assert.equal(listed[0].state, 'completed', 'the durable effect is found by its ID');
+    await assert.rejects(reopened.call('admin', { kind: 'pauseRun', args: { runId: 'other' }, commandId: op.commandId }), /changed arguments/);
+    const again = await reopened.call('admin', { kind: 'pauseRun', args: { runId: 'r' }, commandId: op.commandId });
+    assert.equal(written[1].commandId, op.commandId, 'a resend reuses the same command ID'); assert.equal(again.result.state, 'completed');
+    assert.equal(Object.keys(reopened.read().operations).length, 1);
+    reopened.connect = async () => { throw new Error('connect ECONNREFUSED'); };
+    await assert.rejects(reopened.call('admin', { kind: 'resumeRun', args: { runId: 'r' } }), /nicht gesendet und kann mit derselben ID/);
+    const notSent = Object.values(reopened.read().operations).find(o => o.kind === 'resumeRun');
+    assert.equal(notSent.state, 'notSent'); assert.equal(written.length, 2, 'nothing was written');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

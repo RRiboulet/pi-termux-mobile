@@ -1,8 +1,14 @@
 // Keystore-backed pairing and own-key rotation. Plain enrollment tokens are never persisted.
 import { readFileSync, mkdirSync, renameSync, writeFileSync, chmodSync, lstatSync, openSync, fsyncSync, closeSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { RemoteSpace, socketTransport } from './pi-spaces.mjs';
 import { androidSigner, createAndroidSigner, keyStoreCall } from './space-keystore.mjs';
+// Admin commands the phone may send into the control Space. The coordinator's supervisor checks the admin key;
+// this list only keeps the phone from sending kinds it has no view for.
+export const ADMIN_KINDS = new Set(['listRuns', 'runStatus', 'startRun', 'pauseRun', 'resumeRun', 'stopRun', 'reconcileRun', 'resolveRunRecovery', 'listWorkers', 'setWorkers', 'createSpace', 'archiveSpace', 'reactivateSpace', 'deleteSpace', 'planDeployment', 'exportDeployment', 'startWorkers', 'listAlerts', 'auditLog', 'exportRun', 'scheduleRun']);
+const FINAL = new Set(['completed', 'failed', 'duplicate']);
+const readResult = async (remote, commandId) => (await remote.readAll({ type: 'Result', fields: { commandId } }))[0]?.fields ?? null;
 export class MobileSpaces {
   constructor(file, keys = { androidSigner, createAndroidSigner, keyStoreCall }) { this.file = file; this.keys = keys; this.busy = false; }
   read() { try { const stat = lstatSync(this.file); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) throw new Error('space profile must be private'); return JSON.parse(readFileSync(this.file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } }
@@ -36,7 +42,29 @@ export class MobileSpaces {
       if (method === 'dataHost') { if (!body.hostId || !body.endpoint || !body.space) throw new Error('host, endpoint and space are required'); const url = new URL(body.endpoint); if (url.protocol !== 'tcp:' || !url.port || url.username || url.password) throw new Error('invalid data endpoint'); await this.keys.keyStoreCall({ method: 'allowHost', alias: profile.alias, gateHostId: body.hostId }); Object.assign(profile, { dataHostId: body.hostId, dataEndpoint: body.endpoint, dataSpace: body.space }); this.save(profile); return { profile }; }
       if (method === 'rotate' && profile.rotation?.request) throw new Error('resolve the pending rotation before starting another');
       if (method === 'enroll' && (profile.state === 'paired' || profile.rotation)) throw new Error('device is already paired');
-      const connection = await this.connect(profile, profile.alias, method === 'objects');
+      if (['admin', 'result', 'operations'].includes(method) && profile.state !== 'paired') throw new Error('pair the device as admin first');
+      let operation;
+      if (method === 'admin') {
+        // The command ID is stored before anything is sent: a double tap, a timeout or a reconnect reuses it,
+        // and the supervisor answers a repeated ID with the first result instead of a second effect.
+        if (!ADMIN_KINDS.has(body.kind)) throw new Error('this command kind is not offered on the phone');
+        const args = body.args && typeof body.args === 'object' && !Array.isArray(body.args) ? body.args : {};
+        if (JSON.stringify(args).length > 16384) throw new Error('command arguments are too large');
+        profile.operations ??= {};
+        if (body.commandId) {
+          operation = profile.operations[body.commandId];
+          if (!operation || operation.kind !== body.kind || JSON.stringify(operation.args) !== JSON.stringify(args)) throw new Error('unknown operation or changed arguments');
+        } else {
+          const commandId = `m-${body.kind}-${randomBytes(8).toString('hex')}`;
+          operation = profile.operations[commandId] = { commandId, kind: body.kind, args, at: Date.now(), state: 'sending' };
+          const ids = Object.keys(profile.operations);
+          for (const id of ids.filter(id => FINAL.has(profile.operations[id].state)).slice(0, Math.max(0, ids.length - 30))) delete profile.operations[id];
+          this.save(profile);
+        }
+      }
+      let connection;
+      try { connection = await this.connect(profile, profile.alias, method === 'objects'); }
+      catch (error) { if (operation) { operation.state = 'notSent'; this.save(profile); throw new Error(`Koordinator nicht erreichbar; Auftrag ${operation.commandId} wurde nicht gesendet und kann mit derselben ID erneut gesendet werden (${error.message})`); } throw error; }
       try {
         const remote = connection.remote;
         if (method === 'enroll') {
@@ -73,8 +101,30 @@ export class MobileSpaces {
           if (result?.state === 'completed') { Object.assign(profile, { alias: rotation.alias, keyId: rotation.keyId, publicKey: rotation.publicKey }); profile.lastRotation = { commandId, keyId: rotation.keyId }; delete profile.rotation; this.save(profile); }
           return { result, profile };
         }
-        await remote.authenticate();
+        try { await remote.authenticate(); }
+        catch (error) { if (operation) { operation.state = 'notSent'; this.save(profile); throw new Error(`Koordinator nicht erreichbar; Auftrag ${operation.commandId} wurde nicht gesendet und kann mit derselben ID erneut gesendet werden (${error.message})`); } throw error; }
         if (method === 'authenticate') return { result: { authenticated: true, keyId: profile.keyId, peerId: profile.peerId }, profile };
+        if (method === 'admin') {
+          try { await remote.write({ type: 'Command', fields: { commandId: operation.commandId, kind: operation.kind, args: operation.args } }, null, 3_600_000); }
+          catch (error) { operation.state = 'unknown'; this.save(profile); throw new Error(`Ausgang wird geprüft (${operation.commandId}): ${error.message}`); }
+          if (!FINAL.has(operation.state)) operation.state = 'sent';
+          const result = await readResult(remote, operation.commandId);
+          if (result) Object.assign(operation, { state: result.state, done: Date.now() });
+          this.save(profile);
+          return { operation, result, profile };
+        }
+        if (method === 'result' || method === 'operations') {
+          const ids = method === 'result' ? [String(body.commandId ?? '')] : Object.keys(profile.operations ?? {});
+          const out = [];
+          for (const id of ids) {
+            const op = profile.operations?.[id];
+            const result = await readResult(remote, id);
+            if (op && result && !FINAL.has(op.state)) Object.assign(op, { state: result.state, done: Date.now() });
+            out.push({ ...(op ?? { commandId: id }), result });
+          }
+          this.save(profile);
+          return method === 'result' ? { result: out[0].result, operation: out[0] } : { operations: out.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)) };
+        }
         if (method === 'objects') return { result: { info: await remote.info(), stats: await remote.stats(), objects: await remote.readAll(null, { limit: 100 }) }, profile };
         if (method === 'rotate') {
           const replacement = profile.rotation ? await this.keys.androidSigner(profile.rotation.alias) : await this.keys.createAndroidSigner(profile.peerId, profile.controlHostId);

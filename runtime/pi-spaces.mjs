@@ -9,8 +9,8 @@ var __esm = (fn, res, err) => function __init() {
   }
 };
 var __export = (target, all) => {
-  for (var name2 in all)
-    __defProp(target, name2, { get: all[name2], enumerable: true });
+  for (var name3 in all)
+    __defProp(target, name3, { get: all[name3], enumerable: true });
 };
 
 // src/canonical.ts
@@ -123,7 +123,7 @@ function validateFederationPolicy(p, table, old, allowRemoval = /* @__PURE__ */ 
   const profiles = /* @__PURE__ */ new Set();
   for (const f of p.completionProfiles) {
     name(f.taskType);
-    if (profiles.has(f.taskType) || !f.resultTypes.length || !f.equalFields.length || f.maxResultBytes < 1 || f.maxResultCount < 1 || f.maxLeaseMs < 1 || ![f.maxResultBytes, f.maxResultCount, f.maxLeaseMs].every(Number.isSafeInteger))
+    if (profiles.has(f.taskType) || !f.resultTypes.length || !f.equalFields.length || f.maxResultBytes < 1 || f.maxResultCount < 1 || f.maxLeaseMs < 1 || ![f.maxResultBytes, f.maxResultCount, f.maxLeaseMs].every(Number.isSafeInteger) || f.gateField !== void 0 && (typeof f.gateField !== "string" || !f.equalFields.includes(f.gateField)))
       throw new RoutingConflict("invalid completion profile");
     profiles.add(f.taskType);
     f.resultTypes.forEach(name);
@@ -507,18 +507,18 @@ function admit(s, now, r, method, args, deadline, resultBytes = 1024) {
   sweep(s, now);
   const st = rpc(s);
   const key2 = keyOf(s, r);
-  const hash8 = argHash(method, args);
+  const hash9 = argHash(method, args);
   const c = st.claims[key2];
   if (s.restoredClaims?.[key2]) throw new IncarnationChanged("request belongs to historical restored data; replay is forbidden");
   if (c) {
-    if (c.method !== method || c.argHash !== hash8) throw new RequestConflict(`request ${r.requestId} was used for different arguments`);
+    if (c.method !== method || c.argHash !== hash9) throw new RequestConflict(`request ${r.requestId} was used for different arguments`);
     if (c.state === "pending") return { kind: "pending", key: key2, deadline: c.deadline };
     if (c.resultExpired || c.decidedAt !== void 0 && c.decidedAt + limitsOf(s).claimResultMs <= now) throw new ResultExpired(`request ${r.requestId} was decided; its result is no longer kept`);
     return c.state === "cancelled" ? { kind: "cancelled", key: key2 } : { kind: "done", key: key2, result: c.result ?? null };
   }
   validateGeneration(s, now, r);
   const lim = limitsOf(s);
-  const rec = { method, argHash: hash8, deadline, state: "pending", generation: r.generation, requestId: r.requestId, principal: { ...r.principal }, reservedResultBytes: resultBytes };
+  const rec = { method, argHash: hash9, deadline, state: "pending", generation: r.generation, requestId: r.requestId, principal: { ...r.principal }, reservedResultBytes: resultBytes };
   const added = bytesOf2(rec) + bytesOf2(key2) + 2;
   if (claimBytes(s) + added + resultBytes > lim.maxClaimBytes) throw new LimitError("the request and its reserved result exceed maxClaimBytes");
   st.claims[key2] = rec;
@@ -830,12 +830,16 @@ __export(core_exports, {
   ResourceExhausted: () => ResourceExhausted,
   ResponseBudgetTooSmall: () => ResponseBudgetTooSmall,
   RevisionAhead: () => RevisionAhead,
+  RunGateConflict: () => RunGateConflict,
   SnapshotExpired: () => SnapshotExpired,
   TransactionError: () => TransactionError,
   UnknownLeaseError: () => UnknownLeaseError,
   abortTxn: () => abortTxn,
   addWaiter: () => addWaiter,
+  applyRunGate: () => applyRunGate,
   assertAdminIdle: () => assertAdminIdle,
+  assertGatedProfilesKept: () => assertGatedProfilesKept,
+  assertNotArchived: () => assertNotArchived,
   beginCommit: () => beginCommit,
   cancel: () => cancel,
   cancelWaiter: () => cancelWaiter,
@@ -847,8 +851,10 @@ __export(core_exports, {
   createTxn: () => createTxn,
   deadlineOf: () => deadlineOf,
   deepEqual: () => deepEqual,
+  fenceGatesForRestore: () => fenceGatesForRestore,
   gidOf: () => gidOf,
   importRestoredEntry: () => importRestoredEntry,
+  importRestoredGate: () => importRestoredGate,
   initialState: () => initialState,
   limitsOf: () => limitsOf,
   list: () => list,
@@ -864,10 +870,12 @@ __export(core_exports, {
   plain: () => plain,
   probe: () => probe,
   purgeTasks: () => purgeTasks,
+  recoverRunGate: () => recoverRunGate,
   releaseRestoredEntry: () => releaseRestoredEntry,
   releaseTxn: () => releaseTxn,
   renew: () => renew,
   revision: () => revision,
+  runGateView: () => runGateView,
   seal: () => seal2,
   setCompletionProfiles: () => setCompletionProfiles,
   setLimits: () => setLimits,
@@ -927,7 +935,7 @@ function setLimits(s, l, now = Date.now()) {
   return limitsOf(s);
 }
 function overheadBytes(s) {
-  return jsonBytes(s.adminMaintenance ?? {}) + jsonBytes(s.membership ?? {}) + Object.values(s.txns).reduce((n, t) => n + (t.completion?.remainingBytes ?? 0), 0) + jsonBytes(s.authorityTransition ?? {}) + jsonBytes(s.authorityCounters ?? {}) + (s.restore ? jsonBytes(s.restore) : 0) + claimBytes(s) + (s.stream?.bytes ?? 0) + jsonBytes(s.outbox) + jsonBytes(s.waiters) + jsonBytes(s.regs) + jsonBytes(s.txns) + jsonBytes(s.jobs ?? []) + jsonBytes(s.mailboxes ?? {});
+  return jsonBytes(s.adminMaintenance ?? {}) + jsonBytes(s.membership ?? {}) + Object.values(s.txns).reduce((n, t) => n + (t.completion?.remainingBytes ?? 0), 0) + jsonBytes(s.authorityTransition ?? {}) + jsonBytes(s.authorityCounters ?? {}) + (s.restore ? jsonBytes(s.restore) : 0) + claimBytes(s) + (s.stream?.bytes ?? 0) + jsonBytes(s.outbox) + jsonBytes(s.waiters) + jsonBytes(s.regs) + jsonBytes(s.txns) + jsonBytes(s.jobs ?? []) + jsonBytes(s.mailboxes ?? {}) + jsonBytes(s.runGates ?? {});
 }
 function claimBytes(s) {
   const r = s.rpc;
@@ -1063,6 +1071,9 @@ function matches(t, e) {
   }
   return true;
 }
+function assertNotArchived(s) {
+  if (s.archived) throw new PermissionError("the Space is archived; reactivate it first");
+}
 function assertAdminIdle(s) {
   if (s.adminMaintenance) throw new PermissionError("Space has a pending administrative deletion");
 }
@@ -1158,6 +1169,7 @@ function expire(s, at) {
   return true;
 }
 function write(s, now, entry, txn, lease, as) {
+  assertNotArchived(s);
   if (directoryEntry(entry)) {
     if (as !== void 0 || txn !== null) throw new PermissionError("directory entries require trusted publication");
     assertMemberAdmission(s, "write");
@@ -1167,6 +1179,7 @@ function write(s, now, entry, txn, lease, as) {
   if (typeof entry?.type !== "string" || entry.type === "") throw new IllegalArgumentError("entry needs a type");
   if (entry.fields === null || typeof entry.fields !== "object" || Array.isArray(entry.fields)) throw new IllegalArgumentError("entry fields must be an object");
   if (txn !== null) requireTxn(s, txn, as);
+  assertRunWrite(s, entry, txn);
   const expires = grant(lease, now);
   if (as !== void 0) {
     const lim2 = limitsOf(s);
@@ -1262,6 +1275,7 @@ function flushRegs(s, now) {
 }
 function probe(s, now, tmpl2, txn, take, as) {
   assertMemberAdmission(s, take ? "take" : "read");
+  if (take) assertNotArchived(s);
   settle(s, now);
   if (txn !== null) requireTxn(s, txn, as);
   const f = find(s, tmpl2, txn, take);
@@ -1275,6 +1289,10 @@ function find(s, tmpl2, txn, take) {
   let locked = false;
   for (const e of s.entries) {
     if (!matches(tmpl2, e) || e.restoredUnverified && (take || txn !== null)) continue;
+    if (take) {
+      const run = runOf(s, e.types, e.fields);
+      if (run !== void 0 && !takeableRun(s, run)) continue;
+    }
     const mine = txn !== null && e.writtenUnder === txn;
     if (e.writtenUnder !== null && !mine) continue;
     if (e.takenBy !== null) {
@@ -1290,13 +1308,13 @@ function find(s, tmpl2, txn, take) {
   return locked ? { status: "locked" } : { status: "none" };
 }
 function apply(s, now, e, txn, take) {
-  const copy9 = clone(e);
+  const copy10 = clone(e);
   if (take) {
     const profiles = (s.completionProfiles ?? []).filter((p) => e.types.includes(p.taskType));
     if (profiles.length) {
       if (txn === null) throw new CompletionViolation("profiled tasks must be taken under a transaction");
       const fields = {};
-      for (const p of profiles) for (const name2 of p.equalFields) if (Object.hasOwn(e.fields, name2)) fields[name2] = clone(e.fields[name2]);
+      for (const p of profiles) for (const name3 of p.equalFields) if (Object.hasOwn(e.fields, name3)) fields[name3] = clone(e.fields[name3]);
       const capture = { id: e.id, types: [...e.types], fields };
       const deadline = Math.min(...profiles.map((p) => p.maxLeaseMs === void 0 ? FOREVER : now + p.maxLeaseMs));
       const t = s.txns[txn];
@@ -1305,6 +1323,11 @@ function apply(s, now, e, txn, take) {
       reserve(s, txn, jsonBytes(capture) + 64, limitsOf(s));
       s.txns[txn].takenTasks ??= [];
       s.txns[txn].takenTasks.push(capture);
+      const run = runOf(s, e.types, e.fields);
+      if (run) {
+        t.runs ??= {};
+        t.runs[run] = s.runGates[run].revision;
+      }
     }
     if (e.writtenUnder === null) logDel(s, now, e.id);
     touch2(s, now);
@@ -1314,10 +1337,11 @@ function apply(s, now, e, txn, take) {
     e.readBy.push(txn);
     touch2(s, now);
   }
-  return copy9;
+  return copy10;
 }
 function createTxn(s, now, lease, as) {
   assertAdminIdle(s);
+  assertNotArchived(s);
   settle(s, now);
   if (as !== void 0 && Object.values(s.txns).filter(ownedBy(as)).length >= limitsOf(s).maxTxnsPerOwner) throw new LimitError(`you already have ${limitsOf(s).maxTxnsPerOwner} open transactions`);
   const t = { id: newId(s, "t"), expires: grant(lease, now), owner: as ?? null };
@@ -1332,11 +1356,17 @@ function setCompletionProfiles(s, profiles, now = Date.now()) {
   const seen = /* @__PURE__ */ new Set();
   for (const p of profiles) {
     if (!p || typeof p.taskType !== "string" || !p.taskType || seen.has(p.taskType) || !Array.isArray(p.resultTypes) || !p.resultTypes.length || !p.resultTypes.every((t) => typeof t === "string" && t.length > 0) || !Array.isArray(p.equalFields) || !p.equalFields.every((f) => typeof f === "string" && f.length > 0) || !Number.isSafeInteger(p.maxResultCount) || p.maxResultCount < 1) throw new IllegalArgumentError("invalid completion profile");
+    if (p.gateField !== void 0 && (typeof p.gateField !== "string" || !p.gateField || !p.equalFields.includes(p.gateField) || p.maxLeaseMs === void 0)) throw new IllegalArgumentError("a gate field must be one of the equal fields, with a finite maxLeaseMs");
     if (p.maxResultBytes !== void 0 && (!Number.isSafeInteger(p.maxResultBytes) || p.maxResultBytes < 1) || p.maxLeaseMs !== void 0 && (!Number.isSafeInteger(p.maxLeaseMs) || p.maxLeaseMs < 1)) throw new IllegalArgumentError("invalid completion budget");
     seen.add(p.taskType);
   }
+  assertGatedProfilesKept(s, profiles);
   s.completionProfiles = clone(profiles);
   touch2(s, now);
+}
+function assertGatedProfilesKept(s, profiles) {
+  const active2 = Object.values(s.runGates ?? {}).some((g) => g.state !== "stopped");
+  if (active2 && (s.completionProfiles ?? []).some((o) => o.gateField !== void 0 && !profiles.some((p) => p.taskType === o.taskType && p.gateField === o.gateField))) throw new RunGateConflict("gated profiles cannot change while a run is not stopped");
 }
 function checkCompletion(s, id2) {
   for (const p of s.completionProfiles ?? []) {
@@ -1367,6 +1397,7 @@ function releaseTxn(s, now, id2) {
   return true;
 }
 function addWaiter(s, now, w) {
+  if (w.take) assertNotArchived(s);
   assertMemberAdmission(s, "wait");
   const deadline = w.deadline ?? deadlineOf(now, w.timeout);
   if (!Number.isFinite(deadline) && deadline !== FOREVER || deadline < 0) throw new IllegalArgumentError("invalid waiter deadline");
@@ -1491,7 +1522,9 @@ function parkOperation(s, key2, tmpl2, take, txn, deadline, ifExists, owner) {
 }
 function finish(s, id2, commit, now) {
   touch2(s, now);
+  const runs = s.txns[id2]?.runs;
   delete s.txns[id2];
+  for (const run of Object.keys(runs ?? {})) completeFence(s, run, now);
   for (const r of s.regs) if (r.txn === id2 && r.consumer) queueEvent(s, now, { kind: "registrationClosed", eventId: r.id, seq: ++r.seq, handback: r.handback, target: r.target, reason: "transactionEnded" }, r.consumer, true);
   prune(s.regs, (r) => r.txn === id2);
   const published = [];
@@ -1526,6 +1559,7 @@ function finish(s, id2, commit, now) {
   }
 }
 function notify(s, now, tmpl2, txn, lease, handback, target, as, consumer) {
+  assertNotArchived(s);
   assertMemberAdmission(s, "notify");
   settle(s, now);
   if (txn !== null) requireTxn(s, txn, as);
@@ -1572,6 +1606,7 @@ function renew(s, now, id2, ms2, as) {
   const v = grant(ms2, now);
   assertMemberRenew(s, id2, v);
   if (s.txns[id2]?.completionDeadline !== void 0 && v > s.txns[id2].completionDeadline) throw new CompletionViolation("lease exceeds task completion boundary");
+  for (const run of Object.keys(s.txns[id2]?.runs ?? {})) if (s.runGates?.[run]?.fence || s.runGates?.[run]?.recovery) throw new RunGateConflict(`run ${run} is ${s.runGates[run].recovery ? "under recovery" : s.runGates[run].fence.kind === "pause" ? "pausing" : "stopping"}; bound transactions may finish but not extend their lease`);
   l.set(v);
   touch2(s, now);
   const e = s.entries.find((x) => x.id === id2);
@@ -1749,7 +1784,192 @@ function purgeTasks(s, now, template2) {
   touch2(s, now);
   return tasks.length;
 }
-var NO_WAIT, ANY, FOREVER, DEFAULT_LEASE_MS, MAX_TIMER_MS, until, timerDelay, DEFAULT_LIMITS, LimitError, ResourceExhausted, ResponseBudgetTooSmall, IllegalArgumentError, PermissionError, TransactionError, CompletionViolation, UnknownLeaseError, initialState, migrate, clone, plain, encoder3, jsonBytes, commitBudgets, limitsOf, ownedBy, EVENT_OVERHEAD, COMMIT_FIXED, coreJobRetry, peekId, newId, gidOf, directoryEntry, intervalOf, view, mayUse, requireTxn, commitTxn, abortTxn, active, MAX_LIST, PAGE_OVERHEAD, seqOf, putOp, streamIdOf, revision, SnapshotExpired, RevisionAhead, CHANGES_OVERHEAD;
+function runOf(s, types, fields) {
+  for (const p of s.completionProfiles ?? []) if (p.gateField !== void 0 && types.includes(p.taskType)) {
+    const v = fields[p.gateField];
+    return typeof v === "string" ? v : null;
+  }
+  return void 0;
+}
+function takeableRun(s, run) {
+  const g = run === null ? void 0 : s.runGates?.[run];
+  return g !== void 0 && g.state === "running" && !g.fence && !g.recovery;
+}
+function assertRunWrite(s, entry, txn) {
+  const types = [entry.type, ...entry.types ?? []];
+  for (const p of s.completionProfiles ?? []) {
+    if (p.gateField === void 0) continue;
+    const run = entry.fields[p.gateField];
+    if (types.includes(p.taskType)) {
+      const g = typeof run === "string" ? s.runGates?.[run] : void 0;
+      if (!g || g.state !== "preparing" || g.fence || g.recovery) throw new RunGateConflict(`${p.taskType} entries are written only while their run is preparing`);
+    }
+    if (types.some((t) => p.resultTypes.includes(t)) && (txn === null || typeof run !== "string" || s.txns[txn]?.runs?.[run] === void 0)) throw new CompletionViolation(`${entry.type} needs a transaction bound to its run`);
+  }
+}
+function checkRunBindings(s, id2) {
+  for (const [run, revision2] of Object.entries(s.txns[id2]?.runs ?? {})) {
+    const g = s.runGates?.[run];
+    if (!g || g.revision !== revision2 || g.state !== "running") throw new RunGateConflict(`run ${run} changed while transaction ${id2} was bound to it`);
+  }
+}
+function recordGate(g, c, state, now) {
+  Object.assign(g, { revision: c.revision, commandId: c.commandId, kind: c.kind, state, at: now });
+  g.history.push({ revision: c.revision, commandId: c.commandId, kind: c.kind, state });
+  if (g.history.length > MAX_GATE_HISTORY) g.history.splice(0, g.history.length - MAX_GATE_HISTORY);
+}
+function completeFence(s, run, now) {
+  const g = s.runGates?.[run];
+  if (!g?.fence || boundTxns(s, run) > 0) return;
+  const f = g.fence;
+  delete g.fence;
+  recordGate(g, f, f.kind === "pause" ? "paused" : "stopped", now);
+  if (f.recoveryId !== void 0 && g.recovery?.id === f.recoveryId) {
+    delete g.recovery;
+    delete g.historical;
+  }
+  touch2(s, now);
+}
+function gateAck(s, g, c, state, phase) {
+  return { runId: g.runId, spaceId: s.spaceId ?? null, incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null, revision: c.revision, state, commandId: c.commandId, kind: c.kind, phase, boundTxns: boundTxns(s, g.runId) };
+}
+function applyRunGate(s, now, c) {
+  if (!c || !validId(c.runId) || !validId(c.commandId) || !Number.isSafeInteger(c.revision) || c.revision < 1 || !["prepare", "release", "pause", "resume", "stop"].includes(c.kind) || c.recoveryId !== void 0 && !validId(c.recoveryId) || c.expect !== void 0 && (!c.expect || !Number.isSafeInteger(c.expect.revision) || !["preparing", "running", "paused", "stopped"].includes(c.expect.state))) throw new IllegalArgumentError("invalid RunGate command");
+  assertAdminIdle(s);
+  settle(s, now);
+  const spend = () => {
+    if (!canCharge(s, GATE_COST)) throw new ResourceExhausted("the RunGate change exceeds the remaining commit budget");
+    if (overheadBytes(s) + GATE_COST + s.entries.reduce((n, e) => n + (e.size ?? jsonBytes(e.fields)), 0) > limitsOf(s).maxDocBytes) throw new ResourceExhausted("the RunGate change exceeds maxDocBytes");
+    charge(s, GATE_COST);
+  };
+  s.runGates ??= {};
+  const gates = s.runGates;
+  let g = Object.hasOwn(gates, c.runId) ? gates[c.runId] : void 0;
+  if (!g) {
+    if (c.kind !== "prepare" && c.kind !== "stop") throw new RunGateConflict(`run ${c.runId} has no gate on this Member`);
+    if (c.kind === "prepare" && c.recoveryId !== void 0) throw new RunGateConflict("a recovery decision cannot prepare a run");
+    if (c.kind === "prepare" && !(s.completionProfiles ?? []).some((p) => p.gateField !== void 0)) throw new RunGateConflict("this Space has no gated completion profile; a gate would not stop any take");
+    if (c.expect !== void 0) throw new RunGateConflict(`run ${c.runId} has no gate on this Member, but the decision expected one`);
+    if (Object.keys(gates).length >= MAX_RUN_GATES) throw new ResourceExhausted(`at most ${MAX_RUN_GATES} run gates per Space`);
+    spend();
+    const state = c.kind === "prepare" ? "preparing" : "stopped";
+    gates[c.runId] = { runId: c.runId, revision: 0, state, commandId: c.commandId, kind: c.kind, at: now, history: [] };
+    g = gates[c.runId];
+    recordGate(g, c, state, now);
+    touch2(s, now);
+    return gateAck(s, g, c, state, "applied");
+  }
+  const same3 = (x) => x.commandId === c.commandId && x.kind === c.kind;
+  const conflict = () => new RunGateConflict(`revision ${c.revision} of run ${c.runId} belongs to another command`);
+  if (g.recovery && c.recoveryId !== g.recovery.id) throw new RunGateConflict(`run ${c.runId} is under recovery ${g.recovery.id}; only its decision applies`);
+  const done = g.history.find((h) => h.revision === c.revision);
+  if (done) {
+    if (!same3(done)) throw conflict();
+    return gateAck(s, g, c, done.state, "applied");
+  }
+  if (g.fence && g.fence.revision === c.revision) {
+    if (!same3(g.fence) || g.fence.recoveryId !== c.recoveryId) throw conflict();
+    completeFence(s, c.runId, now);
+    return g.fence ? gateAck(s, g, c, g.state, "fenced") : gateAck(s, g, c, g.state, "applied");
+  }
+  if (c.recoveryId !== void 0 && !g.recovery) throw new RunGateConflict(`run ${c.runId} is not under recovery ${c.recoveryId}`);
+  const recovering = g.recovery !== void 0;
+  if (recovering) {
+    if (c.expect && (g.revision !== c.expect.revision || g.state !== c.expect.state)) throw new RunGateConflict(`run ${c.runId} changed since the reviewed view (${g.state}/${g.revision}); review again`);
+    if (g.fence) {
+      if (boundTxns(s, c.runId) > 0) throw new RunGateConflict(`run ${c.runId} still has bound transactions under an unfinished ${g.fence.kind}`);
+      delete g.fence;
+    }
+  }
+  if (c.revision <= Math.max(g.revision, g.fence?.revision ?? 0, g.restored?.maxRevision ?? 0)) throw new RunGateConflict(`revision ${c.revision} of run ${c.runId} is older than the gate`);
+  if (g.fence) throw new RunGateConflict(`run ${c.runId} has an unfinished ${g.fence.kind} at revision ${g.fence.revision}`);
+  if (g.state === "stopped" && !(recovering && c.kind === "stop")) throw new RunGateConflict(`run ${c.runId} is stopped`);
+  if (recovering && g.restored?.state === "stopped" && c.kind !== "stop") throw new RunGateConflict(`run ${c.runId} was stopped in the restored history`);
+  const from = recovering ? { prepare: [], release: [], resume: [], pause: ["running", "paused"], stop: ["preparing", "running", "paused", "stopped"] } : { prepare: [], release: ["preparing"], resume: ["paused"], pause: ["running"], stop: ["preparing", "running", "paused"] };
+  if (!from[c.kind].includes(g.state)) throw new RunGateConflict(`cannot ${c.kind} run ${c.runId} while it is ${g.state}${recovering ? " under recovery" : ""}`);
+  spend();
+  if (c.kind === "release" || c.kind === "resume") {
+    recordGate(g, c, "running", now);
+    touch2(s, now);
+    serve(s, now);
+    return gateAck(s, g, c, "running", "applied");
+  }
+  if (g.state !== "running") {
+    recordGate(g, c, c.kind === "pause" ? "paused" : "stopped", now);
+    if (recovering) {
+      delete g.recovery;
+      delete g.historical;
+    }
+    touch2(s, now);
+    return gateAck(s, g, c, g.state, "applied");
+  }
+  g.fence = { revision: c.revision, commandId: c.commandId, kind: c.kind, at: now, ...recovering ? { recoveryId: c.recoveryId } : {} };
+  touch2(s, now);
+  completeFence(s, c.runId, now);
+  return g.fence ? gateAck(s, g, c, g.state, "fenced") : gateAck(s, g, c, g.state, "applied");
+}
+function recoveryView(s, runId, recoveryId) {
+  const g = Object.hasOwn(s.runGates ?? {}, runId) ? s.runGates[runId] : void 0;
+  const bound = g ? boundTxns(s, runId) : 0;
+  const base = { runId, spaceId: s.spaceId ?? null, incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null, recoveryId };
+  if (!g) return { ...base, present: false, gate: null, fence: null, restored: null, historical: false, stopped: false, maxRevision: 0, boundTxns: 0, stable: true };
+  const fence = g.fence ? { revision: g.fence.revision, commandId: g.fence.commandId, kind: g.fence.kind } : null;
+  return {
+    ...base,
+    present: true,
+    gate: { revision: g.revision, state: g.state, commandId: g.commandId, kind: g.kind },
+    fence,
+    restored: g.restored ? clone(g.restored) : null,
+    historical: !!g.historical,
+    stopped: g.state === "stopped" || g.restored?.state === "stopped" || g.history.some((h) => h.state === "stopped"),
+    maxRevision: Math.max(g.revision, fence?.revision ?? 0, g.restored?.maxRevision ?? 0, ...g.history.map((h) => h.revision)),
+    boundTxns: bound,
+    stable: bound === 0
+  };
+}
+function recoverRunGate(s, now, o) {
+  if (!o || !validId(o.runId) || !validId(o.recoveryId)) throw new IllegalArgumentError("invalid run recovery request");
+  assertAdminIdle(s);
+  settle(s, now);
+  const g = Object.hasOwn(s.runGates ?? {}, o.runId) ? s.runGates[o.runId] : void 0;
+  if (g && g.recovery?.id !== o.recoveryId) {
+    if (!canCharge(s, GATE_COST)) throw new ResourceExhausted("the recovery fence exceeds the remaining commit budget");
+    charge(s, GATE_COST);
+    g.recovery = { id: o.recoveryId, at: now };
+    touch2(s, now);
+  }
+  return recoveryView(s, o.runId, o.recoveryId);
+}
+function fenceGatesForRestore(s, now, recoveryId) {
+  for (const g of Object.values(s.runGates ?? {})) {
+    g.recovery = { id: recoveryId, at: now };
+    g.historical = true;
+  }
+  if (s.runGates) touch2(s, now);
+}
+function importRestoredGate(s, now, source, recoveryId) {
+  const ev = { revision: source.revision, state: source.state, commandId: source.commandId, kind: source.kind, maxRevision: Math.max(source.revision, source.fence?.revision ?? 0, ...source.history.map((h) => h.revision)), ...source.fence ? { fence: { revision: source.fence.revision, commandId: source.fence.commandId, kind: source.fence.kind } } : {} };
+  s.runGates ??= {};
+  const gates = s.runGates;
+  const local = Object.hasOwn(gates, source.runId) ? gates[source.runId] : void 0;
+  if (local) {
+    local.restored = ev;
+    local.recovery = { id: recoveryId, at: now };
+    local.historical = true;
+    touch2(s, now);
+    return;
+  }
+  if (Object.keys(gates).length >= MAX_RUN_GATES) throw new ResourceExhausted(`at most ${MAX_RUN_GATES} run gates per Space`);
+  gates[source.runId] = { runId: source.runId, revision: source.revision, state: source.state, commandId: source.commandId, kind: source.kind, at: now, history: [{ revision: source.revision, commandId: source.commandId, kind: source.kind, state: source.state }], recovery: { id: recoveryId, at: now }, historical: true, restored: ev, ...source.fence ? { fence: { revision: source.fence.revision, commandId: source.fence.commandId, kind: source.fence.kind, at: now } } : {} };
+  touch2(s, now);
+}
+function runGateView(s, runId) {
+  const g = Object.hasOwn(s.runGates ?? {}, runId) ? s.runGates[runId] : void 0;
+  if (!g) return null;
+  const { history: _h, ...rest } = clone(g);
+  return { ...rest, boundTxns: boundTxns(s, runId) };
+}
+var NO_WAIT, ANY, FOREVER, DEFAULT_LEASE_MS, MAX_TIMER_MS, until, timerDelay, DEFAULT_LIMITS, LimitError, ResourceExhausted, ResponseBudgetTooSmall, IllegalArgumentError, PermissionError, TransactionError, CompletionViolation, RunGateConflict, UnknownLeaseError, initialState, migrate, clone, plain, encoder3, jsonBytes, commitBudgets, limitsOf, ownedBy, EVENT_OVERHEAD, COMMIT_FIXED, coreJobRetry, peekId, newId, gidOf, directoryEntry, intervalOf, view, mayUse, requireTxn, commitTxn, abortTxn, active, MAX_LIST, PAGE_OVERHEAD, seqOf, putOp, streamIdOf, revision, SnapshotExpired, RevisionAhead, CHANGES_OVERHEAD, MAX_RUN_GATES, MAX_GATE_HISTORY, GATE_COST, validId, boundTxns;
 var init_core = __esm({
   "src/core.ts"() {
     "use strict";
@@ -1786,6 +2006,8 @@ var init_core = __esm({
     TransactionError = class extends Error {
     };
     CompletionViolation = class extends TransactionError {
+    };
+    RunGateConflict = class extends TransactionError {
     };
     UnknownLeaseError = class extends Error {
     };
@@ -1856,6 +2078,7 @@ var init_core = __esm({
       settle(s, now);
       requireTxn(s, id2, as);
       checkCompletion(s, id2);
+      checkRunBindings(s, id2);
       charge(s, s.txns[id2].reserved ?? 0);
       finish(s, id2, true, now);
       serve(s, now);
@@ -1882,6 +2105,11 @@ var init_core = __esm({
     RevisionAhead = class extends Error {
     };
     CHANGES_OVERHEAD = 160;
+    MAX_RUN_GATES = 256;
+    MAX_GATE_HISTORY = 32;
+    GATE_COST = 1024;
+    validId = (v) => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(v);
+    boundTxns = (s, run) => Object.values(s.txns).filter((t) => t.runs?.[run] !== void 0).length;
   }
 });
 
@@ -1940,7 +2168,7 @@ async function registry(tx, now) {
 async function resolveSpaceId(tx, space, now) {
   const r = await registry(tx, now);
   if (space === void 0) return r.defaultSpaceId;
-  const id2 = r.aliases[space] ?? (r.spaces[space] ? space : void 0);
+  const id2 = r.aliases[space] ?? (r.spaces[space] && !r.spaces[space].deletedAt ? space : void 0);
   if (id2 === void 0) throw new UnknownSpaceError(`unknown space: ${space}`);
   return id2;
 }
@@ -1983,13 +2211,13 @@ async function createSpace(tx, alias, now) {
 async function listSpaces(host, ctx) {
   const r = await host.snapshot(Registry, ctx);
   if (!r) return [];
-  const all = Object.values(r.spaces).map((i) => ({ ...i }));
+  const all = Object.values(r.spaces).filter((i) => !i.deletedAt).map((i) => ({ ...i }));
   return all.sort((a, b) => a.spaceId === r.defaultSpaceId ? -1 : b.spaceId === r.defaultSpaceId ? 1 : a.createdAt - b.createdAt);
 }
 async function snapshotSpace(host, spaceId, ctx) {
   const r = await host.snapshot(Registry, ctx);
   if (r && spaceId === r.defaultSpaceId) return host.snapshot(Space, ctx);
-  if (r && !r.spaces[spaceId]) return void 0;
+  if (r && (!r.spaces[spaceId] || r.spaces[spaceId].deletedAt)) return void 0;
   return host.snapshot(NamedSpace, spaceId, ctx);
 }
 var DEFAULT_ALIAS, ALIAS, Registry, NamedSpace, UnknownSpaceError, newIncarnation, newSpaceId, touched;
@@ -2093,11 +2321,11 @@ var init_meter = __esm({
         this.now = now;
         this.started = now();
       }
-      inc(name2, n = 1) {
+      inc(name3, n = 1) {
         const t = Math.floor(this.now() / 1e3);
-        this.totals.set(name2, (this.totals.get(name2) ?? 0) + n);
-        let r = this.ring.get(name2);
-        if (!r) this.ring.set(name2, r = Array.from({ length: SLOTS }, () => ({ t: -1, c: 0 })));
+        this.totals.set(name3, (this.totals.get(name3) ?? 0) + n);
+        let r = this.ring.get(name3);
+        if (!r) this.ring.set(name3, r = Array.from({ length: SLOTS }, () => ({ t: -1, c: 0 })));
         const b = r[t % SLOTS];
         if (b.t !== t) {
           b.t = t;
@@ -2105,8 +2333,8 @@ var init_meter = __esm({
         }
         b.c += n;
       }
-      total(name2) {
-        return this.totals.get(name2) ?? 0;
+      total(name3) {
+        return this.totals.get(name3) ?? 0;
       }
       /**
        * Events per second over the last `windowSec` completed seconds (at most SLOTS - 1). The running second is left out:
@@ -2114,8 +2342,8 @@ var init_meter = __esm({
        * would read ~0 at every second's start). The price is up to 1 s of lag. Divides by the time those seconds actually
        * covered since the meter started, so a fresh meter does not under-report either.
        */
-      rate(name2, windowSec = 10) {
-        const r = this.ring.get(name2);
+      rate(name3, windowSec = 10) {
+        const r = this.ring.get(name3);
         if (!r) return 0;
         const t = Math.floor(this.now() / 1e3);
         const w = Math.min(Math.max(1, Math.floor(Number.isFinite(windowSec) ? windowSec : 10)), SLOTS - 1);
@@ -2169,9 +2397,9 @@ function snapshotPage(host, state, now, tmpl2, o, owner) {
   const fresh = record2 === void 0;
   if (!record2) {
     const items = list(state, now, tmpl2, o.txn ?? null, Number.MAX_SAFE_INTEGER, owner);
-    const bytes7 = encodedBytes(items);
-    if (bytes7 > limits.maxSnapshotBytes) throw new ResourceExhausted("the snapshot exceeds maxSnapshotBytes");
-    record2 = { snapshotEpoch: state.snapshotEpoch ?? 0, token: `ss${randomBytes4(16).toString("hex")}`, streamId, query, owner, rev: revision(state), expires: until(now, limits.snapshotTtlMs), bytes: bytes7, items };
+    const bytes10 = encodedBytes(items);
+    if (bytes10 > limits.maxSnapshotBytes) throw new ResourceExhausted("the snapshot exceeds maxSnapshotBytes");
+    record2 = { snapshotEpoch: state.snapshotEpoch ?? 0, token: `ss${randomBytes4(16).toString("hex")}`, streamId, query, owner, rev: revision(state), expires: until(now, limits.snapshotTtlMs), bytes: bytes10, items };
   }
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > record2.items.length) throw new IllegalArgumentError("invalid snapshot position");
   const budget = o.maxBytes ?? limits.maxFrameBytes;
@@ -2364,7 +2592,7 @@ var init_client = __esm({
         const w = { ...o.deadline === void 0 ? {} : { deadline: o.deadline }, template: tmpl2, take: o.take ?? true, target: o.target, timeout: o.timeout, ...o.txnLeaseMs === void 0 ? {} : { txnLeaseMs: o.txnLeaseMs }, handback: o.handback ?? null };
         return (await this.mutate("wait", w, o.request, (s, now) => addWaiter(s, now, { ...w, ...o.request ? { originRequestKey: keyOf(s, o.request) } : {}, ...this.as === void 0 ? {} : { as: this.as }, consumer: this.options.consumer, ...this.options.authorization ? { authorizedUntil: this.options.authorization.validUntil } : {} }))).value;
       }
-      async events(principal, o = {}, validate2) {
+      async events(principal, o = {}, validate3) {
         if (this.options.consumer && canonicalPrincipal(principal) !== canonicalPrincipal(this.options.consumer)) throw new PermissionError("another consumer's mailbox");
         await this.maintain();
         return this.host.commit(async (tx) => {
@@ -2379,7 +2607,7 @@ var init_client = __esm({
           }
           settle(s, this.now());
           const p = mailboxPage(s, principal, this.now(), o);
-          validate2?.(p);
+          validate3?.(p);
           return p;
         }, this.ctx);
       }
@@ -2931,8 +3159,8 @@ var init_service = __esm({
       allowed(id2, method) {
         let types = /* @__PURE__ */ new Set();
         let any = false;
-        for (const name2 of id2.roles) {
-          const r = this.policy.roles[name2];
+        for (const name3 of id2.roles) {
+          const r = this.policy.roles[name3];
           if (!r || !(r.methods === "*" || r.methods.includes(method))) continue;
           any = true;
           if (r.types === void 0) types = "*";
@@ -2972,10 +3200,10 @@ var init_service = __esm({
           case "pollOperation":
             return this.poll(a, c);
           case "resolveOperation": {
-            const target = this.target(a.targetRequest, c.id), method2 = str(a.method, "method"), hash8 = str(a.argumentHash, "argumentHash"), epoch2 = int(a.primaryEpoch, "primaryEpoch");
+            const target = this.target(a.targetRequest, c.id), method2 = str(a.method, "method"), hash9 = str(a.argumentHash, "argumentHash"), epoch2 = int(a.primaryEpoch, "primaryEpoch");
             const current = await this.o.epochForSpace?.(c.space) ?? this.o.primaryEpoch;
             if (epoch2 > current) throw new IncarnationChanged("resolution epoch is ahead of Member");
-            const view3 = await client.resolveOperation(target, method2, hash8, epoch2);
+            const view3 = await client.resolveOperation(target, method2, hash9, epoch2);
             if (view3.state === "notAdmitted" && epoch2 !== current) throw new IncarnationChanged("missing request requires current Member epoch");
             if ("result" in view3 && view3.result && isObj(view3.result) && Array.isArray(view3.result.types)) this.checkTypes(grant2, view3.result.types, "this retained result");
             return view3;
@@ -3463,9 +3691,9 @@ async function bootstrapEnroll(host, ctx, o) {
   const info = await control(host, ctx, now);
   return host.commit(async (tx) => {
     const s = await spaceDoc(tx, info.spaceId, now);
-    const marker = list(s, now, { type: "Bootstrap" })[0];
-    if (marker && fieldsOf(marker).state === "closed") throw new BootstrapClosed("the first admin is paired already: this host cannot bootstrap again");
-    if (!marker) write(s, now, { type: "Bootstrap", fields: { state: "open" } }, null, FOREVER);
+    const marker2 = list(s, now, { type: "Bootstrap" })[0];
+    if (marker2 && fieldsOf(marker2).state === "closed") throw new BootstrapClosed("the first admin is paired already: this host cannot bootstrap again");
+    if (!marker2) write(s, now, { type: "Bootstrap", fields: { state: "open" } }, null, FOREVER);
     for (const e of list(s, now, { type: "Enroll", fields: { bootstrap: true, state: "open" } })) {
       const old = takeEnroll(s, now, fieldsOf(e).tokenHash);
       if (old) putEnroll(s, now, { ...old, state: "invalid" });
@@ -3840,7 +4068,7 @@ init_core();
 init_meter();
 init_client();
 import { Type } from "@earendil-works/pi-ai";
-import { defineDoc as defineDoc6, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
+import { defineDoc as defineDoc10, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 
 // src/keys.ts
 import { createHash as createHash3, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
@@ -4030,8 +4258,8 @@ var FrameReader = class {
     this.max = max;
   }
   push(chunk, onFrame) {
-    const bytes7 = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    this.buf = this.buf.length === 0 ? bytes7 : Buffer.concat([this.buf, bytes7]);
+    const bytes10 = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    this.buf = this.buf.length === 0 ? bytes10 : Buffer.concat([this.buf, bytes10]);
     for (; ; ) {
       if (this.buf.length < HEADER) return;
       const n = this.buf.readUInt32BE(0);
@@ -4435,16 +4663,17 @@ import { createHash as createHash5 } from "node:crypto";
 init_core();
 init_canonical();
 import { createHash as createHash4, randomBytes as randomBytes6 } from "node:crypto";
+var runRecoveryIdOf = (recoveryId) => /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/.test(recoveryId) ? recoveryId : "restore-" + createHash4("sha256").update(recoveryId).digest("hex").slice(0, 32);
 var snapshotHash = (s) => createHash4("sha256").update(canonicalJson(s)).digest("hex");
 function beginRestore(s, now, o) {
   if (!o.recoveryId || o.recoveryId.length > 256 || !/^[a-f0-9]{64}$/.test(o.snapshotHash) || !["data", "control"].includes(o.kind) || !Number.isSafeInteger(o.expectedPrimaryEpoch) || o.expectedPrimaryEpoch < 0 || !Number.isSafeInteger(o.expectedPrimaryEpoch + 1)) throw new IllegalArgumentError("invalid restore identity, snapshot hash or epoch");
-  const hash8 = createHash4("sha256").update(canonicalJson(o)).digest("hex");
+  const hash9 = createHash4("sha256").update(canonicalJson(o)).digest("hex");
   if (s.restore) {
-    if (s.restore.recoveryId === o.recoveryId && s.restore.argumentHash === hash8) return plain(s.restore);
+    if (s.restore.recoveryId === o.recoveryId && s.restore.argumentHash === hash9) return plain(s.restore);
     if (s.restore.stage !== "completed") throw new PermissionError("a different restore is already installed");
   }
   if (!s.spaceId || s.incarnation !== o.expectedDataIncarnation || (s.primaryEpoch ?? 1) !== o.expectedPrimaryEpoch) throw new PermissionError("restore incarnation or epoch precondition failed");
-  const restoration = { recoveryId: o.recoveryId, argumentHash: hash8, snapshotHash: o.snapshotHash, incarnation: randomBytes6(4).toString("hex"), primaryEpoch: o.kind === "control" ? 1 : o.expectedPrimaryEpoch + 1, startedAt: now, waitUntil: now + 62e3, stage: "entries", cursor: 0, kind: o.kind };
+  const restoration = { recoveryId: o.recoveryId, argumentHash: hash9, snapshotHash: o.snapshotHash, incarnation: randomBytes6(4).toString("hex"), primaryEpoch: o.kind === "control" ? 1 : o.expectedPrimaryEpoch + 1, startedAt: now, waitUntil: now + 62e3, stage: "entries", cursor: 0, kind: o.kind };
   s.entries = [];
   s.txns = {};
   s.regs = [];
@@ -4461,6 +4690,7 @@ function beginRestore(s, now, o) {
   s.incarnation = restoration.incarnation;
   s.primaryEpoch = restoration.primaryEpoch;
   s.restore = restoration;
+  fenceGatesForRestore(s, now, runRecoveryIdOf(o.recoveryId));
   touch2(s, now);
   return plain(s.restore);
 }
@@ -4470,24 +4700,24 @@ function restoreBatch(s, now, source) {
   if (source.spaceId !== s.spaceId || snapshotHash(source) !== r.snapshotHash) throw new PermissionError("snapshot content or space id changed");
   if (r.stage === "entries") {
     if (r.kind === "control" && !s.entries.some((e) => e.type === "Bootstrap")) {
-      const marker = initialState();
-      marker.incarnation = r.incarnation;
-      write(marker, now, { type: "Bootstrap", fields: { state: "closed" } }, null, FOREVER);
-      if (!importRestoredEntry(s, now, marker.entries[0])) return plain(r);
-      s.nextId = Math.max(s.nextId, marker.nextId);
+      const marker2 = initialState();
+      marker2.incarnation = r.incarnation;
+      write(marker2, now, { type: "Bootstrap", fields: { state: "closed" } }, null, FOREVER);
+      if (!importRestoredEntry(s, now, marker2.entries[0])) return plain(r);
+      s.nextId = Math.max(s.nextId, marker2.nextId);
     }
     for (; r.cursor < source.entries.length; r.cursor++) {
       const e = source.entries[r.cursor];
       if (e.writtenUnder !== null || e.expires <= now) continue;
       const control2 = r.kind === "control";
       if (control2 && ["Enroll", "Bootstrap", "Command", "RouterLease", "FederationPolicy"].includes(e.type)) continue;
-      const copy9 = plain(e);
-      copy9.takenBy = null;
-      copy9.readBy = [];
-      if (control2 && copy9.type === "PeerKey") copy9.fields.state = "revoked";
-      else if (control2 && copy9.type === "Member") copy9.fields.state = "recoveryBlocked";
-      else if (!control2) copy9.restoredUnverified = true;
-      if (!importRestoredEntry(s, now, copy9)) return plain(r);
+      const copy10 = plain(e);
+      copy10.takenBy = null;
+      copy10.readBy = [];
+      if (control2 && copy10.type === "PeerKey") copy10.fields.state = "revoked";
+      else if (control2 && copy10.type === "Member") copy10.fields.state = "recoveryBlocked";
+      else if (!control2) copy10.restoredUnverified = true;
+      if (!importRestoredEntry(s, now, copy10)) return plain(r);
     }
     r.stage = "claims";
     r.cursor = 0;
@@ -4501,9 +4731,9 @@ function restoreBatch(s, now, source) {
       if (historyBytes > limitsOf(s).maxClaimBytes || overheadBytes(s) + cost + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes) throw new ResourceExhausted("restored history violates current space limits");
       if (cost + 1024 > limitsOf(s).maxCommitBytes) throw new ResourceExhausted("historical claim does not fit the restore budget");
       if (!maintenanceStep(s, cost, now, `restore-claim:${r.cursor}`)) return plain(r);
-      const copy9 = plain(c);
-      delete copy9.reservedResultBytes;
-      s.restoredClaims[key2] = copy9;
+      const copy10 = plain(c);
+      delete copy10.reservedResultBytes;
+      s.restoredClaims[key2] = copy10;
       touch2(s, now);
     }
     r.stage = "generations";
@@ -4519,6 +4749,17 @@ function restoreBatch(s, now, source) {
       if (!maintenanceStep(s, cost, now, `restore-generation:${r.cursor}`)) return plain(r);
       s.invalidGenerations[id2] = true;
       touch2(s, now);
+    }
+    r.stage = "gates";
+    r.cursor = 0;
+    touch2(s, now);
+  }
+  if (r.stage === "gates") {
+    const runs = Object.keys(source.runGates ?? {}).sort();
+    for (; r.cursor < runs.length; r.cursor++) {
+      const g = source.runGates[runs[r.cursor]], cost = 1024;
+      if (!maintenanceStep(s, cost, now, `restore-gate:${r.cursor}`)) return plain(r);
+      importRestoredGate(s, now, g, runRecoveryIdOf(r.recoveryId));
     }
     r.stage = "waiting";
     r.cursor = 0;
@@ -4552,8 +4793,8 @@ var RecoveryController = class {
     this.o = o;
   }
   reserve(s, record2, now) {
-    const bytes7 = Buffer.byteLength(JSON.stringify(record2)) + 512;
-    if (!maintenanceStep(s, bytes7, now, "recovery-journal")) throw new ResourceExhausted("recovery metadata exceeds the commit budget");
+    const bytes10 = Buffer.byteLength(JSON.stringify(record2)) + 512;
+    if (!maintenanceStep(s, bytes10, now, "recovery-journal")) throw new ResourceExhausted("recovery metadata exceeds the commit budget");
   }
   now = () => (this.o.now ?? Date.now)();
   async job(id2) {
@@ -4672,16 +4913,16 @@ var RecoveryController = class {
     const bootKey = `boot:${this.o.hostId}`, localKey = `installed:${this.o.hostId}:${job.request.space}`;
     const boot = await this.o.external.get(bootKey), local = await this.o.installed.get(localKey), permit = boot?.value.spaces[job.request.space];
     if (!local || boot?.value.state !== "active" || !permit || permit.state !== "active" || permit.authorityId !== this.o.authorityId || permit.dataIncarnation !== job.incarnation || permit.primaryEpoch !== job.primaryEpoch || canonicalJson(permit) !== canonicalJson(local?.value ?? null)) throw new RecoveryBlocked("release requires matching current external and local boot authorization");
-    const hash8 = createHash5("sha256").update(canonicalJson(request)).digest("hex");
+    const hash9 = createHash5("sha256").update(canonicalJson(request)).digest("hex");
     return this.o.host.commit(async (tx) => {
       const jobs = await tx.doc(RecoveryJobs), prior = jobs.releases[request.commandId];
-      if (prior && prior.hash !== hash8) throw new RegisterConflict("release command has different arguments");
+      if (prior && prior.hash !== hash9) throw new RegisterConflict("release command has different arguments");
       if (prior?.completed) return { count: prior.count, completed: true };
       const s = await spaceDoc(tx, job.request.space, this.now());
-      this.reserve(s, { commandId: request.commandId, hash: hash8, count: prior?.count ?? 0, completed: false }, this.now());
+      this.reserve(s, { commandId: request.commandId, hash: hash9, count: prior?.count ?? 0, completed: false }, this.now());
       const count2 = releaseRestored(s, this.now(), request.recoveryId, request.scope);
       const remaining = s.entries.some((e) => e.restoredUnverified && (!request.scope.type || e.types.includes(request.scope.type)) && (!request.scope.runId || e.fields.runId === request.scope.runId) && (!request.scope.entryIds || request.scope.entryIds.includes(e.id)));
-      const record2 = { hash: hash8, count: (prior?.count ?? 0) + count2, completed: !remaining };
+      const record2 = { hash: hash9, count: (prior?.count ?? 0) + count2, completed: !remaining };
       jobs.releases[request.commandId] = record2;
       if ((await this.o.external.get(bootKey))?.version !== boot.version || (await this.o.installed.get(localKey))?.version !== local.version) throw new RecoveryBlocked("boot authorization changed during release");
       return { count: record2.count, completed: record2.completed };
@@ -4816,7 +5057,7 @@ init_rpc_domain();
 init_spaces();
 import { defineDocFamily as defineDocFamily2 } from "@earendil-works/pi-durable";
 import { randomUUID as randomUUID4 } from "node:crypto";
-var bytes2 = (kind, v) => Buffer.from("pi-spaces/" + kind + "/v1\n" + canonicalJson(v));
+var bytes2 = (kind2, v) => Buffer.from("pi-spaces/" + kind2 + "/v1\n" + canonicalJson(v));
 var same2 = (a, b) => canonicalJson(a) === canonicalJson(b);
 var positive = (n) => Number.isSafeInteger(n) && Number(n) > 0;
 var DelegationDenied = class extends PermissionError {
@@ -4959,11 +5200,11 @@ var DelegationVerifier = class {
     if (!Number.isSafeInteger(v.issuedAt) || !Number.isSafeInteger(v.expiresAt) || v.expiresAt <= v.issuedAt || v.expiresAt - v.issuedAt > 6e4 || v.issuedAt > this.now() + margin || this.now() + margin >= v.expiresAt)
       throw new DelegationDenied("delegation or lease expired");
   }
-  supervisor(kind, v, t) {
+  supervisor(kind2, v, t) {
     if (t.issuer !== this.o.supervisorPeerId || t.algorithm !== this.o.supervisorKey.algorithm || !verifyDetached(
       t.algorithm,
       this.o.supervisorKey.publicKey,
-      bytes2(kind, v),
+      bytes2(kind2, v),
       t.signature
     ))
       throw new DelegationDenied("invalid supervisor signature");
@@ -5275,8 +5516,8 @@ var RemoteError = class extends Error {
 };
 var OutcomeUnknown = class extends Error {
   request;
-  constructor(request, why) {
-    super(`outcome unknown for request ${request.requestId}: ${why}`);
+  constructor(request, why2) {
+    super(`outcome unknown for request ${request.requestId}: ${why2}`);
     this.request = request;
   }
 };
@@ -5348,7 +5589,7 @@ var RemoteSpace = class {
       const raw = await Promise.race([
         (async () => {
           const grant2 = this.o.grantProvider && !["challenge", "prove", "enroll", "enrollStatus", "grant"].includes(call.method) ? await this.o.grantProvider(call) : void 0;
-          const delegation = this.o.delegationProvider && !["challenge", "prove", "enroll", "enrollStatus", "grant", "keyLookup", "routerLease", "epochNotice", "routingPolicy", "membershipInstruction", "capabilityHeartbeat"].includes(call.method) ? await this.o.delegationProvider(call, grant2) : void 0;
+          const delegation = this.o.delegationProvider && !["challenge", "prove", "enroll", "enrollStatus", "grant", "keyLookup", "routerLease", "epochNotice", "routingPolicy", "membershipInstruction", "runGateInstruction", "spaceLifecycleInstruction", "workerAssignments", "capabilityHeartbeat"].includes(call.method) ? await this.o.delegationProvider(call, grant2) : void 0;
           const text2 = JSON.stringify(grant2 || delegation ? { ...call, frame: { ...call.frame, ...grant2 ? { grant: grant2 } : {}, ...delegation ? { delegation } : {} } } : call);
           const limit = this.frameLimit;
           if (new TextEncoder().encode(text2).length > limit) throw new ResourceExhausted(`a call may take at most ${limit} bytes`);
@@ -5421,6 +5662,16 @@ var RemoteSpace = class {
   async publishCapability(report) {
     return await this.send({ method: "capabilityHeartbeat", args: { report } });
   }
+  /** The signed worker assignments of this (proven) host; the control host derives the host from the connection. */
+  async workerAssignments() {
+    return await this.send({ method: "workerAssignments", args: {} });
+  }
+  async requestSpaceLifecycle(instruction) {
+    return await this.send({ method: "spaceLifecycleInstruction", args: { instruction } });
+  }
+  async requestRunGate(instruction) {
+    return await this.send({ method: "runGateInstruction", args: { instruction } });
+  }
   async requestMembership(instruction) {
     return await this.send({ method: "membershipInstruction", args: { instruction } });
   }
@@ -5442,8 +5693,8 @@ var RemoteSpace = class {
   }
   async rotateKey(challenge, replacement, prepared) {
     if (!this.o.signer) throw new UnsupportedOperation("rotation needs the old signer");
-    const bytes7 = (await Promise.resolve().then(() => (init_rotation(), rotation_exports))).rotationBytes(challenge);
-    const args = { challenge, oldSignature: Buffer.from(await this.o.signer.sign(bytes7)).toString("base64"), newSignature: Buffer.from(await replacement.sign(bytes7)).toString("base64") };
+    const bytes10 = (await Promise.resolve().then(() => (init_rotation(), rotation_exports))).rotationBytes(challenge);
+    const args = { challenge, oldSignature: Buffer.from(await this.o.signer.sign(bytes10)).toString("base64"), newSignature: Buffer.from(await replacement.sign(bytes10)).toString("base64") };
     const request = prepared?.request ?? { generation: (await this.send({ method: "rotationGeneration" })).generation, requestId: this.o.newRequestId() };
     await prepared?.beforeSend?.(request);
     return await this.send({ method: "rotateKey", args, request }, () => new OutcomeUnknown(request, "the rotation answer was lost"));
@@ -5542,7 +5793,7 @@ var RemoteSpace = class {
     const started = performance.now();
     const end = this.o.maxClientWaitMs === void 0 ? void 0 : started + this.o.maxClientWaitMs;
     const args = { template: tmpl2, timeoutMs: leaseArg(timeout), ...o.deadline === void 0 ? {} : { deadline: o.deadline }, txn: o.txn ?? null, ifExists, waitMs: this.pollMs(end) };
-    const unknown = (why) => () => new OutcomeUnknown(request, why);
+    const unknown = (why2) => () => new OutcomeUnknown(request, why2);
     let r = await this.send({ method, request, args }, unknown("the client stopped waiting; resolve the same request"), end);
     for (; ; ) {
       if (r.state === "done") return r.entry ?? null;
@@ -5663,17 +5914,17 @@ init_routing_semantics();
 init_spaces();
 var copy3 = plain;
 var hash2 = (v) => createHash8("sha256").update(canonicalJson(v)).digest("hex");
-var bytes3 = (kind, v) => Buffer.from("pi-spaces/membership-" + kind + "/v1\n" + canonicalJson(v));
-async function signMembership(kind, value, issuer, signer) {
+var bytes3 = (kind2, v) => Buffer.from("pi-spaces/membership-" + kind2 + "/v1\n" + canonicalJson(v));
+async function signMembership(kind2, value, issuer, signer) {
   return {
     value: copy3(value),
     issuer,
     algorithm: signer.algorithm,
-    signature: Buffer.from(await signer.sign(bytes3(kind, value))).toString("base64")
+    signature: Buffer.from(await signer.sign(bytes3(kind2, value))).toString("base64")
   };
 }
-function verifyMembership(kind, t, pin) {
-  if (!t || t.issuer !== pin.issuer || t.algorithm !== pin.algorithm || !verifyDetached(pin.algorithm, pin.publicKey, bytes3(kind, t.value), t.signature))
+function verifyMembership(kind2, t, pin) {
+  if (!t || t.issuer !== pin.issuer || t.algorithm !== pin.algorithm || !verifyDetached(pin.algorithm, pin.publicKey, bytes3(kind2, t.value), t.signature))
     throw new RoutingConflict("invalid membership signature");
   return copy3(t.value);
 }
@@ -5716,6 +5967,7 @@ var MemberLifecycle = class {
       }
       if (a.policy) assertOrdinaryProfiles(a.policy, p);
       a.policy = copy3(p);
+      assertGatedProfilesKept(s, p.completionProfiles);
       s.completionProfiles = copy3(p.completionProfiles);
       touch2(s, (this.o.now ?? Date.now)());
     }, this.o.ctx);
@@ -5773,6 +6025,7 @@ var MemberLifecycle = class {
             now
           );
         }
+        assertGatedProfilesKept(s, q.policy.completionProfiles);
         s.completionProfiles = copy3(q.policy.completionProfiles);
         a.state = "active";
         a.admissionVersion++;
@@ -5791,6 +6044,7 @@ var MemberLifecycle = class {
         if (!a || a.state !== "profileFrozen" || !a.policy || !q.policy || a.profileTransition?.id !== q.id || a.profileTransition.hash !== hash2(q.policy)) throw new RoutingConflict("profile install requires matching frozen transition");
         validateProfileOnlyChange(a.policy, q.policy);
         a.policy = copy3(q.policy);
+        assertGatedProfilesKept(s, q.policy.completionProfiles);
         s.completionProfiles = copy3(q.policy.completionProfiles);
         a.admissionVersion++;
       } else if (q.action === "profileResume") {
@@ -5805,6 +6059,7 @@ var MemberLifecycle = class {
           throw new RoutingConflict("policy version changed content");
         if (a.policy) assertOrdinaryProfiles(a.policy, q.policy);
         a.policy = copy3(q.policy);
+        assertGatedProfilesKept(s, q.policy.completionProfiles);
         s.completionProfiles = copy3(q.policy.completionProfiles);
       } else if (q.action === "drain") {
         if (!a || a.state !== "active")
@@ -5915,11 +6170,11 @@ var MembershipController = class {
       throw new RoutingConflict("Member proof binding mismatch");
     return p;
   }
-  async execute(id2, kind, member, newDefault) {
+  async execute(id2, kind2, member, newDefault) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id2) || ["constructor", "prototype", "__proto__"].includes(id2))
       throw new RoutingConflict("invalid membership command ID");
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(member.id) || ["constructor", "prototype", "__proto__"].includes(member.id) || member.target.authorityId !== this.o.authorityId) throw new RoutingConflict("invalid Member identity/authority");
-    const h = hash2([kind, member, newDefault ?? null]);
+    const h = hash2([kind2, member, newDefault ?? null]);
     let op = await this.change(async (d) => {
       const existing = d.operations[id2];
       if (existing) {
@@ -5933,7 +6188,7 @@ var MembershipController = class {
         throw new RoutingConflict("membership history full");
       const o = {
         hash: h,
-        kind,
+        kind: kind2,
         member: copy3(member),
         phase: "accepted",
         ...newDefault ? { newDefault } : {}
@@ -5954,7 +6209,7 @@ var MembershipController = class {
     let state = await this.o.host.snapshot(FederationRouting, this.o.controlSpaceId, this.o.ctx);
     if (!state)
       state = { policy: null, members: {} };
-    if (kind === "add") {
+    if (kind2 === "add") {
       if (op.phase === "accepted") {
         if (state.members[member.id])
           throw new RoutingConflict("Member ID already registered");
@@ -6058,7 +6313,7 @@ var MembershipController = class {
         op.phase = "completed";
         (await tx.doc(MembershipJournal, this.o.controlSpaceId, null)).operations[id2] = copy3(op);
       }, this.o.ctx);
-    } else if (kind === "drain") {
+    } else if (kind2 === "drain") {
       await this.call(id2, op, "drain");
       await this.o.host.commit(async (tx) => {
         await this.o.assertAuthority();
@@ -6277,11 +6532,11 @@ var FederatedSpace = class {
     const d = await this.o.host.snapshot(RootErasures, this.o.id, this.o.ctx);
     if (Object.values(d?.operations ?? {}).some((op) => op.phase !== "completed")) throw new FederationUnavailable("Root principal erasure is pending");
   }
-  async prepare(kind, args, q) {
+  async prepare(kind2, args, q) {
     await this.assertNoErasure();
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(q.id) || ["constructor", "prototype", "__proto__"].includes(q.id))
       throw new RoutingConflict("invalid operation ID");
-    const h = hash3([kind, args, q.principal, q.txn ?? null]);
+    const h = hash3([kind2, args, q.principal, q.txn ?? null]);
     let op = await this.get(q.id);
     if (op) {
       if (op.hash !== h)
@@ -6291,7 +6546,7 @@ var FederatedSpace = class {
     const st = await this.o.state(), p = st.policy;
     if (!p)
       throw new RoutingConflict("no installed policy");
-    let ids = kind === "txn" ? [args.member] : kind === "write" ? [writeMember(p, st.members, args.entry, (this.o.now ?? Date.now)())] : searchMembers(p, args.template);
+    let ids = kind2 === "txn" ? [args.member] : kind2 === "write" ? [writeMember(p, st.members, args.entry, (this.o.now ?? Date.now)())] : searchMembers(p, args.template);
     if (q.txn) {
       const origin2 = q.txn.originId ? await this.get(q.txn.originId) : void 0;
       if (!origin2 || origin2.kind !== "txn" || origin2.phase !== "done" || origin2.members[0] !== q.txn.member || origin2.result?.id !== q.txn.id || hash3(origin2.principal) !== hash3(q.principal))
@@ -6309,7 +6564,7 @@ var FederatedSpace = class {
       policyVersion: p.policyVersion,
       members: ids,
       targets: ids.map((id2) => copy4(st.members[id2].target)),
-      kind,
+      kind: kind2,
       args: copy4(args),
       phase: "admitting",
       ...args.timeoutMs > 0 ? { deadline: (this.o.now ?? Date.now)() + args.timeoutMs } : {},
@@ -6318,7 +6573,7 @@ var FederatedSpace = class {
       cursor: 0,
       candidates: {},
       ...q.txn ? { userTxn: copy4(q.txn) } : {},
-      ...ids.length === 1 && kind !== "race" ? { budgetWithParent: true } : {}
+      ...ids.length === 1 && kind2 !== "race" ? { budgetWithParent: true } : {}
     };
     await this.change(q.id, async (d, tx) => {
       if (this.o.controlSpaceId) {
@@ -8141,6 +8396,1072 @@ async function startGate(service, o) {
 init_grants();
 init_enroll();
 
+// src/run-controller.ts
+init_canonical();
+init_spaces();
+init_core();
+import { defineDoc as defineDoc4 } from "@earendil-works/pi-durable";
+import { createHash as createHash13 } from "node:crypto";
+var RunJournal = defineDoc4({
+  kind: "pi-spaces.run-controller",
+  version: 1,
+  scope: "session",
+  initial: () => ({ runs: {} })
+});
+var RunBusy = class extends TransactionError {
+};
+var MAX_RUNS = 1024;
+var MAX_MEMBERS = 64;
+var MAX_CONFIG_BYTES = 16 * 1024;
+var MAX_COMMANDS = 256;
+var MAX_ISSUED = 128;
+var ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
+var hashOf = (v) => createHash13("sha256").update(canonicalJson(v)).digest("hex");
+var sameIdentity = (a, b) => a.authorityId === b.authorityId && a.incarnation === b.incarnation;
+function validate2(spec) {
+  if (!spec || !ID.test(spec.runId) || typeof spec.kind !== "string" || !ID.test(spec.kind)) throw new IllegalArgumentError("a run needs a runId and a kind");
+  if (!Array.isArray(spec.members) || !spec.members.length || spec.members.length > MAX_MEMBERS || new Set(spec.members).size !== spec.members.length || !spec.members.every((m) => typeof m === "string" && ID.test(m))) throw new IllegalArgumentError(`a run needs 1..${MAX_MEMBERS} distinct Members`);
+  if (Buffer.byteLength(canonicalJson(spec.config)) > MAX_CONFIG_BYTES) throw new LimitError("run configuration is too large");
+}
+function issue(r, p) {
+  r.issued.push(p.commandId);
+  if (r.issued.length > MAX_ISSUED) r.issued.splice(0, r.issued.length - MAX_ISSUED);
+  return p;
+}
+function viewHash(r, views) {
+  return hashOf({ runId: r.spec.runId, members: r.spec.members, journal: { revision: r.revision, state: r.state }, abandoned: r.recovery?.abandoned ?? null, views: r.spec.members.map((m) => views[m] ?? null) });
+}
+function viewOf(r) {
+  const v = { runId: r.spec.runId, kind: r.spec.kind, members: [...r.spec.members], revision: r.revision, state: r.state };
+  const p = r.pending, q = r.recovery;
+  if (q) v.recovery = { id: q.id, stage: q.stage, ...q.reason ? { reason: q.reason } : {}, ...q.viewHash ? { viewHash: q.viewHash } : {}, ...q.abandoned ? { abandoned: { ...q.abandoned } } : {}, ...q.decision ? { decision: { ...q.decision } } : {}, errors: { ...q.errors }, ...q.changed ? { changed: { ...q.changed } } : {}, ...q.partial ? { partial: [...q.partial] } : {}, views: plain(q.views) };
+  if (p) {
+    const errors = { ...p.errors };
+    v.state = p.kind === "prepare" || p.kind === "release" ? "preparing" : p.kind === "pause" ? Object.keys(errors).length ? "pauseIncomplete" : "pausing" : p.kind === "resume" ? "resuming" : "stopping";
+    v.pending = {
+      commandId: p.commandId,
+      kind: p.kind,
+      revision: p.revision,
+      errors,
+      applied: r.spec.members.filter((m) => p.acks[m]?.phase === "applied"),
+      fenced: r.spec.members.filter((m) => p.acks[m]?.phase === "fenced"),
+      missing: r.spec.members.filter((m) => !p.acks[m])
+    };
+  }
+  if (q) v.state = q.stage === "review" || q.stage === "required" ? "needsReview" : "reconciling";
+  return v;
+}
+var RunController = class {
+  o;
+  /** `identity`: the current control authority and incarnation; pending transitions of another one are never resent. */
+  constructor(o) {
+    this.o = o;
+  }
+  now() {
+    return (this.o.now ?? Date.now)();
+  }
+  async identity() {
+    return this.o.identity ? plain(await this.o.identity()) : void 0;
+  }
+  commit(f) {
+    return this.o.host.commit(async (tx) => f((await tx.doc(RunJournal)).runs), this.o.ctx);
+  }
+  /** Journals the run, prepares every Member behind a `preparing` gate and releases the gates once all are prepared. */
+  async start(commandId, spec) {
+    validate2(spec);
+    if (!ID.test(commandId)) throw new IllegalArgumentError("invalid command ID");
+    const hash9 = hashOf({ op: "start", spec }), identity = await this.identity();
+    await this.commit((runs) => {
+      const old = Object.hasOwn(runs, spec.runId) ? runs[spec.runId] : void 0;
+      if (old) {
+        if (old.commands[commandId]?.hash === hash9) return;
+        throw new RunGateConflict(`run ${spec.runId} was already started by another command`);
+      }
+      if (Object.keys(runs).length >= MAX_RUNS) throw new ResourceExhausted("run journal is full");
+      runs[spec.runId] = { spec: plain(spec), revision: 0, state: "preparing", at: this.now(), tuples: {}, issued: [], commands: { [commandId]: { hash: hash9, kind: "start", revision: 1 } } };
+      const r = runs[spec.runId];
+      r.pending = issue(r, { commandId, kind: "prepare", revision: 1, acks: {}, errors: {}, ...identity ? { identity } : {} });
+    });
+    return this.advance(spec.runId);
+  }
+  pause(commandId, runId) {
+    return this.transition(commandId, runId, "pause");
+  }
+  resume(commandId, runId) {
+    return this.transition(commandId, runId, "resume");
+  }
+  stop(commandId, runId) {
+    return this.transition(commandId, runId, "stop");
+  }
+  async transition(commandId, runId, kind2) {
+    if (!ID.test(commandId)) throw new IllegalArgumentError("invalid command ID");
+    const hash9 = hashOf({ op: kind2, runId }), identity = await this.identity();
+    await this.commit((runs) => {
+      const r = Object.hasOwn(runs, runId) ? runs[runId] : void 0;
+      if (!r) throw new IllegalArgumentError(`unknown run ${runId}`);
+      const old = r.commands[commandId];
+      if (old) {
+        if (old.hash !== hash9) throw new IllegalArgumentError("command ID was used for another command");
+        return;
+      }
+      if (r.recovery) throw new RunBusy(`run ${runId} is under recovery ${r.recovery.id}; resolve it first`);
+      const supersede = kind2 === "stop" && (r.pending?.kind === "prepare" || r.pending?.kind === "release");
+      if (r.pending && !supersede) throw new RunBusy(`run ${runId} is still applying ${r.pending.kind} at revision ${r.pending.revision}`);
+      const from = { pause: ["running"], resume: ["paused"], stop: ["preparing", "running", "paused"] }[kind2];
+      if (!from.includes(r.state)) throw new RunGateConflict(`cannot ${kind2} run ${runId} while it is ${r.state}`);
+      if (Object.keys(r.commands).length >= MAX_COMMANDS) throw new ResourceExhausted("run command history is full");
+      r.pending = issue(r, { commandId, kind: kind2, revision: (r.pending?.revision ?? r.revision) + 1, acks: {}, errors: {}, ...identity ? { identity } : {} });
+      r.commands[commandId] = { hash: hash9, kind: kind2, revision: r.pending.revision };
+    });
+    return this.advance(runId);
+  }
+  /**
+   * Starts the reconciliation of a run after a Control or Data restore (§6 Abgleich nach Restore). A pending
+   * transition is parked as evidence and never resent. Every Member installs the recovery entry fence and reports
+   * its view. Identical stable paused/stopped views of known origin are confirmed with fresh ACKs; anything else
+   * waits for `resolve`. `manifest` rebuilds a run the restored journal no longer knows.
+   */
+  async reconcile(commandId, runId, recoveryId, manifest) {
+    if (!ID.test(commandId) || !ID.test(recoveryId)) throw new IllegalArgumentError("invalid command or recovery ID");
+    if (manifest) validate2({ runId, kind: manifest.kind, config: null, members: manifest.members });
+    const hash9 = hashOf({ op: "reconcile", runId, recoveryId, manifest: manifest ?? null }), identity = await this.identity();
+    await this.commit((runs) => {
+      let r = Object.hasOwn(runs, runId) ? runs[runId] : void 0;
+      if (r?.commands[commandId]) {
+        if (r.commands[commandId].hash !== hash9) throw new IllegalArgumentError("command ID was used for another command");
+        return;
+      }
+      if (!r) {
+        if (!manifest) throw new IllegalArgumentError(`run ${runId} is not in this journal; name its kind and Members`);
+        if (Object.keys(runs).length >= MAX_RUNS) throw new ResourceExhausted("run journal is full");
+        runs[runId] = { spec: { runId, kind: manifest.kind, config: null, members: [...manifest.members] }, revision: 0, state: "preparing", at: this.now(), tuples: {}, issued: [], commands: {} };
+        r = runs[runId];
+      } else if (manifest && canonicalJson([manifest.kind, manifest.members]) !== canonicalJson([r.spec.kind, r.spec.members])) throw new RunGateConflict("the manifest differs from the journal; review the journal first");
+      if (r.recovery?.id === recoveryId) {
+        r.commands[commandId] = { hash: hash9, kind: "reconcile", revision: r.revision };
+        return;
+      }
+      if (Object.keys(r.commands).length >= MAX_COMMANDS) throw new ResourceExhausted("run command history is full");
+      const abandoned = r.pending ? { commandId: r.pending.commandId, kind: r.pending.kind, revision: r.pending.revision } : r.recovery?.abandoned;
+      delete r.pending;
+      r.recovery = { id: recoveryId, commandId, stage: "gathering", views: {}, errors: {}, ...identity ? { identity } : {}, ...abandoned ? { abandoned } : {} };
+      r.commands[commandId] = { hash: hash9, kind: "reconcile", revision: r.revision };
+    });
+    return this.advance(runId);
+  }
+  /**
+   * The admin decision after `needsReview` (resolveRunRecovery). It is bound to the reviewed views by their hash;
+   * every Member step compares and sets the reviewed gate state. `resume` first completes a pause barrier and is
+   * refused if any evidence shows the run stopped.
+   */
+  async resolve(commandId, runId, o) {
+    if (!ID.test(commandId) || !["pause", "stop", "resume"].includes(o?.decision) || typeof o.expectedViewHash !== "string") throw new IllegalArgumentError("invalid recovery decision");
+    const hash9 = hashOf({ op: "resolve", runId, ...o }), identity = await this.identity();
+    await this.commit((runs) => {
+      const r = Object.hasOwn(runs, runId) ? runs[runId] : void 0;
+      if (!r) throw new IllegalArgumentError(`unknown run ${runId}`);
+      if (r.commands[commandId]) {
+        if (r.commands[commandId].hash !== hash9) throw new IllegalArgumentError("command ID was used for another command");
+        return;
+      }
+      const q = r.recovery;
+      if (!q || q.stage !== "review") throw new RunGateConflict(`run ${runId} has no recovery waiting for a decision`);
+      if (q.viewHash !== o.expectedViewHash) throw new RunGateConflict("the recovery views changed; review again");
+      const views = r.spec.members.map((m) => q.views[m]);
+      if (o.decision === "resume" && (r.state === "stopped" || views.some((v) => v.stopped))) throw new RunGateConflict("a stopped run is never resumed");
+      if (o.decision !== "stop" && views.some((v) => !v.present || v.gate.state === "preparing")) throw new RunGateConflict("Members without a prepared gate allow only stop");
+      if (Object.keys(r.commands).length >= MAX_COMMANDS) throw new ResourceExhausted("run command history is full");
+      const revision2 = Math.max(r.revision, q.abandoned?.revision ?? 0, ...views.map((v) => v.maxRevision)) + 1;
+      r.pending = issue(r, { commandId, kind: o.decision === "stop" ? "stop" : "pause", revision: revision2, acks: {}, errors: {}, recoveryId: q.id, expect: Object.fromEntries(views.filter((v) => v.present).map((v) => [v.spaceId, { revision: v.gate.revision, state: v.gate.state }])), ...o.decision === "resume" ? { then: "resume" } : {}, ...identity ? { identity } : {} });
+      q.stage = "deciding";
+      q.decision = { commandId, decision: o.decision, viewHash: o.expectedViewHash, auto: false };
+      r.commands[commandId] = { hash: hash9, kind: "resolve", revision: revision2 };
+    });
+    return this.advance(runId);
+  }
+  async gather(r) {
+    const q = r.recovery, runId = r.spec.runId;
+    for (const spaceId of r.spec.members) {
+      if (q.views[spaceId]?.stable) continue;
+      let view3, error;
+      try {
+        view3 = await this.o.member(spaceId).recover(runId, q.id);
+        if (view3.runId !== runId || view3.recoveryId !== q.id || view3.spaceId !== null && view3.spaceId !== spaceId) throw new TransactionError("recovery view does not match the request");
+      } catch (e) {
+        view3 = void 0;
+        error = String(e?.message ?? e).slice(0, 256);
+      }
+      await this.commit((runs) => {
+        const cur = runs[runId].recovery;
+        if (!cur || cur.id !== q.id || cur.stage !== "gathering") return;
+        if (view3) {
+          cur.views[spaceId] = plain(view3);
+          delete cur.errors[spaceId];
+        } else cur.errors[spaceId] = error;
+      });
+    }
+    return this.commit((runs) => {
+      const cur = runs[runId], q2 = cur.recovery;
+      if (!q2 || q2.stage !== "gathering") return "again";
+      if (!cur.spec.members.every((m) => q2.views[m]?.stable)) return "wait";
+      const views = cur.spec.members.map((m) => q2.views[m]);
+      cur.tuples = Object.fromEntries(views.map((v) => [v.spaceId ?? "", { incarnation: v.incarnation, authorityId: v.authorityId }]));
+      const states = new Set(views.map((v) => v.gate?.state ?? "missing"));
+      const state = [...states][0];
+      const clean = views.every((v) => v.present && !v.fence && (!v.restored || !v.restored.fence && v.restored.state === v.gate.state && v.restored.revision === v.gate.revision));
+      const known = views.every((v) => cur.issued.includes(v.gate?.commandId ?? "") || (cur.resolved ?? []).some((x) => v.gate?.commandId === x.id));
+      const stopped = cur.state === "stopped" || views.some((v) => v.stopped);
+      if (clean && known && !q2.abandoned && states.size === 1 && (state === "stopped" || state === "paused" && !stopped)) {
+        const revision2 = Math.max(cur.revision, ...views.map((v) => v.maxRevision)) + 1, commandId = `${q2.id}:confirm`;
+        cur.pending = issue(cur, { commandId, kind: state === "paused" ? "pause" : "stop", revision: revision2, acks: {}, errors: {}, recoveryId: q2.id, expect: Object.fromEntries(views.map((v) => [v.spaceId, { revision: v.gate.revision, state: v.gate.state }])), ...q2.identity ? { identity: q2.identity } : {} });
+        q2.stage = "deciding";
+        q2.decision = { commandId, decision: state === "paused" ? "pause" : "stop", viewHash: null, auto: true };
+        return "again";
+      }
+      q2.stage = "review";
+      q2.viewHash = viewHash(cur, q2.views);
+      return "wait";
+    });
+  }
+  /**
+   * Sends the pending command to every Member that has not applied it and records the answers. Safe to repeat at
+   * any time, also after a restart. Fenced Members finish their bound transactions first; call again later.
+   * A transition issued under another control authority or incarnation is never resent, and a Member under a restore
+   * recovery takes no ordinary command: both start `reconcile` automatically (fence and gather only; decisions stay
+   * with `resolve` unless the views are unambiguous).
+   */
+  async advance(runId) {
+    for (; ; ) {
+      const r = await this.commit((runs) => plain(Object.hasOwn(runs, runId) ? runs[runId] : void 0));
+      if (!r) throw new IllegalArgumentError(`unknown run ${runId}`);
+      const identity = await this.identity();
+      const issuedUnder = r.pending?.identity ?? r.recovery?.identity;
+      if (identity && issuedUnder && !sameIdentity(identity, issuedUnder)) {
+        const id2 = ("control-" + String(identity.incarnation ?? "unknown")).replace(/[^a-zA-Z0-9._:-]/g, "-").slice(0, 90);
+        return this.reconcile(`auto-${id2}`, runId, id2);
+      }
+      if (r.recovery?.stage === "required" || r.recovery?.stage === "review") return viewOf(r);
+      if (r.recovery?.stage === "gathering") {
+        if (await this.gather(r) === "again") continue;
+        return await this.status(runId);
+      }
+      const p = r.pending;
+      if (!p) {
+        if ((r.schedules ?? []).some((x) => x.at <= this.now())) {
+          await this.dueSchedules(runId);
+          return await this.status(runId);
+        }
+        return viewOf(r);
+      }
+      for (const spaceId of r.spec.members) {
+        if (p.acks[spaceId]?.phase === "applied") continue;
+        const command = { runId, commandId: p.commandId, kind: p.kind, revision: p.revision, ...p.recoveryId ? { recoveryId: p.recoveryId } : {}, ...p.expect?.[spaceId] ? { expect: p.expect[spaceId] } : {} };
+        let ack, error;
+        try {
+          const member = this.o.member(spaceId);
+          ack = p.kind === "prepare" ? await member.prepare(r.spec, command) : await member.gate(command);
+          if (ack.spaceId !== spaceId || ack.runId !== runId || ack.revision !== p.revision || ack.commandId !== p.commandId || ack.kind !== p.kind) throw new TransactionError("ACK does not match the command");
+        } catch (e) {
+          ack = void 0;
+          error = String(e?.message ?? e).slice(0, 256);
+        }
+        await this.commit((runs) => {
+          const cur = runs[runId], q = cur.pending;
+          if (!q || q.commandId !== p.commandId) return;
+          if (ack) {
+            const tuple = cur.tuples[spaceId];
+            if (tuple && (tuple.incarnation !== ack.incarnation || tuple.authorityId !== ack.authorityId)) {
+              q.errors[spaceId] = "Member incarnation or authority changed; recovery review required";
+              return;
+            }
+            cur.tuples[spaceId] ??= { incarnation: ack.incarnation, authorityId: ack.authorityId };
+            q.acks[spaceId] = plain(ack);
+            delete q.errors[spaceId];
+          } else if (q.recoveryId && /review again|belongs to another command|under recovery/.test(error) && cur.recovery?.id === q.recoveryId) {
+            cur.recovery.partial = cur.spec.members.filter((m) => q.acks[m]?.phase === "applied");
+            cur.recovery.changed = { ...cur.recovery.changed ?? {}, [spaceId]: error };
+            cur.recovery.stage = "gathering";
+            cur.recovery.views = {};
+            delete cur.recovery.viewHash;
+            delete cur.recovery.decision;
+            delete cur.pending;
+          } else q.errors[spaceId] = error;
+        });
+        if (!await this.commit((runs) => runs[runId].pending?.commandId === p.commandId)) break;
+      }
+      const fenced = !p.recoveryId && (await this.commit((runs) => Object.values(runs[runId].pending?.errors ?? {}))).map((e) => /is under recovery ([a-zA-Z0-9._:-]+);/.exec(e)?.[1]).find(Boolean);
+      if (fenced) return this.reconcile(`auto-${fenced}`.slice(0, 96), runId, fenced);
+      const next = await this.commit((runs) => {
+        const cur = runs[runId], q = cur.pending;
+        if (!q || q.commandId !== p.commandId) return "again";
+        if (!cur.spec.members.every((m) => q.acks[m]?.phase === "applied")) return "wait";
+        const states = new Set(cur.spec.members.map((m) => q.acks[m].state));
+        if (states.size !== 1) {
+          q.errors["*"] = `Members confirmed different states: ${[...states].join(", ")}`;
+          return "wait";
+        }
+        cur.revision = q.revision;
+        cur.state = [...states][0];
+        delete cur.pending;
+        if (q.recoveryId && cur.recovery?.id === q.recoveryId) {
+          cur.resolved ??= [];
+          cur.resolved.push({ id: q.commandId, decision: cur.recovery.decision?.decision ?? (q.kind === "stop" ? "stop" : "pause"), auto: !!cur.recovery.decision?.auto });
+          if (cur.resolved.length > 32) cur.resolved.splice(0, cur.resolved.length - 32);
+          delete cur.recovery;
+        }
+        if (q.kind === "prepare") cur.pending = issue(cur, { commandId: `${q.commandId}:release`, kind: "release", revision: q.revision + 1, acks: {}, errors: {}, ...q.identity ? { identity: q.identity } : {} });
+        if (q.then === "resume") cur.pending = issue(cur, { commandId: `${q.commandId}:resume`, kind: "resume", revision: q.revision + 1, acks: {}, errors: {}, ...q.identity ? { identity: q.identity } : {} });
+        return cur.pending ? "again" : "done";
+      });
+      if (next !== "again") return await this.status(runId);
+    }
+  }
+  async status(runId) {
+    return this.commit((runs) => Object.hasOwn(runs, runId) ? viewOf(runs[runId]) : null);
+  }
+  /**
+   * Plan preview (dry run) of a start or transition: whether it would be accepted now and with which revision.
+   * Nothing is journaled or sent; the real command can still be refused if the state changes meanwhile.
+   */
+  async preview(kind2, runId, spec) {
+    try {
+      if (kind2 === "start") validate2(spec);
+    } catch (e) {
+      return { allowed: false, reason: e.message };
+    }
+    const view3 = await this.status(runId);
+    if (kind2 === "start") return view3 ? { allowed: false, reason: `run ${runId} exists (${view3.state})`, state: view3.state } : { allowed: true, revision: 1 };
+    if (!view3) return { allowed: false, reason: `unknown run ${runId}` };
+    if (view3.recovery) return { allowed: false, reason: `run is under recovery ${view3.recovery.id}`, state: view3.state };
+    const supersede = kind2 === "stop" && (view3.pending?.kind === "prepare" || view3.pending?.kind === "release");
+    if (view3.pending && !supersede) return { allowed: false, reason: `still applying ${view3.pending.kind} at revision ${view3.pending.revision}`, state: view3.state };
+    const from = { pause: ["running"], resume: ["paused"], stop: ["preparing", "running", "paused"] }[kind2];
+    const confirmed = view3.pending ? "preparing" : view3.state;
+    if (!from.includes(confirmed)) return { allowed: false, reason: `cannot ${kind2} while ${view3.state}`, state: view3.state };
+    return { allowed: true, revision: (view3.pending?.revision ?? view3.revision) + 1, state: view3.state };
+  }
+  /** The newest runs (at most `limit`), for overviews such as the mobile Spaces page. */
+  async list(limit = 50) {
+    return this.commit((runs) => Object.values(runs).sort((a, b) => b.at - a.at).slice(0, Math.max(1, Math.min(limit, 200))).map(viewOf));
+  }
+  /** Runs with work left for the server-side loop: a transition waiting for ACKs or a recovery gathering views. */
+  async pending() {
+    const now = this.now();
+    return this.commit((runs) => Object.values(runs).filter((r) => r.pending || r.recovery?.stage === "gathering" || (r.schedules ?? []).some((x) => x.at <= now)).map((r) => r.spec.runId));
+  }
+  /**
+   * Schedules a pause or resume (e.g. a maintenance window). At its time the server loop issues it as an ordinary
+   * journaled command with the schedule ID as command ID; a schedule that is not applicable then is dropped and
+   * remembered as skipped. `cancel: true` removes it.
+   */
+  async schedule(commandId, runId, o) {
+    if (!ID.test(commandId) || !["pause", "resume"].includes(o?.kind) || !Number.isSafeInteger(o.at)) throw new IllegalArgumentError("a schedule needs a command ID, pause or resume and a time");
+    return this.commit((runs) => {
+      const r = Object.hasOwn(runs, runId) ? runs[runId] : void 0;
+      if (!r) throw new IllegalArgumentError(`unknown run ${runId}`);
+      r.schedules ??= [];
+      if (o.cancel) r.schedules = r.schedules.filter((x) => x.id !== commandId);
+      else if (!r.schedules.some((x) => x.id === commandId)) {
+        if (r.schedules.length >= 16) throw new ResourceExhausted("at most 16 schedules per run");
+        r.schedules.push({ id: commandId, kind: o.kind, at: o.at });
+        r.schedules.sort((a, b) => a.at - b.at);
+      }
+      return { runId, schedules: plain(r.schedules) };
+    });
+  }
+  /** Issues due schedules (called by the server loop through `advance`). */
+  async dueSchedules(runId) {
+    const now = this.now();
+    const due = await this.commit((runs) => {
+      const r = runs[runId];
+      return r && !r.pending && !r.recovery ? plain((r.schedules ?? []).filter((x) => x.at <= now)) : [];
+    });
+    for (const s of due) {
+      await this.commit((runs) => {
+        const r = runs[runId];
+        r.schedules = (r.schedules ?? []).filter((x) => x.id !== s.id);
+      });
+      try {
+        await this.transition(s.id, runId, s.kind);
+      } catch (e) {
+        if (!(e instanceof IllegalArgumentError || e instanceof TransactionError)) throw e;
+      }
+      return;
+    }
+  }
+  /**
+   * Result export of a run: completeness against the manifest, missing tasks, a manifest hash and a result hash.
+   * A partial result is reported as such; the export never changes the run.
+   */
+  async export(runId) {
+    const view3 = await this.status(runId);
+    if (!view3) throw new IllegalArgumentError(`unknown run ${runId}`);
+    const spec = await this.commit((runs) => plain(runs[runId].spec));
+    const exporter = this.o.exporters?.[spec.kind];
+    if (!exporter || !this.o.space) throw new IllegalArgumentError(`no exporter for run kind ${spec.kind}`);
+    const r = await exporter(spec, this.o.space);
+    return { runId, kind: spec.kind, state: view3.state, manifestHash: hashOf({ runId, kind: spec.kind, config: spec.config, members: spec.members }), ...r, missing: r.missing.slice(0, 50) };
+  }
+};
+function localRunMember(host, ctx, spaceId, prepare, now = Date.now) {
+  const gate = (command) => host.commit(async (tx) => applyRunGate(await spaceDoc(tx, spaceId, now()), now(), command), ctx);
+  return {
+    spaceId,
+    gate,
+    recover: (runId, recoveryId) => host.commit(async (tx) => recoverRunGate(await spaceDoc(tx, spaceId, now()), now(), { runId, recoveryId }), ctx),
+    async prepare(run, command) {
+      const [ack, open2] = await host.commit(async (tx) => {
+        const s = await spaceDoc(tx, spaceId, now()), ack2 = applyRunGate(s, now(), command);
+        return [ack2, runGateView(s, run.runId)?.state === "preparing"];
+      }, ctx);
+      if (open2) await prepare(run, spaceId);
+      return ack;
+    }
+  };
+}
+function runCommands(runs) {
+  const wrap = (f) => async (id2, args) => {
+    try {
+      return await f(id2, args);
+    } catch (e) {
+      if (e instanceof IllegalArgumentError || e instanceof TransactionError || e instanceof LimitError) return { phase: "failed", error: e.message };
+      throw e;
+    }
+  };
+  const run = (args) => String(args.runId ?? "");
+  const or = (kind2, f) => async (id2, a) => a.dryRun === true ? { dryRun: true, ...await runs.preview(kind2, run(a), kind2 === "start" ? { runId: run(a), kind: String(a.kind ?? ""), config: a.config ?? null, members: a.members } : void 0) } : wrap(f)(id2, a);
+  return {
+    startRun: or("start", (id2, a) => runs.start(id2, { runId: run(a), kind: String(a.kind ?? ""), config: a.config ?? null, members: a.members })),
+    pauseRun: or("pause", (id2, a) => runs.pause(id2, run(a))),
+    resumeRun: or("resume", (id2, a) => runs.resume(id2, run(a))),
+    stopRun: or("stop", (id2, a) => runs.stop(id2, run(a))),
+    reconcileRun: wrap((id2, a) => runs.reconcile(id2, run(a), String(a.recoveryId ?? ""), a.members ? { kind: String(a.kind ?? ""), members: a.members } : void 0)),
+    resolveRunRecovery: wrap((id2, a) => runs.resolve(id2, run(a), { expectedViewHash: String(a.expectedViewHash ?? ""), decision: a.decision })),
+    // Read-only views for admins; they change nothing.
+    listRuns: async (_id, a) => await runs.list(Number(a.limit ?? 50)),
+    runStatus: async (_id, a) => await runs.status(run(a)) ?? { phase: "failed", error: `unknown run ${run(a)}` },
+    scheduleRun: wrap(async (id2, a) => await runs.schedule(String(a.scheduleId ?? id2), run(a), { kind: a.kind, at: Number(a.at), cancel: a.cancel === true })),
+    exportRun: wrap(async (_id, a) => await runs.export(run(a)))
+  };
+}
+
+// src/workers.ts
+init_canonical();
+init_client();
+init_grants();
+init_spaces();
+init_core();
+import { defineDoc as defineDoc5 } from "@earendil-works/pi-durable";
+import { createHash as createHash14 } from "node:crypto";
+var ID2 = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
+var MAX_COUNT = 64;
+var MAX_PER_HOST = 32;
+var MAX_ASSIGNMENTS = 1024;
+var MAX_COMMANDS2 = 1024;
+var bytes5 = (v) => Buffer.from("pi-spaces/worker-assignments/v1\n" + canonicalJson(v));
+var hashOf2 = (v) => createHash14("sha256").update(canonicalJson(v)).digest("hex");
+function verifyWorkers(t, pin) {
+  if (!t || typeof t !== "object" || t.issuer !== pin.issuer || t.algorithm !== pin.algorithm || typeof t.signature !== "string" || !verifyDetached(pin.algorithm, pin.publicKey, bytes5(t.value), t.signature)) throw new PermissionError("invalid worker assignment signature");
+  return plain(t.value);
+}
+var WorkerJournal = defineDoc5({
+  kind: "pi-spaces.worker-assignments",
+  version: 1,
+  scope: "session",
+  initial: () => ({ generation: 0, assignments: {}, commands: {} })
+});
+var WorkerAssignments = class {
+  o;
+  constructor(o) {
+    this.o = o;
+  }
+  /** count 0 stops every worker of the assignment after its current task; the assignment stays as the stop instruction. */
+  async set(commandId, a) {
+    if (!ID2.test(commandId) || !a || ![a.assignmentId, a.hostId, a.kind, a.targetSpace].every((v) => typeof v === "string" && ID2.test(v)) || a.runId !== void 0 && !ID2.test(a.runId) || !Number.isSafeInteger(a.count) || a.count < 0 || a.count > MAX_COUNT) throw new IllegalArgumentError(`a worker assignment needs IDs, a kind, a target Space and a count 0..${MAX_COUNT}`);
+    const input = { assignmentId: a.assignmentId, hostId: a.hostId, kind: a.kind, targetSpace: a.targetSpace, count: a.count, ...a.runId !== void 0 ? { runId: a.runId } : {} };
+    const hash9 = hashOf2(input);
+    return this.o.host.commit(async (tx) => {
+      const d = await tx.doc(WorkerJournal);
+      const old = d.commands[commandId];
+      if (old) {
+        if (old.hash !== hash9) throw new IllegalArgumentError("command ID was used for another worker assignment");
+        return plain(d.assignments[a.assignmentId] ?? { ...input, generation: old.generation });
+      }
+      const prior = d.assignments[a.assignmentId];
+      if (prior && prior.hostId !== a.hostId) throw new RunGateConflict("an assignment keeps its host; stop it and create another");
+      if (!prior && (Object.keys(d.assignments).length >= MAX_ASSIGNMENTS || Object.values(d.assignments).filter((x) => x.hostId === a.hostId).length >= MAX_PER_HOST)) throw new ResourceExhausted("worker assignment directory is full");
+      if (Object.keys(d.commands).length >= MAX_COMMANDS2) throw new ResourceExhausted("worker command history is full");
+      d.generation++;
+      d.assignments[a.assignmentId] = { ...input, generation: d.generation };
+      d.commands[commandId] = { hash: hash9, generation: d.generation };
+      return plain(d.assignments[a.assignmentId]);
+    }, this.o.ctx);
+  }
+  /** The signed list of one host. `hostId` must come from the authenticated connection, never from the request. */
+  async forHost(hostId) {
+    const d = await this.o.host.snapshot(WorkerJournal, this.o.ctx);
+    const incarnation = this.o.identity ? (await this.o.identity()).incarnation : null;
+    const value = { authorityId: this.o.authorityId, incarnation, hostId, generation: d?.generation ?? 0, assignments: Object.values(d?.assignments ?? {}).filter((a) => a.hostId === hostId).sort((x, y) => x.assignmentId.localeCompare(y.assignmentId)) };
+    return { value, issuer: this.o.peerId, algorithm: this.o.signer.algorithm, signature: Buffer.from(await this.o.signer.sign(bytes5(value))).toString("base64") };
+  }
+  async list() {
+    const d = await this.o.host.snapshot(WorkerJournal, this.o.ctx);
+    return { generation: d?.generation ?? 0, assignments: Object.values(d?.assignments ?? {}).map((a) => plain(a)) };
+  }
+};
+function appliedWorkers(control2, now) {
+  const out = {};
+  for (const e of list(control2, now, { type: "Capability" })) {
+    const f = e.fields, w = f.metrics?.workers;
+    if (typeof f.hostId === "string" && w && typeof w === "object" && (!out[f.hostId] || out[f.hostId].at < Number(f.at))) out[f.hostId] = { at: Number(f.at), workers: plain(w) };
+  }
+  return out;
+}
+var WorkerState = defineDoc5({
+  kind: "pi-spaces.worker-supervisor",
+  version: 1,
+  scope: "session",
+  initial: () => ({ authorityId: null, incarnation: null, generation: 0, assignments: [] })
+});
+var abortableSleep = (ms2, signal) => new Promise((resolve2) => {
+  if (signal.aborted) return resolve2();
+  const t = setTimeout(done, ms2);
+  function done() {
+    clearTimeout(t);
+    signal.removeEventListener("abort", done);
+    resolve2();
+  }
+  signal.addEventListener("abort", done, { once: true });
+});
+var WorkerSupervisor = class {
+  o;
+  running = /* @__PURE__ */ new Map();
+  rejected = /* @__PURE__ */ new Map();
+  blocked;
+  fetchError;
+  constructor(o) {
+    this.o = o;
+  }
+  now() {
+    return (this.o.now ?? Date.now)();
+  }
+  /** One pass: fetch and verify the host's list, persist an acceptable one, then scale the loops to it. */
+  async reconcile() {
+    let list2;
+    try {
+      list2 = verifyWorkers(await this.o.fetch(), this.o.controllerPin);
+      if (list2.hostId !== this.o.hostId || list2.authorityId !== this.o.authorityId) throw new PermissionError("worker list belongs to another host or authority");
+      if (!Array.isArray(list2.assignments) || list2.assignments.some((a) => a.hostId !== this.o.hostId)) throw new PermissionError("worker list contains another host's assignment");
+      this.fetchError = void 0;
+    } catch (e) {
+      list2 = void 0;
+      this.fetchError = String(e?.message ?? e).slice(0, 256);
+    }
+    const accepted = await this.o.host.commit(async (tx) => {
+      const d = await tx.doc(WorkerState);
+      if (list2) {
+        const known = d.generation > 0;
+        if (known && (d.authorityId !== list2.authorityId || d.incarnation !== list2.incarnation)) this.blocked = `control identity changed (${d.incarnation} -> ${list2.incarnation}); accept it explicitly with acceptControlIdentity`;
+        else {
+          this.blocked = void 0;
+          if (!known || list2.generation > d.generation) {
+            d.authorityId = list2.authorityId;
+            d.incarnation = list2.incarnation;
+            d.generation = list2.generation;
+            d.assignments = plain(list2.assignments);
+          }
+        }
+      }
+      return plain(d);
+    }, this.o.ctx);
+    await this.apply(accepted.assignments);
+    return this.summary(accepted);
+  }
+  /** After a verified Control restore: the next list of this identity is accepted although its generation restarted. */
+  async acceptControlIdentity(incarnation) {
+    await this.o.host.commit(async (tx) => {
+      const d = await tx.doc(WorkerState);
+      d.incarnation = incarnation;
+      d.generation = 0;
+    }, this.o.ctx);
+    this.blocked = void 0;
+  }
+  async apply(specs) {
+    const local = new Set((await listSpaces(this.o.host, this.o.ctx)).map((i) => i.spaceId));
+    const wanted = new Map(specs.map((s) => [s.assignmentId, s]));
+    this.rejected.clear();
+    for (const [id2, r] of this.running) {
+      if (!wanted.has(id2)) {
+        r.spec = { ...r.spec, count: 0 };
+        this.scale(r, 0);
+      }
+      if (!wanted.has(id2) && !r.loops.length && !r.stopping.length) this.running.delete(id2);
+    }
+    for (const spec of specs) {
+      const kind2 = Object.hasOwn(this.o.kinds, spec.kind) ? this.o.kinds[spec.kind] : void 0;
+      const reason = !kind2 ? `no registered worker kind ${spec.kind}` : !local.has(spec.targetSpace) ? `target Space ${spec.targetSpace} is not on this host` : kind2.requiresRun && !spec.runId ? `worker kind ${spec.kind} needs a runId` : void 0;
+      let r = this.running.get(spec.assignmentId);
+      if (reason) {
+        this.rejected.set(spec.assignmentId, reason);
+        if (r) this.scale(r, 0);
+        continue;
+      }
+      const old = r;
+      if (r && (r.spec.kind !== spec.kind || r.spec.targetSpace !== spec.targetSpace || r.spec.runId !== spec.runId)) {
+        this.scale(r, 0);
+        r = void 0;
+      }
+      if (!r) {
+        r = { spec, loops: [], stopping: old?.stopping ?? [], tasks: 0, errors: 0 };
+        this.running.set(spec.assignmentId, r);
+      }
+      r.spec = spec;
+      this.scale(r, spec.count);
+    }
+  }
+  scale(r, count2) {
+    while (r.loops.length > count2) {
+      const l = r.loops.pop(), list2 = r.stopping;
+      l.ctrl.abort();
+      list2.push(l);
+      void l.done.finally(() => {
+        const i = list2.indexOf(l);
+        if (i >= 0) list2.splice(i, 1);
+      });
+    }
+    while (r.loops.length < count2) {
+      const ctrl = new AbortController(), loop = { ctrl, done: Promise.resolve() };
+      loop.done = this.loop(r, ctrl.signal);
+      r.loops.push(loop);
+    }
+  }
+  /** Stop is checked between steps (a task is never cut off); a wait for work is interrupted at once. */
+  async loop(r, signal) {
+    const kind2 = this.o.kinds[r.spec.kind], spec = r.spec;
+    const space = (this.o.space ?? ((id2) => new PiSpaces(this.o.host, this.o.ctx, this.o.now, void 0, void 0, { space: id2 })))(spec.targetSpace);
+    const sleep = this.o.sleep ?? abortableSleep, { minMs, maxMs } = this.o.backoff ?? { minMs: 100, maxMs: 5e3 };
+    let delay = 0;
+    while (!signal.aborted) {
+      try {
+        if (await kind2.step({ space, spaceId: spec.targetSpace, ...spec.runId ? { runId: spec.runId } : {}, signal })) {
+          r.tasks++;
+          delay = 0;
+          await new Promise((res) => setImmediate(res));
+          continue;
+        }
+      } catch (e) {
+        r.errors++;
+        r.lastError = String(e?.message ?? e).slice(0, 256);
+      }
+      delay = Math.min(maxMs, Math.max(minMs, delay * 2));
+      await sleep(delay, signal);
+    }
+  }
+  summary(state) {
+    const assignments = {};
+    for (const [id2, r] of this.running) assignments[id2] = { kind: r.spec.kind, targetSpace: r.spec.targetSpace, ...r.spec.runId ? { runId: r.spec.runId } : {}, desired: r.spec.count, active: r.loops.length, stopping: r.stopping.length, tasks: r.tasks, errors: r.errors, ...r.lastError ? { lastError: r.lastError } : {} };
+    for (const [id2, reason] of this.rejected) assignments[id2] = { ...assignments[id2] ?? { kind: "?", targetSpace: "?", desired: 0, active: 0, stopping: 0, tasks: 0, errors: 0 }, rejected: reason };
+    return { authorityId: state?.authorityId ?? null, incarnation: state?.incarnation ?? null, generation: state?.generation ?? 0, at: this.now(), ...this.blocked ? { blocked: this.blocked } : {}, ...this.fetchError ? { fetchError: this.fetchError } : {}, assignments };
+  }
+  /** Stops every loop after its current step and waits for them. */
+  async stop() {
+    const all = [...this.running.values()].flatMap((r) => {
+      this.scale(r, 0);
+      return r.stopping.map((l) => l.done);
+    });
+    await Promise.allSettled(all);
+    this.running.clear();
+  }
+};
+function startWorkerSupervisor(s, o = {}) {
+  let stopped = false, timer, active2 = Promise.resolve();
+  const run = () => {
+    active2 = s.reconcile().then((sum) => o.publish?.(sum)).catch(o.onError ?? (() => {
+    })).then(() => {
+      if (!stopped) timer = setTimeout(run, o.intervalMs ?? 15e3);
+    });
+  };
+  run();
+  return async () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    await active2;
+    await s.stop();
+  };
+}
+function workerCommands(w, applied) {
+  return {
+    /** Read-only: desired assignments and the last applied state per host (with its age). */
+    async listWorkers() {
+      const d = await w.list();
+      return { ...d, applied: applied ? await applied() : {} };
+    },
+    async setWorkers(id2, a) {
+      try {
+        return await w.set(id2, { assignmentId: String(a.assignmentId ?? ""), hostId: String(a.hostId ?? ""), kind: String(a.kind ?? ""), targetSpace: String(a.targetSpace ?? ""), count: Number(a.count), ...a.runId !== void 0 && a.runId !== null ? { runId: String(a.runId) } : {} });
+      } catch (e) {
+        if (e instanceof IllegalArgumentError || e instanceof TransactionError || e instanceof LimitError) return { phase: "failed", error: e.message };
+        throw e;
+      }
+    }
+  };
+}
+
+// src/runtime.ts
+init_enroll();
+
+// src/deployment.ts
+init_canonical();
+import { defineDoc as defineDoc6 } from "@earendil-works/pi-durable";
+import { createHash as createHash15 } from "node:crypto";
+init_spaces();
+init_core();
+var ALIAS2 = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var ID3 = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
+var SECRET_KEY = /token|secret|password|passwd|private|apikey|api_key|bearer|seed|mnemonic/i;
+var hashOf3 = (v) => createHash15("sha256").update(canonicalJson(v)).digest("hex");
+var sub = (...parts) => "dep-" + hashOf3(parts).slice(0, 40);
+function validateDeployment(raw) {
+  const errors = [];
+  const scan = (v, path) => {
+    if (typeof v === "string" && (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(v) || /^(sk|pk|ghp|xox[bp])[-_][A-Za-z0-9]{16,}/.test(v))) errors.push(`${path}: looks like a secret; keep credentials in the host secret store`);
+    if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) {
+      if (SECRET_KEY.test(k)) errors.push(`${path}.${k}: secret fields are not allowed in the config`);
+      scan(x, `${path}.${k}`);
+    }
+  };
+  scan(raw, "$");
+  const c = raw;
+  if (!c || typeof c !== "object" || Array.isArray(c)) return { errors: ["config must be a JSON object"] };
+  const known = ["schemaVersion", "deployment", "configRevision", "coordinator", "hosts", "spaces", "routing", "workers", "mobile", "credentials"];
+  for (const k of Object.keys(c)) if (!known.includes(k)) errors.push(`unknown field ${k}`);
+  if (c.schemaVersion !== 1) errors.push("schemaVersion must be 1");
+  if (typeof c.deployment !== "string" || !ALIAS2.test(c.deployment)) errors.push("deployment: lower-case alias required");
+  if (c.configRevision !== void 0 && (!Number.isSafeInteger(c.configRevision) || c.configRevision < 1)) errors.push("configRevision must be a positive integer");
+  const hosts2 = Array.isArray(c.hosts) ? c.hosts : (errors.push("hosts must be a list"), []);
+  const spaces2 = Array.isArray(c.spaces) ? c.spaces : (errors.push("spaces must be a list"), []);
+  const workers = c.workers === void 0 ? [] : Array.isArray(c.workers) ? c.workers : (errors.push("workers must be a list"), []);
+  if (hosts2.length > 64 || spaces2.length > 128 || workers.length > 128) errors.push("at most 64 hosts, 128 Spaces and 128 workers");
+  const unique = (list2, what) => {
+    const seen = /* @__PURE__ */ new Set();
+    for (const x of list2) {
+      if (!x || typeof x.alias !== "string" || !ALIAS2.test(x.alias)) errors.push(`${what}: invalid alias ${JSON.stringify(x?.alias)}`);
+      else if (seen.has(x.alias)) errors.push(`${what}: duplicate alias ${x.alias}`);
+      else seen.add(x.alias);
+    }
+    return seen;
+  };
+  const hostAliases = unique(hosts2, "hosts"), spaceAliases = unique(spaces2, "spaces");
+  unique(workers, "workers");
+  for (const h of hosts2) if (h && !["coordinator", "member-host"].includes(h.role)) errors.push(`hosts.${h.alias}: role must be coordinator or member-host`);
+  if (!hostAliases.has(c.coordinator)) errors.push("coordinator must name a host");
+  else if (hosts2.find((h) => h.alias === c.coordinator)?.role !== "coordinator" || hosts2.filter((h) => h.role === "coordinator").length !== 1) errors.push("exactly the coordinator host has role coordinator");
+  for (const s of spaces2) {
+    if (!s) continue;
+    if (!hostAliases.has(s.host)) errors.push(`spaces.${s.alias}: unknown host ${s.host}`);
+    if (!["control", "data"].includes(s.purpose)) errors.push(`spaces.${s.alias}: purpose must be control or data`);
+    if (s.purpose === "control" && s.host !== c.coordinator) errors.push(`spaces.${s.alias}: the control Space lives on the coordinator`);
+    if (s.maxSpaceBytes !== void 0 && (!Number.isSafeInteger(s.maxSpaceBytes) || s.maxSpaceBytes < 1024)) errors.push(`spaces.${s.alias}: maxSpaceBytes must be an integer of at least 1024`);
+    if (s.limits !== void 0 && (typeof s.limits !== "object" || Array.isArray(s.limits))) errors.push(`spaces.${s.alias}: limits must be an object`);
+  }
+  if (spaces2.filter((s) => s?.purpose === "control").length !== 1) errors.push("exactly one control Space is required");
+  const dataSpaces = new Set(spaces2.filter((s) => s?.purpose === "data").map((s) => s.alias));
+  if (c.routing !== void 0) {
+    const r = c.routing;
+    if (r.profile === "single-member-sieve") {
+      if (!r.member || !dataSpaces.has(r.member)) errors.push("routing.member must name a data Space");
+    } else if (r.profile === "sieve-hrw-by-taskid") {
+      if (!Array.isArray(r.members) || r.members.length < 2 || !r.members.every((m) => dataSpaces.has(m))) errors.push("routing.members must name at least two data Spaces");
+    } else errors.push("routing.profile must be single-member-sieve or sieve-hrw-by-taskid");
+  }
+  for (const w of workers) {
+    if (!w) continue;
+    if (!hostAliases.has(w.host)) errors.push(`workers.${w.alias}: unknown host ${w.host}`);
+    const target = spaces2.find((s) => s?.alias === w.targetSpace);
+    if (!target || target.purpose !== "data") errors.push(`workers.${w.alias}: targetSpace must name a data Space`);
+    else if (target.host !== w.host) errors.push(`workers.${w.alias}: workers run on the host of their target Space`);
+    if (typeof w.kind !== "string" || !ID3.test(w.kind)) errors.push(`workers.${w.alias}: invalid kind`);
+    if (!Number.isSafeInteger(w.count) || w.count < 0 || w.count > 64) errors.push(`workers.${w.alias}: count must be 0..64`);
+    if (w.runId !== void 0 && !ID3.test(w.runId)) errors.push(`workers.${w.alias}: invalid runId`);
+  }
+  if (c.credentials !== void 0 && c.credentials.source !== "host-secret-store") errors.push("credentials.source must be host-secret-store");
+  if (errors.length) return { errors };
+  const config = plain(c);
+  return { config, configHash: hashOf3(config), errors };
+}
+var DeploymentState = defineDoc6({
+  kind: "pi-spaces.deployment",
+  version: 1,
+  scope: "session",
+  initial: () => ({ hosts: {}, spaces: {}, jobs: {} })
+});
+var DeploymentController = class {
+  o;
+  constructor(o) {
+    this.o = o;
+  }
+  now() {
+    return (this.o.now ?? Date.now)();
+  }
+  state() {
+    return this.o.host.snapshot(DeploymentState, this.o.ctx).then((s) => plain(s ?? { hosts: {}, spaces: {}, jobs: {} }));
+  }
+  /** Binds a host alias to an enrolled hostId. An alias never silently moves to another host. */
+  async bindHost(alias, hostId) {
+    if (!ALIAS2.test(alias) || typeof hostId !== "string" || !ID3.test(hostId)) throw new IllegalArgumentError("bindHost needs an alias and a hostId");
+    return this.o.host.commit(async (tx) => {
+      const d = await tx.doc(DeploymentState), old = d.hosts[alias];
+      if (old && old !== hostId) throw new RunGateConflict(`host alias ${alias} is bound to ${old}`);
+      if (Object.entries(d.hosts).some(([a, id2]) => id2 === hostId && a !== alias)) throw new RunGateConflict(`host ${hostId} already has another alias`);
+      d.hosts[alias] = hostId;
+      return { alias, hostId };
+    }, this.o.ctx);
+  }
+  /** What apply would do, without any effect. */
+  async plan(raw) {
+    const v = validateDeployment(raw);
+    if (!v.config) return { deployment: String(raw?.deployment ?? "?"), configHash: "", ready: false, steps: v.errors.map((e, i) => ({ key: `config:${i}`, action: "validate", status: "conflict", detail: e })) };
+    const c = v.config, st = await this.state(), steps = [];
+    for (const h of c.hosts) {
+      const id2 = st.hosts[h.alias];
+      if (!id2) {
+        steps.push({ key: `host:${h.alias}`, action: "bind", status: "blocked", detail: "host alias is not bound to an enrolled host; enroll it, then bindHost" });
+        continue;
+      }
+      const s = await this.o.ports.hostStatus(id2).catch(() => ({ fresh: false }));
+      steps.push({ key: `host:${h.alias}`, action: "check", status: s.fresh ? "ok" : "blocked", detail: s.fresh ? `${id2} reports a fresh heartbeat` : `${id2} has no fresh Capability heartbeat` });
+    }
+    for (const s of c.spaces) {
+      const bound = st.spaces[s.alias];
+      if (s.purpose === "control") {
+        steps.push({ key: `space:${s.alias}`, action: "control", status: bound && bound.spaceId !== this.o.ports.controlSpaceId ? "conflict" : "reuse", detail: "the coordinator's control Space" });
+        continue;
+      }
+      if (bound && bound.host !== s.host) steps.push({ key: `space:${s.alias}`, action: "create", status: "conflict", detail: `alias is bound to ${bound.spaceId} on ${bound.host}; Spaces do not move hosts` });
+      else steps.push({ key: `space:${s.alias}`, action: "create", status: bound ? "reuse" : "create", detail: bound ? `existing ${bound.spaceId}, reused unchanged` : `new Space on ${s.host}` });
+    }
+    if (c.routing) steps.push({ key: "routing", action: "policy", status: "skip", detail: `profile ${c.routing.profile}: membership and policy are applied with addMember/setPolicy (not part of this bootstrap)` });
+    const assigned = this.o.ports.workers ? (await this.o.ports.workers.list()).assignments : [];
+    for (const w of c.workers ?? []) {
+      const key2 = `worker:${w.alias}`;
+      if (!this.o.ports.workers) {
+        steps.push({ key: key2, action: "register", status: "blocked", detail: "no worker assignment directory configured" });
+        continue;
+      }
+      const old = assigned.find((a) => a.assignmentId === `${c.deployment}.${w.alias}`), target = st.spaces[w.targetSpace]?.spaceId;
+      if (!old) steps.push({ key: key2, action: "register", status: "create", detail: `${w.kind} on ${w.host}, registered with count 0; startWorkers sets ${w.count}` });
+      else if (old.hostId === st.hosts[w.host] && old.kind === w.kind && old.targetSpace === target && old.runId === w.runId) steps.push({ key: key2, action: "register", status: "reuse", detail: `unchanged definition; current count ${old.count} is kept` });
+      else if (old.count > 0) steps.push({ key: key2, action: "register", status: "conflict", detail: `definition changed while ${old.count} workers run; stop them (count 0) first` });
+      else steps.push({ key: key2, action: "register", status: "create", detail: "stopped assignment gets the new definition with count 0" });
+    }
+    return { deployment: c.deployment, configHash: v.configHash, ready: !steps.some((s) => s.status === "blocked" || s.status === "conflict"), steps };
+  }
+  /**
+   * Applies a config once per deployment and config hash; a repeated apply resumes the same job. Steps use stable
+   * sub-request IDs, so an unknown outcome is resolved by repeating them. A blocked or conflicting plan changes nothing.
+   */
+  async apply(raw) {
+    const plan = await this.plan(raw);
+    const v = validateDeployment(raw);
+    if (!v.config) return { deployment: plan.deployment, configHash: "", state: "blocked", steps: {}, plan };
+    const c = v.config, key2 = c.deployment;
+    const job = await this.o.host.commit(async (tx) => {
+      const d = await tx.doc(DeploymentState), old = d.jobs[key2];
+      if (old && old.configHash !== v.configHash && old.state === "applying") throw new RunGateConflict(`deployment ${key2} is still applying another config; repeat it until it completes or blocks`);
+      if (!old || old.configHash !== v.configHash) {
+        if (Object.keys(d.jobs).length >= 64 && !old) throw new ResourceExhausted("deployment journal is full");
+        d.jobs[key2] = { deployment: key2, configHash: v.configHash, config: plain(c), state: "applying", steps: {}, at: this.now() };
+      }
+      return plain(d.jobs[key2]);
+    }, this.o.ctx);
+    if (job.state === "completed") return { deployment: key2, configHash: job.configHash, state: job.state, steps: job.steps };
+    if (!plan.ready) {
+      await this.record(key2, job.configHash, (d) => {
+        d.state = "blocked";
+      });
+      return { deployment: key2, configHash: job.configHash, state: "blocked", steps: job.steps, plan };
+    }
+    const st = await this.state();
+    for (const s of c.spaces) {
+      const step = `space:${s.alias}`;
+      if (job.steps[step]?.status === "done") continue;
+      if (s.purpose === "control") {
+        await this.space(key2, job.configHash, s.alias, s.host, this.o.ports.controlSpaceId, step);
+        continue;
+      }
+      const limits = { ...s.limits ?? {}, ...s.maxSpaceBytes ? { maxSpaceBytes: s.maxSpaceBytes } : {} };
+      const r = await this.o.ports.createSpace(sub(key2, job.configHash, "space", s.alias), { hostId: st.hosts[s.host], alias: s.alias, ...Object.keys(limits).length ? { limits } : {}, ...s.profiles ? { profiles: s.profiles } : {} });
+      if (r?.phase === "failed" || typeof r?.spaceId !== "string") {
+        await this.record(key2, job.configHash, (d) => {
+          d.steps[step] = { status: "failed", error: String(r?.error ?? "no spaceId").slice(0, 512) };
+          d.state = "blocked";
+        });
+        return this.view(key2);
+      }
+      await this.space(key2, job.configHash, s.alias, s.host, r.spaceId, step, r);
+    }
+    const bound = (await this.state()).spaces, assigned = (await this.o.ports.workers?.list())?.assignments ?? [];
+    for (const w of c.workers ?? []) {
+      const step = `worker:${w.alias}`;
+      if (job.steps[step]?.status === "done") continue;
+      const old = assigned.find((a) => a.assignmentId === `${key2}.${w.alias}`);
+      if (old && old.hostId === st.hosts[w.host] && old.kind === w.kind && old.targetSpace === bound[w.targetSpace].spaceId && old.runId === w.runId) {
+        await this.record(key2, job.configHash, (d) => {
+          d.steps[step] = { status: "done", result: old };
+        });
+        continue;
+      }
+      const spec = await this.o.ports.workers.set(sub(key2, job.configHash, "worker", w.alias), { assignmentId: `${key2}.${w.alias}`, hostId: st.hosts[w.host], kind: w.kind, targetSpace: bound[w.targetSpace].spaceId, count: 0, ...w.runId ? { runId: w.runId } : {} });
+      await this.record(key2, job.configHash, (d) => {
+        d.steps[step] = { status: "done", result: spec };
+      });
+    }
+    if (c.routing) await this.record(key2, job.configHash, (d) => {
+      d.steps.routing = { status: "skipped", error: "membership and policy are separate admin commands" };
+    });
+    await this.record(key2, job.configHash, (d) => {
+      d.state = "completed";
+    });
+    return this.view(key2);
+  }
+  async space(key2, hash9, alias, host, spaceId, step, result) {
+    await this.record(key2, hash9, (d, all) => {
+      const old = all.spaces[alias];
+      if (old && (old.spaceId !== spaceId || old.host !== host)) throw new RunGateConflict(`Space alias ${alias} is bound to ${old.spaceId}`);
+      all.spaces[alias] = { host, spaceId };
+      d.steps[step] = { status: "done", result: result ?? { spaceId } };
+    });
+  }
+  record(key2, hash9, f) {
+    return this.o.host.commit(async (tx) => {
+      const d = await tx.doc(DeploymentState), j = d.jobs[key2];
+      if (!j || j.configHash !== hash9) throw new RunGateConflict("deployment job changed");
+      f(j, d);
+    }, this.o.ctx);
+  }
+  async view(key2) {
+    const j = (await this.state()).jobs[key2];
+    return { deployment: key2, configHash: j.configHash, state: j.state, steps: j.steps };
+  }
+  /** Starts (or rescales) the registered workers of a completed deployment to their configured counts. */
+  async startWorkers(commandId, deployment) {
+    if (!ID3.test(commandId)) throw new IllegalArgumentError("invalid command ID");
+    const st = await this.state(), job = st.jobs[deployment];
+    if (!job || job.state !== "completed") throw new RunGateConflict(`deployment ${deployment} is not completed`);
+    const out = [];
+    for (const w of job.config.workers ?? []) {
+      const spec = await this.o.ports.workers.set(sub(commandId, w.alias), { assignmentId: `${deployment}.${w.alias}`, hostId: st.hosts[w.host], kind: w.kind, targetSpace: st.spaces[w.targetSpace].spaceId, count: w.count, ...w.runId ? { runId: w.runId } : {} });
+      out.push({ alias: w.alias, count: spec.count, generation: spec.generation });
+    }
+    return out;
+  }
+  /** The applied state for export and diff: bindings, last config per deployment and current worker counts. */
+  async export(deployment) {
+    const st = await this.state(), job = st.jobs[deployment];
+    const assigned = this.o.ports.workers ? (await this.o.ports.workers.list()).assignments : [];
+    const workers = (job?.config.workers ?? []).map((w) => ({ alias: w.alias, count: assigned.find((a) => a.assignmentId === `${deployment}.${w.alias}`)?.count ?? 0 }));
+    return { deployment, configHash: job?.configHash ?? null, state: job?.state ?? null, hosts: st.hosts, spaces: st.spaces, workers, config: job?.config ?? null };
+  }
+};
+function deploymentCommands(d) {
+  const wrap = (f) => async (id2, a) => {
+    try {
+      return await f(id2, a);
+    } catch (e) {
+      if (e instanceof IllegalArgumentError || e instanceof TransactionError || e instanceof LimitError) return { phase: "failed", error: e.message };
+      throw e;
+    }
+  };
+  return {
+    planDeployment: wrap((_id, a) => d.plan(a.config)),
+    applyDeployment: wrap((_id, a) => d.apply(a.config)),
+    bindHostAlias: wrap((_id, a) => d.bindHost(String(a.alias ?? ""), String(a.hostId ?? ""))),
+    startWorkers: wrap((id2, a) => d.startWorkers(id2, String(a.deployment ?? ""))),
+    exportDeployment: wrap((_id, a) => d.export(String(a.deployment ?? "")))
+  };
+}
+function capabilityHostStatus(host, ctx, controlSpaceId, now = Date.now) {
+  return async (hostId) => {
+    const s = await snapshotSpace(host, controlSpaceId, ctx), t = now();
+    const at = Math.max(-Infinity, ...s ? list(s, t, { type: "Capability", fields: { hostId } }).map((e) => Number(e.fields.at)) : []);
+    return Number.isFinite(at) ? { fresh: t - at < CAPABILITY_LEASE_MS, at } : { fresh: false };
+  };
+}
+
+// src/alerts.ts
+init_spaces();
+init_core();
+async function collectAlerts(o) {
+  const now = (o.now ?? Date.now)(), stale = o.staleMs ?? CAPABILITY_LEASE_MS, out = [];
+  for (const r of o.runs ? await o.runs.list(200) : []) {
+    const subject = r.runId;
+    if (r.state === "pauseIncomplete") out.push({ key: `run:${subject}:pauseIncomplete`, severity: "critical", source: "run", subject, message: `Pause unvollst\xE4ndig, fehlende ACKs: ${r.pending?.missing.join(", ") || "?"}` });
+    else if (r.state === "needsReview") out.push({ key: `run:${subject}:needsReview`, severity: "critical", source: "run", subject, message: `Recovery ${r.recovery?.id ?? "?"} wartet auf eine Admin-Entscheidung` });
+    else if (r.state === "reconciling") out.push({ key: `run:${subject}:reconciling`, severity: "warning", source: "run", subject, message: `Recovery ${r.recovery?.id ?? "?"} sammelt Member-St\xE4nde` });
+    if (r.pending && Object.keys(r.pending.errors).length && r.state !== "pauseIncomplete") out.push({ key: `run:${subject}:errors:${r.pending.revision}`, severity: "warning", source: "run", subject, message: `${r.pending.kind} r${r.pending.revision}: ${Object.entries(r.pending.errors).map(([m, e]) => `${m}: ${e}`).join("; ").slice(0, 300)}` });
+  }
+  const control2 = await snapshotSpace(o.host, o.controlSpaceId, o.ctx);
+  const applied = control2 ? appliedWorkers(control2, now) : {};
+  for (const a of o.workers ? (await o.workers.list()).assignments : []) {
+    const subject = a.assignmentId, report = applied[a.hostId], state = report?.workers.assignments?.[a.assignmentId];
+    if (a.count > 0 && (!report || now - report.at > stale)) {
+      out.push({ key: `worker:${subject}:stale`, severity: "warning", source: "worker", subject, message: `Host ${a.hostId} meldet seit ${report ? Math.round((now - report.at) / 1e3) + " s" : "jeher"} nichts; das beweist nicht, dass Worker beendet sind` });
+      continue;
+    }
+    if (!report) continue;
+    if (report.workers.blocked) out.push({ key: `worker:${a.hostId}:blocked`, severity: "critical", source: "worker", subject: a.hostId, message: report.workers.blocked });
+    if (state?.rejected) out.push({ key: `worker:${subject}:rejected`, severity: "critical", source: "worker", subject, message: state.rejected });
+    else if (report.workers.generation < a.generation) out.push({ key: `worker:${subject}:pending:${a.generation}`, severity: "warning", source: "worker", subject, message: `\xC4nderung (Generation ${a.generation}) von Host ${a.hostId} noch nicht \xFCbernommen` });
+    if (state?.errors && state.lastError) out.push({ key: `worker:${subject}:error`, severity: "warning", source: "worker", subject, message: `${state.errors} Fehler, zuletzt: ${state.lastError}` });
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const e of control2 ? list(control2, now, { type: "Capability" }) : []) {
+    const hostId = String(e.fields.hostId), at = Number(e.fields.at);
+    if (seen.has(hostId)) continue;
+    seen.add(hostId);
+    const fetchError = e.fields.metrics?.workers?.fetchError;
+    if (typeof fetchError === "string") out.push({ key: `host:${hostId}:fetch`, severity: "warning", source: "host", subject: hostId, message: `Zuweisungen nicht abrufbar: ${fetchError}` });
+    if (now - at > stale) out.push({ key: `host:${hostId}:stale`, severity: "warning", source: "host", subject: hostId, message: `letzter Heartbeat vor ${Math.round((now - at) / 1e3)} s` });
+  }
+  return out.sort((a, b) => a.severity === b.severity ? a.key.localeCompare(b.key) : a.severity === "critical" ? -1 : 1);
+}
+function startAlertMonitor(o) {
+  let known = /* @__PURE__ */ new Map(), stopped = false, timer, active2 = Promise.resolve();
+  const pass = async () => {
+    const current = new Map((await o.collect()).map((a) => [a.key, a]));
+    const raised = [...current.values()].filter((a) => !known.has(a.key)), resolved = [...known.values()].filter((a) => !current.has(a.key));
+    if (raised.length || resolved.length) await o.publish({ raised, resolved });
+    known = current;
+  };
+  const loop = () => {
+    active2 = pass().catch(o.onError ?? (() => {
+    })).then(() => {
+      if (!stopped) timer = setTimeout(loop, o.intervalMs ?? 3e4);
+    });
+  };
+  loop();
+  return { pass, stop: async () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    await active2;
+  } };
+}
+function webhookPublisher(url, o = {}) {
+  const u = new URL(url);
+  if (!["https:", "http:"].includes(u.protocol) || u.username || u.password) throw new IllegalArgumentError("webhook URL must be http(s) without credentials");
+  return async (change) => {
+    const lines = [...change.raised.map((a) => `${a.severity === "critical" ? "!!" : "!"} ${a.subject}: ${a.message}`), ...change.resolved.map((a) => `ok ${a.subject}: ${a.message}`)];
+    const critical = change.raised.some((a) => a.severity === "critical");
+    const res = await (o.fetch ?? fetch)(url, { method: "POST", body: lines.join("\n").slice(0, 4e3), headers: { "Content-Type": "text/plain; charset=utf-8", Title: o.title ?? "pi-spaces", Priority: critical ? "high" : "default" } });
+    if (!res.ok) throw new Error(`webhook answered ${res.status}`);
+  };
+}
+async function auditLog(host, ctx, controlSpaceId, o = {}) {
+  const s = await snapshotSpace(host, controlSpaceId, ctx);
+  if (!s) return [];
+  return list(s, (o.now ?? Date.now)(), { type: "Result" }).map((e) => e.fields).map((f) => ({ commandId: String(f.commandId), kind: String(f.kind), state: String(f.state), requestedBy: String(f.requestedBy ?? ""), at: Number(f.at), ...f.error || f.result?.error ? { error: String(f.error ?? f.result.error).slice(0, 300) } : {} })).sort((a, b) => b.at - a.at).slice(0, Math.max(1, Math.min(o.limit ?? 100, 500)));
+}
+
 // src/runtime.ts
 init_rotation();
 init_service();
@@ -8195,36 +9516,36 @@ var Supervisor = class {
         const f = plain(taken.entry.fields);
         const requestedBy = peerOf(String(taken.entry.owner ?? ""));
         const commandId = str2(f.commandId) ?? taken.entry.id;
-        const kind = str2(f.kind) ?? "?";
-        if (list(s, now, { type: "Result", fields: { commandId } }).length > 0) return { commandId, kind, state: "duplicate", requestedBy };
+        const kind2 = str2(f.kind) ?? "?";
+        if (list(s, now, { type: "Result", fields: { commandId } }).length > 0) return { commandId, kind: kind2, state: "duplicate", requestedBy };
         const finish2 = (state, extra) => {
-          const res = { commandId, kind, state, ...extra, requestedBy, at: now };
+          const res = { commandId, kind: kind2, state, ...extra, requestedBy, at: now };
           write(s, now, { type: "Result", fields: res }, null, RESULT_RETENTION_MS);
-          return { commandId, kind, state, requestedBy, ...extra.error ? { error: extra.error } : {} };
+          return { commandId, kind: kind2, state, requestedBy, ...extra.error ? { error: extra.error } : {} };
         };
-        if (!requestedBy || kind !== "rotateKey" && !hasAdminKey(s, now, requestedBy)) return finish2("failed", { error: "the writer of this command holds no active admin key" });
+        if (!requestedBy || kind2 !== "rotateKey" && !hasAdminKey(s, now, requestedBy)) return finish2("failed", { error: "the writer of this command holds no active admin key" });
         const args = f.args && typeof f.args === "object" && !Array.isArray(f.args) ? f.args : {};
         try {
-          if (this.o.asyncCommands?.[kind]) {
-            const jobs = await tx.doc(SupervisorJobs, id2, null), hash8 = canonicalJson([kind, args, requestedBy]);
+          if (this.o.asyncCommands?.[kind2]) {
+            const jobs = await tx.doc(SupervisorJobs, id2, null), hash9 = canonicalJson([kind2, args, requestedBy]);
             const old = jobs.jobs[commandId];
-            if (old && old.hash !== hash8) throw new IllegalArgumentError("command ID changed remote arguments");
+            if (old && old.hash !== hash9) throw new IllegalArgumentError("command ID changed remote arguments");
             if (!old && Object.keys(jobs.jobs).length >= 64) throw new ResourceExhausted("remote command admission full");
-            jobs.jobs[commandId] = { commandId, kind, args: plain(args), requestedBy, hash: hash8 };
-            return { commandId, kind, state: "applying", requestedBy, async: true };
+            jobs.jobs[commandId] = { commandId, kind: kind2, args: plain(args), requestedBy, hash: hash9 };
+            return { commandId, kind: kind2, state: "applying", requestedBy, async: true };
           }
-          if (this.o.commands?.[kind]) return finish2("completed", { result: await this.o.commands[kind](tx, args, requestedBy) });
-          if (kind === "rotateKey") return finish2("completed", { result: rotateKeyIn(s, now, { challenge: args.challenge, oldSignature: String(args.oldSignature ?? ""), newSignature: String(args.newSignature ?? "") }, requestedBy) });
-          if (kind === "createEnroll") {
+          if (this.o.commands?.[kind2]) return finish2("completed", { result: await this.o.commands[kind2](tx, args, requestedBy) });
+          if (kind2 === "rotateKey") return finish2("completed", { result: rotateKeyIn(s, now, { challenge: args.challenge, oldSignature: String(args.oldSignature ?? ""), newSignature: String(args.newSignature ?? "") }, requestedBy) });
+          if (kind2 === "createEnroll") {
             const rec = createEnrollIn(s, now, { tokenHash: String(args.tokenHash ?? ""), role: String(args.role ?? ""), allowedPeerId: String(args.allowedPeerId ?? ""), scope: Array.isArray(args.scope) ? args.scope : [], ...typeof args.ttlMs === "number" ? { ttlMs: args.ttlMs } : {} });
             return finish2("completed", { result: { tokenHash: rec.tokenHash, role: rec.role, allowedPeerId: rec.allowedPeerId, expiresAt: rec.expiresAt } });
           }
-          if (kind === "revokePeer") {
+          if (kind2 === "revokePeer") {
             const peerId = str2(args.peerId);
             if (!peerId) throw new IllegalArgumentError("revokePeer needs a peerId");
             return finish2("completed", { result: { peerId, revoked: revokePeerKeysIn(s, now, peerId) } });
           }
-          return finish2("failed", { error: `unknown command ${kind}` });
+          return finish2("failed", { error: `unknown command ${kind2}` });
         } catch (e) {
           if (e instanceof ResourceExhausted || e instanceof LimitError) throw e;
           return finish2("failed", { error: e instanceof Error ? e.message : String(e) });
@@ -8385,11 +9706,20 @@ async function startFederationHost(host, ctx, o) {
       return auth;
     }
   });
-  const noticeService = o.delegation || o.membership ? { handle: async (c, conn) => {
-    if (!["epochNotice", "membershipInstruction"].includes(c?.method)) return service.handle(c, conn);
+  const notices = ["epochNotice", "membershipInstruction", "runGateInstruction", "spaceLifecycleInstruction"];
+  const noticeService = o.delegation || o.membership || o.runGates || o.spaceLifecycle ? { handle: async (c, conn) => {
+    if (!notices.includes(c?.method)) return service.handle(c, conn);
     try {
       const id2 = await identity.authenticate(conn);
       if (!conn.state?.proof || !id2?.roles.some((r) => ["router", "host", "admin"].includes(r))) throw new Error("epoch notice requires proven service peer");
+      if (c.method === "spaceLifecycleInstruction") {
+        if (!o.spaceLifecycle) throw new Error("space lifecycle not configured");
+        return { ok: true, result: await o.spaceLifecycle.apply(c.args?.instruction) };
+      }
+      if (c.method === "runGateInstruction") {
+        if (!o.runGates) throw new Error("run gates not configured");
+        return { ok: true, result: await o.runGates.apply(c.args?.instruction) };
+      }
       if (c.method === "membershipInstruction") {
         if (!o.membership) throw new Error("membership not configured");
         return { ok: true, result: await o.membership.apply(c.args?.instruction) };
@@ -8407,7 +9737,7 @@ async function startFederationHost(host, ctx, o) {
     } catch {
       return service.handleText(t, conn, max);
     }
-    if (!["epochNotice", "membershipInstruction"].includes(c?.method)) return service.handleText(t, conn, max);
+    if (!notices.includes(c?.method)) return service.handleText(t, conn, max);
     if (Buffer.byteLength(t) > (max ?? 256 * 1024)) return JSON.stringify({ ok: false, error: { code: "ResourceExhausted", message: "notice frame too large" } });
     return JSON.stringify(await noticeService.handle(c, conn));
   } } : void 0;
@@ -8431,6 +9761,18 @@ async function startFederationHost(host, ctx, o) {
             const a = c.args;
             if (typeof a?.peerId !== "string" || typeof a?.keyId !== "string") return { ok: false, error: { code: "BadRequest", message: "peerId and keyId required" } };
             return { ok: true, result: await o.keys.find(a.peerId, a.keyId) };
+          }
+          if (c?.method === "workerAssignments") {
+            try {
+              const id2 = await identity.authenticate(conn), proof2 = conn.state?.proof, key2 = proof2 && conn.peerId ? await o.keys.find(conn.peerId, proof2.keyId) : null;
+              if (!id2 || !proof2 || !key2 || key2.state !== "active" || !key2.roles.includes("host") || !id2.roles.includes("host") || !o.control.workers) throw Error("worker assignments require a currently proven host");
+              const list2 = await o.control.workers.forHost(id2.principal.peerId);
+              const current = await o.keys.find(id2.principal.peerId, proof2.keyId);
+              if (!current || current.state !== "active" || !current.roles.includes("host")) throw Error("host key no longer authorized");
+              return { ok: true, result: list2 };
+            } catch (e) {
+              return { ok: false, error: { code: "PermissionDenied", message: e instanceof Error ? e.message : String(e) } };
+            }
           }
           if (c?.method === "capabilityHeartbeat") {
             try {
@@ -8478,31 +9820,47 @@ async function startFederationHost(host, ctx, o) {
           }
           return inner.handle(c, conn);
         },
-        async handleText(t, conn, bytes7) {
+        async handleText(t, conn, bytes10) {
           let c;
           try {
             c = JSON.parse(t);
           } catch {
-            return inner.handleText(t, conn, bytes7);
+            return inner.handleText(t, conn, bytes10);
           }
-          if (["grant", "keyLookup", "routerLease", "routingPolicy", "capabilityHeartbeat"].includes(c?.method)) {
-            if (Buffer.byteLength(t) > (bytes7 ?? 256 * 1024)) return JSON.stringify({ ok: false, error: { code: "ResourceExhausted", message: "grant request exceeds frame budget" } });
+          if (["grant", "keyLookup", "routerLease", "routingPolicy", "capabilityHeartbeat", "workerAssignments"].includes(c?.method)) {
+            if (Buffer.byteLength(t) > (bytes10 ?? 256 * 1024)) return JSON.stringify({ ok: false, error: { code: "ResourceExhausted", message: "grant request exceeds frame budget" } });
             return JSON.stringify(await this.handle(c, conn));
           }
-          return inner.handleText(t, conn, bytes7);
+          return inner.handleText(t, conn, bytes10);
         }
       };
       const asyncCommands = {};
-      if (o.control.dataAdmin) for (const kind of ["purgeTasks", "deletePrincipal"]) {
-        asyncCommands[kind] = (id2, args, admin) => o.control.dataAdmin.execute(id2, kind, String(args.spaceId ?? ""), admin, kind === "purgeTasks" ? args.template : args.principal);
+      if (o.control.dataAdmin) for (const kind2 of ["purgeTasks", "deletePrincipal"]) {
+        asyncCommands[kind2] = (id2, args, admin) => o.control.dataAdmin.execute(id2, kind2, String(args.spaceId ?? ""), admin, kind2 === "purgeTasks" ? args.template : args.principal);
       }
       const administer = (peerId, run) => o.control.withAdmin ? o.control.withAdmin(peerId, run) : run();
       if (o.control.profiles) asyncCommands.migrateProfiles = async (id2, args, admin) => administer(admin, () => o.control.profiles.execute(id2, args.policy));
-      if (o.control.membership) for (const kind of ["addMember", "drain", "removeMember"]) {
-        asyncCommands[kind] = async (id2, args, admin) => {
-          const r = await administer(admin, () => o.control.membership.execute(id2, kind === "addMember" ? "add" : kind === "drain" ? "drain" : "remove", args.member, args.newDefault));
+      if (o.control.membership) for (const kind2 of ["addMember", "drain", "removeMember"]) {
+        asyncCommands[kind2] = async (id2, args, admin) => {
+          const r = await administer(admin, () => o.control.membership.execute(id2, kind2 === "addMember" ? "add" : kind2 === "drain" ? "drain" : "remove", args.member, args.newDefault));
           return { phase: r.phase, memberId: r.member.id, ...r.error ? { error: r.error } : {}, ...r.policy ? { policyVersion: r.policy.policyVersion } : {} };
         };
+      }
+      if (o.control.runs) Object.assign(asyncCommands, runCommands(o.control.runs));
+      if (o.control.workers) {
+        const ch = o.control.host;
+        Object.assign(asyncCommands, workerCommands(o.control.workers, async () => {
+          const id2 = (await listSpaces(ch, ctx)).find((i) => i.alias === CONTROL_SPACE)?.spaceId;
+          const s = id2 ? await snapshotSpace(ch, id2, ctx) : void 0;
+          return s ? appliedWorkers(s, (o.now ?? Date.now)()) : {};
+        }));
+      }
+      if (o.control.spaces) Object.assign(asyncCommands, o.control.spaces);
+      if (o.control.deployment) Object.assign(asyncCommands, deploymentCommands(o.control.deployment));
+      {
+        const ch = o.control.host, runs = o.control.runs, workers = o.control.workers, controlId = async () => (await listSpaces(ch, ctx)).find((i) => i.alias === CONTROL_SPACE)?.spaceId ?? "";
+        asyncCommands.listAlerts = async () => await collectAlerts({ runs, workers, host: ch, ctx, controlSpaceId: await controlId(), now: o.now });
+        asyncCommands.auditLog = async (_id, a) => await auditLog(ch, ctx, await controlId(), { limit: Number(a.limit ?? 100), now: o.now });
       }
       supervisor = new Supervisor(o.control.host, ctx, {
         now: o.now,
@@ -8516,6 +9874,28 @@ async function startFederationHost(host, ctx, o) {
     stopMaintenance = await startService(host, ctx, { now: o.now });
     gate = await startGate(chain, { ...o, keys: o.keys });
     if (supervisor) stopSupervisor = await supervisor.start();
+    if (o.control?.runs) {
+      const runs = o.control.runs;
+      let busy = false;
+      const timer = setInterval(() => {
+        if (busy) return;
+        busy = true;
+        void (async () => {
+          try {
+            for (const id2 of await runs.pending()) await runs.advance(id2).catch(() => {
+            });
+          } finally {
+            busy = false;
+          }
+        })();
+      }, o.control.runAdvanceMs ?? 1e3);
+      timer.unref?.();
+      const prior = stopSupervisor;
+      stopSupervisor = async () => {
+        clearInterval(timer);
+        await prior?.();
+      };
+    }
     let closed = false;
     return { ...gate, service: chain, close: async () => {
       if (closed) return;
@@ -8542,7 +9922,7 @@ async function startFederationHost(host, ctx, o) {
 
 // src/tls-register.ts
 import tls from "node:tls";
-import { createHash as createHash13 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 var TlsRecoveryRegister = class {
   o;
   constructor(o) {
@@ -8609,7 +9989,7 @@ var TlsRecoveryRegister = class {
 async function serveTlsRegister(register, o) {
   const open2 = /* @__PURE__ */ new Set();
   const server = tls.createServer({ ca: privateFile(o.caFile), cert: privateFile(o.certFile), key: privateFile(o.keyFile), requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3", handshakeTimeout: 4e3 }, (socket) => {
-    const certificate = socket.getPeerCertificate(), fingerprint = certificate.raw ? createHash13("sha256").update(certificate.raw).digest("hex") : "", policy = o.peers[fingerprint];
+    const certificate = socket.getPeerCertificate(), fingerprint = certificate.raw ? createHash16("sha256").update(certificate.raw).digest("hex") : "", policy = o.peers[fingerprint];
     if (!socket.authorized || !policy || open2.size >= 32) {
       socket.destroy();
       return;
@@ -8730,12 +10110,12 @@ init_spaces();
 import { join, basename } from "node:path";
 
 // src/control-ack.ts
-import { defineDoc as defineDoc4 } from "@earendil-works/pi-durable";
+import { defineDoc as defineDoc7 } from "@earendil-works/pi-durable";
 init_canonical();
 init_spaces();
 init_core();
 init_enroll();
-var RecoveryReceipts = defineDoc4({ kind: "pi-spaces.control-recovery-receipts", version: 1, scope: "session", initial: () => ({ receipts: {} }) });
+var RecoveryReceipts = defineDoc7({ kind: "pi-spaces.control-recovery-receipts", version: 1, scope: "session", initial: () => ({ receipts: {} }) });
 var ControlAckService = class {
   o;
   constructor(o) {
@@ -9096,14 +10476,214 @@ init_claims();
 init_claims();
 init_mailbox();
 init_core();
+
+// src/space-lifecycle.ts
+init_canonical();
+init_grants();
+init_enroll();
+init_spaces();
+init_core();
+import { defineDoc as defineDoc8 } from "@earendil-works/pi-durable";
+import { createHash as createHash17 } from "node:crypto";
+var SpaceInUse = class extends TransactionError {
+};
+var ID4 = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
+var hashOf4 = (v) => createHash17("sha256").update(canonicalJson(v)).digest("hex");
+var SpaceLifecycleJournal = defineDoc8({
+  kind: "pi-spaces.space-lifecycle",
+  version: 1,
+  scope: "session",
+  initial: () => ({ commands: {} })
+});
+function why(s, now) {
+  if (s.membership && s.membership.state !== "detached") return `it is a federation Member (${s.membership.state}); removeMember first`;
+  if (s.entries.length) return `it still holds ${s.entries.length} entries; export and purge them first`;
+  if (Object.keys(s.txns).length || s.waiters.length || s.regs.length || (s.jobs ?? []).length || (s.releaseQueue ?? []).length) return "it still has open transactions, waits, registrations or follow-up work";
+  if (Object.keys(s.rpc?.claims ?? {}).length || Object.keys(s.restoredClaims ?? {}).length) return "it retains request claims until their results expire";
+  if (Object.values(s.mailboxes?.boxes ?? {}).some((b) => b.events.length)) return "mailboxes still hold undelivered results";
+  if (Object.values(s.runGates ?? {}).some((g) => g.state !== "stopped" || g.recovery)) return "a run on it is not stopped";
+  if (s.restore && s.restore.stage !== "completed") return "a restore is in progress";
+  void now;
+  return void 0;
+}
+var SpaceLifecycle = class {
+  o;
+  constructor(o) {
+    this.o = o;
+  }
+  async apply(q) {
+    if (!q || !ID4.test(q.commandId) || !["create", "archive", "reactivate", "delete"].includes(q.action)) throw new IllegalArgumentError("invalid Space lifecycle request");
+    if (q.action === "create" ? typeof q.alias !== "string" : typeof q.spaceId !== "string") throw new IllegalArgumentError(q.action === "create" ? "create needs an alias" : `${q.action} needs a spaceId`);
+    const hash9 = hashOf4({ action: q.action, alias: q.alias ?? null, spaceId: q.spaceId ?? null, limits: q.limits ?? null, profiles: q.profiles ?? null });
+    return this.o.host.commit(async (tx) => {
+      const j = await tx.doc(SpaceLifecycleJournal), old = j.commands[q.commandId];
+      if (old) {
+        if (old.hash !== hash9) throw new IllegalArgumentError("command ID was used for another lifecycle request");
+        return plain(old.result);
+      }
+      if (Object.keys(j.commands).length >= 4096) throw new ResourceExhausted("lifecycle journal is full");
+      const now = (this.o.now ?? Date.now)(), r = await tx.doc(Registry);
+      let result;
+      if (q.action === "create") {
+        const existed = Object.hasOwn(r.aliases, q.alias);
+        const info = await createSpace(tx, q.alias, now);
+        const s = await spaceDoc(tx, info.spaceId, now);
+        if (existed && s.archived) throw new RunGateConflict(`alias ${q.alias} names an archived Space; reactivate it instead`);
+        if (!existed) {
+          if (q.limits) setLimits(s, q.limits, now);
+          if (q.profiles) setCompletionProfiles(s, q.profiles, now);
+        } else if (q.limits && canonicalJson(limitsOf(s)) !== canonicalJson({ ...limitsOf(s), ...q.limits }) || q.profiles && canonicalJson(s.completionProfiles ?? []) !== canonicalJson(q.profiles)) throw new RunGateConflict(`Space ${q.alias} exists with other limits or profiles; it is reused only unchanged`);
+        result = { commandId: q.commandId, action: "create", spaceId: info.spaceId, alias: info.alias, state: "active", ...existed ? { existed: true } : {} };
+      } else {
+        const info = r.spaces[q.spaceId];
+        if (!info || info.deletedAt) throw new IllegalArgumentError(`no Space ${q.spaceId} on this host`);
+        if (info.spaceId === r.defaultSpaceId || info.alias === DEFAULT_ALIAS || info.alias === CONTROL_SPACE) throw new PermissionError("the default and the control Space have no lifecycle");
+        const s = await spaceDoc(tx, info.spaceId, now);
+        settle(s, now);
+        if (q.action === "archive") {
+          if (!s.archived) {
+            const reason = s.membership && s.membership.state !== "detached" ? `it is a federation Member (${s.membership.state}); removeMember first` : Object.keys(s.txns).length ? "it has open transactions" : Object.values(s.runGates ?? {}).some((g) => g.state !== "stopped") ? "a run on it is not stopped" : void 0;
+            if (reason) throw new SpaceInUse(`cannot archive: ${reason}`);
+            s.archived = { at: now, commandId: q.commandId };
+            touch2(s, now);
+          }
+          result = { commandId: q.commandId, action: "archive", spaceId: info.spaceId, alias: info.alias, state: "archived" };
+        } else if (q.action === "reactivate") {
+          if (s.archived) {
+            delete s.archived;
+            touch2(s, now);
+          }
+          result = { commandId: q.commandId, action: "reactivate", spaceId: info.spaceId, alias: info.alias, state: "active" };
+        } else {
+          if (!s.archived) throw new SpaceInUse("cannot delete: archive the Space first");
+          const reason = why(s, now);
+          if (reason) throw new SpaceInUse(`cannot delete: ${reason}`);
+          delete r.aliases[info.alias];
+          r.spaces[info.spaceId] = { ...info, deletedAt: now };
+          result = { commandId: q.commandId, action: "delete", spaceId: info.spaceId, alias: info.alias, state: "deleted" };
+        }
+      }
+      j.commands[q.commandId] = { hash: hash9, result };
+      return plain(result);
+    }, this.o.ctx);
+  }
+};
+var bytes6 = (kind2, v) => Buffer.from(`pi-spaces/space-lifecycle-${kind2}/v1
+` + canonicalJson(v));
+async function signLifecycle(kind2, value, issuer, signer) {
+  return { value: plain(value), issuer, algorithm: signer.algorithm, signature: Buffer.from(await signer.sign(bytes6(kind2, value))).toString("base64") };
+}
+function verifyLifecycle(kind2, t, pin) {
+  if (!t || typeof t !== "object" || t.issuer !== pin.issuer || t.algorithm !== pin.algorithm || typeof t.signature !== "string" || !verifyDetached(pin.algorithm, pin.publicKey, bytes6(kind2, t.value), t.signature)) throw new PermissionError(`invalid Space lifecycle ${kind2} signature`);
+  return plain(t.value);
+}
+var SpaceLifecycleService = class {
+  o;
+  constructor(o) {
+    this.o = o;
+  }
+  async apply(t) {
+    const q = verifyLifecycle("instruction", t, this.o.controlPin);
+    if (q.authorityId !== this.o.authorityId || q.hostId !== this.o.hostId) throw new PermissionError("Space lifecycle instruction belongs to another authority or host");
+    await this.o.assertAuthority();
+    const { authorityId: _a, hostId: _h, ...request } = q;
+    const result = await this.o.lifecycle.apply(request);
+    await this.o.assertAuthority();
+    return signLifecycle("result", result, this.o.peerId, this.o.signer);
+  }
+};
+function spaceCommands(o) {
+  const run = (action) => async (commandId, a) => {
+    const hostId = String(a.hostId ?? "");
+    const q = { commandId, action, authorityId: o.authorityId, hostId, ...action === "create" ? { alias: String(a.alias ?? "") } : { spaceId: String(a.spaceId ?? "") }, ...a.limits ? { limits: a.limits } : {}, ...a.profiles ? { profiles: a.profiles } : {} };
+    let reply2;
+    try {
+      reply2 = await o.send(hostId, await signLifecycle("instruction", q, o.peerId, o.signer));
+    } catch (e) {
+      const m = String(e?.message ?? e);
+      if (/cannot (archive|delete)|IllegalArgument|invalid|no Space|exists with other|names an archived|have no lifecycle|another authority|was used for another/.test(m)) return { phase: "failed", error: m.slice(0, 512) };
+      throw e;
+    }
+    const result = verifyLifecycle("result", reply2, await o.hostPin(hostId));
+    if (result.commandId !== commandId || result.action !== action) throw new PermissionError("Space lifecycle result does not match the command");
+    return result;
+  };
+  return { createSpace: run("create"), archiveSpace: run("archive"), reactivateSpace: run("reactivate"), deleteSpace: run("delete") };
+}
+
+// src/run-member.ts
+init_canonical();
+init_grants();
+init_spaces();
+init_core();
+var bytes7 = (kind2, v) => Buffer.from(`pi-spaces/run-gate-${kind2}/v1
+` + canonicalJson(v));
+async function signRun(kind2, value, issuer, signer) {
+  return { value: plain(value), issuer, algorithm: signer.algorithm, signature: Buffer.from(await signer.sign(bytes7(kind2, value))).toString("base64") };
+}
+function verifyRun(kind2, t, pin) {
+  if (!t || typeof t !== "object" || t.issuer !== pin.issuer || t.algorithm !== pin.algorithm || typeof t.signature !== "string" || !verifyDetached(pin.algorithm, pin.publicKey, bytes7(kind2, t.value), t.signature)) throw new PermissionError(`invalid run gate ${kind2} signature`);
+  return plain(t.value);
+}
+var RunGateService = class {
+  o;
+  constructor(o) {
+    this.o = o;
+  }
+  async apply(t) {
+    const q = verifyRun("instruction", t, this.o.controllerPin);
+    if (q.authorityId !== this.o.authorityId) throw new PermissionError("run gate instruction belongs to another authority");
+    if (typeof q.spaceId !== "string" || !(await listSpaces(this.o.host, this.o.ctx)).some((i) => i.spaceId === q.spaceId)) throw new IllegalArgumentError("run gate instruction names no local Space");
+    if (q.kind === "recover") {
+      if (typeof q.recoveryId !== "string") throw new IllegalArgumentError("recover needs a recovery ID");
+      await this.o.assertAuthority();
+      const view3 = await localRunMember(this.o.host, this.o.ctx, q.spaceId, async () => {
+      }, this.o.now).recover(q.runId, q.recoveryId);
+      await this.o.assertAuthority();
+      return signRun("ack", view3, this.o.peerId, this.o.signer);
+    }
+    const command = { runId: q.runId, commandId: q.commandId, kind: q.kind, revision: q.revision, ...q.recoveryId !== void 0 ? { recoveryId: q.recoveryId } : {}, ...q.expect !== void 0 ? { expect: q.expect } : {} };
+    let prepare = async () => {
+      throw new IllegalArgumentError("only prepare instructions carry a run");
+    };
+    if (q.kind === "prepare") {
+      const spec = q.spec;
+      if (!spec || spec.runId !== q.runId || !Array.isArray(spec.members) || !spec.members.includes(q.spaceId)) throw new IllegalArgumentError("prepare needs the run's manifest including this Space");
+      const registered = Object.hasOwn(this.o.preparers, spec.kind) ? this.o.preparers[spec.kind] : void 0;
+      if (!registered) throw new IllegalArgumentError(`no registered preparer for run kind ${spec.kind}`);
+      prepare = registered;
+    }
+    await this.o.assertAuthority();
+    const member = localRunMember(this.o.host, this.o.ctx, q.spaceId, prepare, this.o.now);
+    const ack = q.kind === "prepare" ? await member.prepare(q.spec, command) : await member.gate(command);
+    await this.o.assertAuthority();
+    return signRun("ack", ack, this.o.peerId, this.o.signer);
+  }
+};
+function remoteRunMember(o) {
+  const call = async (command, spec) => {
+    const q = { ...command, authorityId: o.authorityId, spaceId: o.spaceId, ...spec ? { spec } : {} };
+    const ack = verifyRun("ack", await o.send(await signRun("instruction", q, o.peerId, o.signer)), o.memberPin);
+    if (ack.spaceId !== o.spaceId) throw new PermissionError("run gate ACK names another Space");
+    return ack;
+  };
+  return {
+    spaceId: o.spaceId,
+    prepare: (run, command) => call(command, run),
+    gate: (command) => call(command),
+    recover: (runId, recoveryId) => call({ runId, commandId: recoveryId, kind: "recover", revision: 0, recoveryId })
+  };
+}
+
+// src/index.ts
 init_meter();
 
 // src/member-transition.ts
 init_canonical();
 init_spaces();
 init_core();
-import { createHash as createHash14 } from "node:crypto";
-var digest2 = (value) => createHash14("sha256").update(canonicalJson(value)).digest("hex");
+import { createHash as createHash18 } from "node:crypto";
+var digest2 = (value) => createHash18("sha256").update(canonicalJson(value)).digest("hex");
 var MemberTransitionInstaller = class {
   o;
   constructor(o) {
@@ -9162,12 +10742,12 @@ var MemberTransitionInstaller = class {
         if (step.stage === "history") {
           const pending = Object.entries(s.rpc?.claims ?? {}).find(([, c]) => c.state === "pending");
           if (pending) {
-            const [id2, c] = pending, copy9 = plain(c);
-            delete copy9.reservedResultBytes;
-            const bytes7 = Buffer.byteLength(JSON.stringify(copy9)) + Buffer.byteLength(JSON.stringify(id2)) + 256;
-            if (overheadBytes(s) + bytes7 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes7, now, "member-pending-history")) throw new ResourceExhausted("pending history cannot fit the transition budget");
+            const [id2, c] = pending, copy10 = plain(c);
+            delete copy10.reservedResultBytes;
+            const bytes10 = Buffer.byteLength(JSON.stringify(copy10)) + Buffer.byteLength(JSON.stringify(id2)) + 256;
+            if (overheadBytes(s) + bytes10 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes10, now, "member-pending-history")) throw new ResourceExhausted("pending history cannot fit the transition budget");
             s.restoredClaims ??= {};
-            s.restoredClaims[id2] = copy9;
+            s.restoredClaims[id2] = copy10;
             delete s.rpc.claims[id2];
             s.rpc.bytes = Math.max(0, (s.rpc.bytes ?? 0) - Buffer.byteLength(JSON.stringify(c)) - Buffer.byteLength(JSON.stringify(id2)) - 2);
             s.rpc.reservedBytes = Math.max(0, (s.rpc.reservedBytes ?? 0) - (c.reservedResultBytes ?? 0));
@@ -9176,8 +10756,8 @@ var MemberTransitionInstaller = class {
           }
           const decided = Object.values(s.rpc?.claims ?? {}).find((c) => c.state !== "pending" && !c.orphanedAfterRestore);
           if (decided) {
-            const before = Buffer.byteLength(JSON.stringify(decided)), mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes7 = Buffer.byteLength(JSON.stringify(mark)) + 128;
-            if (claimBytes(s) + bytes7 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes7 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes7, now, "member-orphaned-claim")) throw new ResourceExhausted("orphan audit exceeds current limits");
+            const before = Buffer.byteLength(JSON.stringify(decided)), mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes10 = Buffer.byteLength(JSON.stringify(mark)) + 128;
+            if (claimBytes(s) + bytes10 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes10 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes10, now, "member-orphaned-claim")) throw new ResourceExhausted("orphan audit exceeds current limits");
             decided.orphanedAfterRestore = mark;
             s.rpc.bytes = (s.rpc.bytes ?? 0) + Buffer.byteLength(JSON.stringify(decided)) - before;
             touch2(s, now);
@@ -9185,8 +10765,8 @@ var MemberTransitionInstaller = class {
           }
           const historical = Object.values(s.restoredClaims ?? {}).find((c) => c.state !== "pending" && !c.orphanedAfterRestore);
           if (historical) {
-            const mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes7 = Buffer.byteLength(JSON.stringify(mark)) + 128;
-            if (claimBytes(s) + bytes7 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes7 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes7, now, "member-historical-orphan")) throw new ResourceExhausted("historical orphan audit exceeds current limits");
+            const mark = { recoveryId: t.recoveryId, authorityId: t.newAuthorityId }, bytes10 = Buffer.byteLength(JSON.stringify(mark)) + 128;
+            if (claimBytes(s) + bytes10 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes10 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes10, now, "member-historical-orphan")) throw new ResourceExhausted("historical orphan audit exceeds current limits");
             historical.orphanedAfterRestore = mark;
             touch2(s, now);
             return;
@@ -9196,8 +10776,8 @@ var MemberTransitionInstaller = class {
         if (step.stage === "generations") {
           const old = Object.keys(s.rpc?.generations ?? {}).find((id2) => !s.invalidGenerations?.[id2]);
           if (old) {
-            const bytes7 = Buffer.byteLength(JSON.stringify(old)) + 64;
-            if (claimBytes(s) + bytes7 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes7 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes7, now, "member-old-generation")) throw new ResourceExhausted("old generation cannot fit the transition budget");
+            const bytes10 = Buffer.byteLength(JSON.stringify(old)) + 64;
+            if (claimBytes(s) + bytes10 > limitsOf(s).maxClaimBytes || overheadBytes(s) + bytes10 + s.entries.reduce((n, e) => n + (e.size ?? Buffer.byteLength(JSON.stringify(e.fields))), 0) > limitsOf(s).maxDocBytes || !maintenanceStep(s, bytes10, now, "member-old-generation")) throw new ResourceExhausted("old generation cannot fit the transition budget");
             s.invalidGenerations ??= {};
             s.invalidGenerations[old] = true;
             touch2(s, now);
@@ -9239,14 +10819,14 @@ var MemberTransitionInstaller = class {
 };
 
 // src/control-recovery.ts
-import { defineDoc as defineDoc5 } from "@earendil-works/pi-durable";
-import { createHash as createHash15 } from "node:crypto";
+import { defineDoc as defineDoc9 } from "@earendil-works/pi-durable";
+import { createHash as createHash19 } from "node:crypto";
 init_spaces();
 init_canonical();
 init_enroll();
 init_core();
-var ControlRecoveryJobs = defineDoc5({ kind: "pi-spaces.control-recovery-jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
-var digest3 = (v) => createHash15("sha256").update(canonicalJson(v)).digest("hex");
+var ControlRecoveryJobs = defineDoc9({ kind: "pi-spaces.control-recovery-jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
+var digest3 = (v) => createHash19("sha256").update(canonicalJson(v)).digest("hex");
 var ControlRecoveryController = class {
   o;
   constructor(o) {
@@ -9482,7 +11062,7 @@ init_spaces();
 init_stream();
 init_core();
 import { defineDocFamily as defineDocFamily11 } from "@earendil-works/pi-durable";
-import { createHash as createHash16 } from "node:crypto";
+import { createHash as createHash20 } from "node:crypto";
 var DataAdminJournal = defineDocFamily11({
   kind: "pi-spaces.data-admin",
   version: 1,
@@ -9490,13 +11070,13 @@ var DataAdminJournal = defineDocFamily11({
   family: true,
   initial: () => ({ commands: {} })
 });
-var bytes5 = (v) => Buffer.byteLength(JSON.stringify(v));
+var bytes8 = (v) => Buffer.byteLength(JSON.stringify(v));
 var audit = (c) => ({ hash: c.hash, at: c.at, kind: c.kind, admin: c.admin, count: c.count });
-function commandHash(id2, kind, spaceId, admin, input) {
+function commandHash(id2, kind2, spaceId, admin, input) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id2) || ["__proto__", "constructor", "prototype"].includes(id2)) throw new IllegalArgumentError("invalid admin command ID");
   if (typeof spaceId !== "string" || !spaceId || spaceId.length > 128 || typeof admin !== "string" || !admin || admin.length > 128) throw new IllegalArgumentError("invalid admin or Space identifier");
-  if (!["purgeTasks", "deletePrincipal"].includes(kind)) throw new IllegalArgumentError("invalid admin command kind");
-  return createHash16("sha256").update(canonicalJson({ kind, spaceId, admin, input })).digest("hex");
+  if (!["purgeTasks", "deletePrincipal"].includes(kind2)) throw new IllegalArgumentError("invalid admin command kind");
+  return createHash20("sha256").update(canonicalJson({ kind: kind2, spaceId, admin, input })).digest("hex");
 }
 function validatePrincipal(p) {
   if (!p || typeof p.peerId !== "string" || !p.peerId || p.peerId.length > 128 || p.agentId !== void 0 && (typeof p.agentId !== "string" || !p.agentId || p.agentId.length > 128) || Object.keys(p).some((k) => !["peerId", "agentId"].includes(k))) throw new IllegalArgumentError("invalid deletion principal");
@@ -9518,25 +11098,25 @@ var DataAdminController = class {
   constructor(o) {
     this.o = o;
   }
-  async check(admin, kind, sid) {
-    await this.o.authorize(admin, kind, sid);
+  async check(admin, kind2, sid) {
+    await this.o.authorize(admin, kind2, sid);
     await this.o.assertAuthority();
   }
-  async execute(id2, kind, spaceId, admin, input) {
-    const hash8 = commandHash(id2, kind, spaceId, admin, input);
-    if (kind === "deletePrincipal") {
+  async execute(id2, kind2, spaceId, admin, input) {
+    const hash9 = commandHash(id2, kind2, spaceId, admin, input);
+    if (kind2 === "deletePrincipal") {
       await this.startDeletion(id2, spaceId, admin, input);
       for (; ; ) {
         const r = await this.advanceDeletion(id2, spaceId, admin, input);
         if (r.phase === "completed") return audit(r);
       }
     }
-    await this.check(admin, kind, spaceId);
+    await this.check(admin, kind2, spaceId);
     return this.o.host.commit(async (tx) => {
-      await this.check(admin, kind, spaceId);
+      await this.check(admin, kind2, spaceId);
       const d = await tx.doc(DataAdminJournal, spaceId, null), old = d.commands[id2];
       if (old) {
-        if (old.hash !== hash8) throw new IllegalArgumentError("admin command ID changed");
+        if (old.hash !== hash9) throw new IllegalArgumentError("admin command ID changed");
         const s2 = await spaceDoc(tx, spaceId, (this.o.now ?? Date.now)());
         stableSpace(s2, spaceId);
         assertTuple(old, s2);
@@ -9547,22 +11127,22 @@ var DataAdminController = class {
       stableSpace(s, spaceId);
       assertAdminIdle(s);
       reserveHeader(s, now, id2);
-      const c = { hash: hash8, kind, admin, at: now, count: purgeTasks(s, now, input), incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null };
+      const c = { hash: hash9, kind: kind2, admin, at: now, count: purgeTasks(s, now, input), incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null };
       d.commands[id2] = c;
-      await this.check(admin, kind, spaceId);
+      await this.check(admin, kind2, spaceId);
       return audit(c);
     }, this.o.ctx);
   }
   /** Explicit start/advance are also usable by a supervisor that resumes one batch at a time. */
   async startDeletion(id2, spaceId, admin, p) {
     validatePrincipal(p);
-    const hash8 = commandHash(id2, "deletePrincipal", spaceId, admin, p);
+    const hash9 = commandHash(id2, "deletePrincipal", spaceId, admin, p);
     await this.check(admin, "deletePrincipal", spaceId);
     return this.o.host.commit(async (tx) => {
       await this.check(admin, "deletePrincipal", spaceId);
       const d = await tx.doc(DataAdminJournal, spaceId, null), old = d.commands[id2];
       if (old) {
-        if (old.hash !== hash8) throw new IllegalArgumentError("admin command ID changed");
+        if (old.hash !== hash9) throw new IllegalArgumentError("admin command ID changed");
         const s2 = await spaceDoc(tx, spaceId, (this.o.now ?? Date.now)());
         stableSpace(s2, spaceId);
         assertTuple(old, s2);
@@ -9575,10 +11155,10 @@ var DataAdminController = class {
       settle(s, now);
       quiescent(s);
       reserveHeader(s, now, id2);
-      s.adminMaintenance = { commandId: id2, hash: hash8 };
+      s.adminMaintenance = { commandId: id2, hash: hash9 };
       s.snapshotEpoch = (s.snapshotEpoch ?? 0) + 1;
-      if (bytes5(s) > limitsOf(s).maxDocBytes) throw new ResourceExhausted("admin fence exceeds maxDocBytes");
-      d.commands[id2] = { hash: hash8, kind: "deletePrincipal", admin, at: now, count: 0, phase: "registrations", principal: plain(p), incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null, batches: 0 };
+      if (bytes8(s) > limitsOf(s).maxDocBytes) throw new ResourceExhausted("admin fence exceeds maxDocBytes");
+      d.commands[id2] = { hash: hash9, kind: "deletePrincipal", admin, at: now, count: 0, phase: "registrations", principal: plain(p), incarnation: s.incarnation ?? null, authorityId: s.acceptedAuthorityId ?? s.membership?.authorityId ?? null, batches: 0 };
       touch2(s, now);
       await this.check(admin, "deletePrincipal", spaceId);
       return { ...audit(d.commands[id2]), phase: "registrations", batches: 0 };
@@ -9586,18 +11166,18 @@ var DataAdminController = class {
   }
   async advanceDeletion(id2, spaceId, admin, p) {
     validatePrincipal(p);
-    const hash8 = commandHash(id2, "deletePrincipal", spaceId, admin, p);
+    const hash9 = commandHash(id2, "deletePrincipal", spaceId, admin, p);
     await this.check(admin, "deletePrincipal", spaceId);
     return this.o.host.commit(async (tx) => {
       await this.check(admin, "deletePrincipal", spaceId);
       const d = await tx.doc(DataAdminJournal, spaceId, null), c = d.commands[id2];
       if (!c) throw new IllegalArgumentError("unknown deletion command");
-      if (c.hash !== hash8) throw new IllegalArgumentError("admin command ID changed");
+      if (c.hash !== hash9) throw new IllegalArgumentError("admin command ID changed");
       const now = (this.o.now ?? Date.now)(), s = await spaceDoc(tx, spaceId, now);
       stableSpace(s, spaceId);
       assertTuple(c, s);
       if (!c.phase || c.phase === "completed") return { ...audit(c), phase: "completed", batches: c.batches ?? 0 };
-      if (s.adminMaintenance?.commandId !== id2 || s.adminMaintenance.hash !== hash8 || c.incarnation !== (s.incarnation ?? null) || c.authorityId !== (s.acceptedAuthorityId ?? s.membership?.authorityId ?? null)) throw new TransactionError("deletion fence or incarnation changed; restore review required");
+      if (s.adminMaintenance?.commandId !== id2 || s.adminMaintenance.hash !== hash9 || c.incarnation !== (s.incarnation ?? null) || c.authorityId !== (s.acceptedAuthorityId ?? s.membership?.authorityId ?? null)) throw new TransactionError("deletion fence or incarnation changed; restore review required");
       quiescent(s);
       reserveHeader(s, now, id2);
       eraseBatch(s, c, p, now, id2);
@@ -9654,12 +11234,12 @@ function eraseBatch(s, c, p, now, id2) {
     case "mailboxes": {
       for (const [key2, b] of Object.entries(s.mailboxes?.boxes ?? {})) {
         if (same3(b.principal)) {
-          if (!spend(256 + bytes5(key2))) return;
+          if (!spend(256 + bytes8(key2))) return;
           delete s.mailboxes.boxes[key2];
         } else if (b.events.some((e) => e.event.entry && ids.has(e.event.entry.id))) {
-          if (!spend(512 + bytes5(key2))) return;
+          if (!spend(512 + bytes8(key2))) return;
           b.gap = { epoch: b.epoch, from: b.acked + 1, to: b.next - 1 };
-          b.epoch = "deleted-" + createHash16("sha256").update(b.epoch + id2).digest("hex");
+          b.epoch = "deleted-" + createHash20("sha256").update(b.epoch + id2).digest("hex");
           b.acked = b.next - 1;
           b.delivered = b.acked;
           b.events = [];
@@ -9672,13 +11252,13 @@ function eraseBatch(s, c, p, now, id2) {
     case "claims": {
       for (const claims of [s.rpc?.claims, s.restoredClaims]) for (const [key2, claim] of Object.entries(claims ?? {})) {
         if (same3(claim.principal)) {
-          if (!spend(256 + bytes5(key2))) {
+          if (!spend(256 + bytes8(key2))) {
             tally(s);
             return;
           }
           delete claims[key2];
         } else if (claim.result !== void 0 && affected(claim.result)) {
-          if (!spend(256 + bytes5(key2))) {
+          if (!spend(256 + bytes8(key2))) {
             tally(s);
             return;
           }
@@ -9693,7 +11273,7 @@ function eraseBatch(s, c, p, now, id2) {
     }
     case "generations": {
       for (const [g, r] of Object.entries(s.rpc?.generations ?? {})) if (same3(r.principal)) {
-        if (!spend(256 + bytes5(g))) {
+        if (!spend(256 + bytes8(g))) {
           tally(s);
           return;
         }
@@ -9705,7 +11285,7 @@ function eraseBatch(s, c, p, now, id2) {
     }
     case "entries": {
       for (let i = s.entries.length - 1; i >= 0; i--) if (s.entries[i].owner === pid) {
-        if (!spend(256 + bytes5(s.entries[i].id))) return;
+        if (!spend(256 + bytes8(s.entries[i].id))) return;
         s.entries.splice(i, 1);
         c.count++;
       }
@@ -9727,16 +11307,16 @@ function eraseBatch(s, c, p, now, id2) {
 }
 function tally(s) {
   if (s.rpc) {
-    s.rpc.bytes = bytes5(s.rpc.claims) + bytes5(s.rpc.generations);
+    s.rpc.bytes = bytes8(s.rpc.claims) + bytes8(s.rpc.generations);
     s.rpc.reservedBytes = Object.values(s.rpc.claims).reduce((n, c) => n + (c.reservedResultBytes ?? 0), 0);
   }
 }
 
 // src/root-erasure.ts
 init_canonical();
-import { createHash as createHash17 } from "node:crypto";
+import { createHash as createHash21 } from "node:crypto";
 init_routing_semantics();
-var hash6 = (value) => createHash17("sha256").update(canonicalJson(value)).digest("hex");
+var hash6 = (value) => createHash21("sha256").update(canonicalJson(value)).digest("hex");
 var copy7 = (v) => JSON.parse(JSON.stringify(v));
 var evidenceKey = (root, id2, digest6) => hash6([root, id2, "entry-digests", digest6.slice(0, 2)]);
 var RootHistoryErasure = class {
@@ -9975,8 +11555,8 @@ var ErasureArchiveController = class {
 
 // src/distributed-erasure.ts
 init_canonical();
-import { createHash as createHash18 } from "node:crypto";
-var digest5 = (v) => createHash18("sha256").update(canonicalJson(v)).digest("hex");
+import { createHash as createHash22 } from "node:crypto";
+var digest5 = (v) => createHash22("sha256").update(canonicalJson(v)).digest("hex");
 var clone2 = (v) => structuredClone(v);
 var DistributedPrincipalErasure = class {
   o;
@@ -9991,10 +11571,10 @@ var DistributedPrincipalErasure = class {
     const p = clone2(input);
     this.validate(p);
     await this.o.authorize();
-    const key2 = "erasure-command:" + p.id, record2 = await this.o.register.get(key2), hash8 = digest5(p);
-    if (record2 && record2.value.hash !== hash8) throw Error("erasure command changed binding");
+    const key2 = "erasure-command:" + p.id, record2 = await this.o.register.get(key2), hash9 = digest5(p);
+    if (record2 && record2.value.hash !== hash9) throw Error("erasure command changed binding");
     if (!record2) {
-      const initial = { hash: hash8, commandHash: digest5([p.id, p.principal]), phase: "fencing", cursor: 0, epochs: {}, entryIds: [] };
+      const initial = { hash: hash9, commandHash: digest5([p.id, p.principal]), phase: "fencing", cursor: 0, epochs: {}, entryIds: [] };
       await this.o.register.compareAndSet(key2, null, initial);
       return clone2(initial);
     }
@@ -10087,8 +11667,8 @@ async function compactErasedSqlite(path, assertExclusiveFenced) {
     try {
       const revisions = db.prepare("SELECT seq,kind,version,content FROM document_revisions WHERE document_id=? ORDER BY seq");
       for (const row of db.prepare("SELECT id,kind,retired_at FROM documents WHERE scope_kind='session'").all()) {
-        const kind = JSON.parse(row.kind);
-        if (typeof kind !== "string" || !kind.startsWith("pi-spaces.")) continue;
+        const kind2 = JSON.parse(row.kind);
+        if (typeof kind2 !== "string" || !kind2.startsWith("pi-spaces.")) continue;
         const rows = revisions.all(row.id);
         if (row.retired_at !== null) {
           db.prepare("DELETE FROM document_revisions WHERE document_id=?").run(row.id);
@@ -10133,7 +11713,7 @@ async function compactErasedSqlite(path, assertExclusiveFenced) {
 init_canonical();
 init_claims();
 init_core();
-import { createHash as createHash19, randomBytes as randomBytes10 } from "node:crypto";
+import { createHash as createHash23, randomBytes as randomBytes10 } from "node:crypto";
 import { defineDocFamily as defineDocFamily14 } from "@earendil-works/pi-durable";
 
 // src/replication-clock.ts
@@ -10162,6 +11742,7 @@ function advanceHybridClock(local, now, remote, maxFutureMs = 6e4) {
 import { defineDocFamily as defineDocFamily12 } from "@earendil-works/pi-durable";
 var EntrySnapshotTransfers = defineDocFamily12({ kind: "pi-spaces.entry-snapshot-transfers", version: 1, scope: "session", family: true, initial: () => ({ retainedBytes: 0, transfers: {} }) });
 var EntrySnapshotChunks = defineDocFamily12({ kind: "pi-spaces.entry-snapshot-chunk", version: 1, scope: "session", family: true, initial: () => ({ page: null }) });
+var EntrySnapshotMaintenance = defineDocFamily12({ kind: "pi-spaces.entry-snapshot-maintenance", version: 1, scope: "session", family: true, initial: () => ({ job: null }) });
 
 // src/entry-replication-stream.ts
 init_canonical();
@@ -10300,8 +11881,8 @@ var copy8 = (v) => {
   return JSON.parse(JSON.stringify(v));
 };
 var canonical2 = (v) => canonicalJson(v);
-var bytes6 = (v) => Buffer.byteLength(canonical2(v));
-var hash7 = (v) => createHash19("sha256").update(canonical2(v)).digest("hex");
+var bytes9 = (v) => Buffer.byteLength(canonical2(v));
+var hash7 = (v) => createHash23("sha256").update(canonical2(v)).digest("hex");
 var id = (v) => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
 var number = (v) => Number.isSafeInteger(v) && v >= 0;
 var exact = (v, keys) => Object.keys(v).sort().join(",") === [...keys].sort().join(",");
@@ -10319,7 +11900,7 @@ function configOf(input) {
   if (new Set(c.rules.map((r) => r.type)).size !== c.rules.length || c.rules.some((r) => !r || !id(r.type) || !["lww", "set"].includes(r.variant) || (r.variant === "lww" ? !exact(r, ["type", "variant", "keyFields"]) || !Array.isArray(r.keyFields) || !r.keyFields.length || r.keyFields.length > 16 || new Set(r.keyFields).size !== r.keyFields.length || r.keyFields.some((k) => !id(k)) : !exact(r, ["type", "variant"])))) throw new ReplicationConflict("invalid replication rules");
   c.members.sort((a, b) => a.replicaId < b.replicaId ? -1 : 1);
   c.rules.sort((a, b) => a.type < b.type ? -1 : 1);
-  if (bytes6(c) > 8192) throw new ResourceExhausted("replica configuration exceeds 8 KiB");
+  if (bytes9(c) > 8192) throw new ResourceExhausted("replica configuration exceeds 8 KiB");
   return c;
 }
 var snapshotCaches = /* @__PURE__ */ new WeakMap();
@@ -10381,9 +11962,18 @@ var EntryReplicationController = class {
         if (!Array.isArray(v) || v.length !== 3 || !number(v[2]) || v[2] < 1 || !this.config.members.some((p) => p.replicaId === v[0] && p.incarnation === v[1]) || canonical2(v) !== tag) throw new ReplicationConflict("unknown tag origin");
       }
     } else {
-      const hasLease = m.kind === "put" || m.kind === "add";
-      if (!exact(m, hasLease ? ["kind", "type", "fields", "owner", "expiresAt"] : ["kind", "type", "fields", "owner"]) || (r.variant === "lww" ? !["put", "delete"].includes(m.kind) : m.kind !== "add") || !m.fields || typeof m.fields !== "object" || Array.isArray(m.fields) || hasLease && m.expiresAt !== null && !number(m.expiresAt)) throw new ReplicationConflict("invalid replicated mutation");
-      if (bytes6(m.fields) > 64 * 1024) throw new ResourceExhausted("entry fields exceed 64 KiB");
+      const hasLease = m.kind === "put" || m.kind === "add" || m.kind === "renew";
+      if (!exact(m, m.kind === "renew" ? ["kind", "type", "tag", "fields", "owner", "expiresAt"] : hasLease ? ["kind", "type", "fields", "owner", "expiresAt"] : ["kind", "type", "fields", "owner"]) || (r.variant === "lww" ? !["put", "delete"].includes(m.kind) : !["add", "renew"].includes(m.kind)) || !m.fields || typeof m.fields !== "object" || Array.isArray(m.fields) || hasLease && m.expiresAt !== null && !number(m.expiresAt)) throw new ReplicationConflict("invalid replicated mutation");
+      if (m.kind === "renew") {
+        let tag;
+        try {
+          tag = JSON.parse(m.tag);
+        } catch {
+          throw new ReplicationConflict("invalid renewal tag");
+        }
+        if (!Array.isArray(tag) || tag.length !== 3 || !number(tag[2]) || tag[2] < 1 || !this.config.members.some((p) => p.replicaId === tag[0] && p.incarnation === tag[1]) || canonical2(tag) !== m.tag) throw new ReplicationConflict("unknown renewal tag");
+      }
+      if (bytes9(m.fields) > 64 * 1024) throw new ResourceExhausted("entry fields exceed 64 KiB");
       if (r.variant === "lww") key(r, m.fields);
     }
   }
@@ -10395,7 +11985,7 @@ var EntryReplicationController = class {
     if (e.argumentHash !== hash7(e.mutation)) throw new ReplicationConflict("changed mutation argument hash");
   }
   budget(events) {
-    if (2 * bytes6(events) + 16384 > this.maxBatchBytes) throw new ResourceExhausted("replication batch exceeds atomic import budget");
+    if (2 * bytes9(events) + 16384 > this.maxBatchBytes) throw new ResourceExhausted("replication batch exceeds atomic import budget");
   }
   append(s, incoming, now) {
     const known = new Map(s.events.map((e) => [entryChangeId(e), e])), requests = new Set(s.events.map((e) => canonical2([e.originReplicaId, e.incarnation, e.requestId]))), accepted = [];
@@ -10424,7 +12014,15 @@ var EntryReplicationController = class {
     }
     for (const event of known.values()) if (event.mutation.kind === "remove") for (const tag of event.mutation.tags) {
       const observed = known.get(tag);
-      if (observed && (observed.mutation.kind !== "add" || observed.mutation.type !== event.mutation.type)) throw new ReplicationConflict("remove references another type or a non-add");
+      if (observed && (!["add", "renew"].includes(observed.mutation.kind) || observed.mutation.type !== event.mutation.type)) throw new ReplicationConflict("remove references another type or a non-add");
+    }
+    for (const event of known.values()) if (event.mutation.kind === "renew") {
+      const m = event.mutation, observed = known.get(m.tag);
+      if (entryChangeId(event) === m.tag) throw new ReplicationConflict("renewal cannot reference itself");
+      if (observed) {
+        const old = observed.mutation;
+        if (!["add", "renew"].includes(old.kind) || old.type !== m.type || canonical2(old.owner) !== canonical2(m.owner) || !("fields" in old) || canonical2(old.fields) !== canonical2(m.fields) || compareHybridClock(observed.clock, event.clock) >= 0) throw new ReplicationConflict("renewal must preserve an earlier tag fields and owner");
+      }
     }
     for (const event of accepted) {
       s.events.push(copy8(event));
@@ -10433,7 +12031,7 @@ var EntryReplicationController = class {
     }
     if (accepted.length) {
       s.lastWallTime = Math.max(s.lastWallTime, now);
-      if (bytes6(s) > this.maxHistoryBytes) throw new ResourceExhausted("replica history is full; no tombstone or dedup record was discarded");
+      if (bytes9(s) > this.maxHistoryBytes) throw new ResourceExhausted("replica history is full; no tombstone or dedup record was discarded");
     }
     return accepted.length;
   }
@@ -10458,7 +12056,12 @@ var EntryReplicationController = class {
       this.clockSafe(s, now);
       if (m.kind === "remove") for (const tag of m.tags) {
         const e = logical.events.find((e2) => entryChangeId(e2) === tag);
-        if (!e || e.mutation.kind !== "add" || e.mutation.type !== m.type) throw new ReplicationConflict("local remove can only remove observed adds of its type");
+        if (!e || !["add", "renew"].includes(e.mutation.kind) || e.mutation.type !== m.type) throw new ReplicationConflict("local remove can only remove observed adds of its type");
+      }
+      if (m.kind === "renew") {
+        const observed = logical.events.find((e) => entryChangeId(e) === m.tag), old2 = observed?.mutation;
+        const removed = logical.events.some((e) => e.mutation.kind === "remove" && e.mutation.tags.includes(m.tag) || e.mutation.kind === "renew" && e.mutation.tag === m.tag);
+        if (!old2 || !["add", "renew"].includes(old2.kind) || old2.type !== m.type || !("expiresAt" in old2) || old2.expiresAt !== null && old2.expiresAt <= now || removed || canonical2(old2.owner) !== canonical2(m.owner) || !("fields" in old2) || canonical2(old2.fields) !== canonical2(m.fields) || m.expiresAt !== null && m.expiresAt <= now) throw new ReplicationConflict("renewal requires a live observed tag with unchanged fields and owner");
       }
       if (!Number.isSafeInteger(s.seq + 1)) throw new ReplicationConflict("origin sequence exhausted");
       const event = { originReplicaId: this.config.replicaId, incarnation: this.config.incarnation, seq: s.seq + 1, clock: advanceHybridClock(s.clock, now), requestId, argumentHash, mutation: m };
@@ -10548,9 +12151,10 @@ var EntryReplicationController = class {
         const k = key(r, e.mutation.fields), old = winners.get(k), cmp = old ? compareHybridClock(e.clock, old.clock) : 1;
         if (!old || cmp > 0 || cmp === 0 && e.originReplicaId > old.originReplicaId) winners.set(k, e);
       } else if (e.mutation.kind === "remove") for (const tag of e.mutation.tags) removed.add(tag);
+      else if (e.mutation.kind === "renew") removed.add(e.mutation.tag);
     }
     const visible = [...winners.values()].filter((e) => e.mutation.kind === "put");
-    visible.push(...s.events.filter((e) => e.mutation.kind === "add" && !removed.has(entryChangeId(e))));
+    visible.push(...s.events.filter((e) => ["add", "renew"].includes(e.mutation.kind) && !removed.has(entryChangeId(e))));
     return visible.filter((e) => {
       const m = e.mutation;
       return m.expiresAt === null || m.expiresAt > now;
@@ -10565,7 +12169,7 @@ var EntryReplicationController = class {
     const page = { events: [], next: afterRevision, more: afterRevision < all.length };
     for (let n = afterRevision; n < all.length; n++) {
       const candidate = { events: [...page.events, copy8(all[n])], next: n + 1, more: n + 1 < all.length };
-      if (bytes6(candidate) > maxBytes) {
+      if (bytes9(candidate) > maxBytes) {
         if (!page.events.length) throw new ResourceExhausted("next change does not fit page");
         break;
       }
@@ -10610,7 +12214,7 @@ var EntryReplicationController = class {
     if (!m || !exact(m, ["version", "id", "spaceId", "authorityId", "configHash", "sourceReplicaId", "sourceIncarnation", "revision", "eventCount", "bytes", "pageBytes", "pageCount", "expiresAt", "seedHash", "rootHash"]) || m.version !== 1 || !/^ss[0-9a-f]{32}$/.test(m.id) || m.spaceId !== this.config.spaceId || m.authorityId !== this.config.authorityId || m.configHash !== this.configHash || !this.config.members.some((p) => p.replicaId === m.sourceReplicaId && p.incarnation === m.sourceIncarnation) || !number(m.revision) || m.revision !== m.eventCount || !number(m.eventCount) || !number(m.bytes) || m.bytes < 2 || m.bytes > this.maxHistoryBytes || !number(m.pageBytes) || m.pageBytes < 1024 || 2 * m.pageBytes + 16384 > this.maxBatchBytes || !number(m.pageCount) || m.pageCount < 1 || m.pageCount > 2048 || !number(m.expiresAt) || !sha(m.seedHash) || !sha(m.rootHash) || manifestSeed(m) !== m.seedHash) throw new ReplicationConflict("invalid snapshot manifest or binding");
   }
   validatePage(m, p, index, offset, previousHash) {
-    if (!p || !exact(p, ["snapshotId", "index", "offset", "next", "events", "previousHash", "sha256"]) || p.snapshotId !== m.id || p.index !== index || p.offset !== offset || p.next !== index + 1 || p.previousHash !== previousHash || !Array.isArray(p.events) || p.events.length > 1024 || !p.events.length && m.eventCount !== 0 || !sha(p.sha256) || pageHash(p) !== p.sha256 || bytes6(p) > m.pageBytes || offset + p.events.length > m.eventCount) throw new ReplicationConflict("snapshot page changed, is out of order or exceeds budget");
+    if (!p || !exact(p, ["snapshotId", "index", "offset", "next", "events", "previousHash", "sha256"]) || p.snapshotId !== m.id || p.index !== index || p.offset !== offset || p.next !== index + 1 || p.previousHash !== previousHash || !Array.isArray(p.events) || p.events.length > 1024 || !p.events.length && m.eventCount !== 0 || !sha(p.sha256) || pageHash(p) !== p.sha256 || bytes9(p) > m.pageBytes || offset + p.events.length > m.eventCount) throw new ReplicationConflict("snapshot page changed, is out of order or exceeds budget");
   }
   async stagedEvents(m, load, count2 = m.pageCount) {
     const events = [];
@@ -10622,15 +12226,11 @@ var EntryReplicationController = class {
       events.push(...copy8(chunk.page.events));
       chain = chunk.page.sha256;
     }
-    if (count2 === m.pageCount && (chain !== m.rootHash || events.length !== m.eventCount || bytes6(events) !== m.bytes)) throw new ReplicationConflict("snapshot is incomplete or its final hash changed");
+    if (count2 === m.pageCount && (chain !== m.rootHash || events.length !== m.eventCount || bytes9(events) !== m.bytes)) throw new ReplicationConflict("snapshot is incomplete or its final hash changed");
     return events;
   }
-  async startSnapshot(pageBytes = Math.floor((this.maxBatchBytes - 16384) / 2)) {
-    if (!number(pageBytes) || pageBytes < 1024 || 2 * pageBytes + 16384 > this.maxBatchBytes) throw new ReplicationConflict("invalid snapshot page budget");
-    const state = await this.state("export"), events = copy8(state?.events ?? []), now = this.now(), cache = this.cache();
-    for (const [key2, v] of cache) if (v.manifest.expiresAt <= now) cache.delete(key2);
-    const manifest = { version: 1, id: "ss" + randomBytes10(16).toString("hex"), spaceId: this.config.spaceId, authorityId: this.config.authorityId, configHash: this.configHash, sourceReplicaId: this.config.replicaId, sourceIncarnation: this.config.incarnation, revision: events.length, eventCount: events.length, bytes: bytes6(events), pageBytes, pageCount: 0, expiresAt: now + 6e4, seedHash: "", rootHash: "" };
-    if (!Number.isSafeInteger(manifest.expiresAt) || manifest.bytes > 64 * 1024 * 1024) throw new ResourceExhausted("snapshot cache byte bound exceeded");
+  packSnapshot(events, template2) {
+    const manifest = copy8(template2), pageBytes = manifest.pageBytes;
     const pages = [];
     let offset = 0;
     do {
@@ -10638,7 +12238,7 @@ var EntryReplicationController = class {
       while (offset < events.length && page.events.length < 1024) {
         const e = events[offset];
         page.events.push(e);
-        if (bytes6(page) > pageBytes) {
+        if (bytes9(page) > pageBytes) {
           page.events.pop();
           if (!page.events.length) throw new ResourceExhausted("one change does not fit snapshot page");
           break;
@@ -10657,6 +12257,15 @@ var EntryReplicationController = class {
       chain = page.sha256;
     }
     manifest.rootHash = chain;
+    return { manifest, pages };
+  }
+  async startSnapshot(pageBytes = Math.floor((this.maxBatchBytes - 16384) / 2)) {
+    if (!number(pageBytes) || pageBytes < 1024 || 2 * pageBytes + 16384 > this.maxBatchBytes) throw new ReplicationConflict("invalid snapshot page budget");
+    const state = await this.state("export"), events = copy8(state?.events ?? []), now = this.now(), cache = this.cache();
+    for (const [key2, v] of cache) if (v.manifest.expiresAt <= now) cache.delete(key2);
+    const template2 = { version: 1, id: "ss" + randomBytes10(16).toString("hex"), spaceId: this.config.spaceId, authorityId: this.config.authorityId, configHash: this.configHash, sourceReplicaId: this.config.replicaId, sourceIncarnation: this.config.incarnation, revision: events.length, eventCount: events.length, bytes: bytes9(events), pageBytes, pageCount: 0, expiresAt: now + 6e4, seedHash: "", rootHash: "" };
+    if (!Number.isSafeInteger(template2.expiresAt) || template2.bytes > 64 * 1024 * 1024) throw new ResourceExhausted("snapshot cache byte bound exceeded");
+    const { manifest, pages } = this.packSnapshot(events, template2);
     while (cache.size >= 16 || [...cache.values()].reduce((n, v) => n + v.manifest.bytes, 0) + manifest.bytes > 64 * 1024 * 1024) {
       const first = cache.keys().next().value;
       if (first === void 0) throw new ResourceExhausted("snapshot cache is full");
@@ -10694,6 +12303,8 @@ var EntryReplicationController = class {
       if (this.now() >= manifest.expiresAt) throw new SnapshotExpired("snapshot expired before import");
       const base = await tx.doc(EntryReplicas, this.documentKey, null);
       this.bind(base);
+      const maintenance = await tx.doc(EntrySnapshotMaintenance, this.documentKey, null);
+      if (maintenance.job && maintenance.job.phase !== "completed") throw new ReplicationConflict("snapshot maintenance is active");
       const reservedBytes = manifest.bytes + manifest.pageCount * 1024;
       if (Object.values(ledger.transfers).some((t) => t.phase === "receiving" || t.phase === "aborting") || Object.keys(ledger.transfers).length >= 16 || (base.segments?.length ?? 0) >= 16 || ledger.retainedBytes + reservedBytes > 2 * this.maxHistoryBytes) throw new ResourceExhausted("snapshot transfer or retained staging capacity exhausted");
       const transfer = { manifest, phase: "receiving", nextPage: 0, nextOffset: 0, chainHash: manifest.seedHash, receivedBytes: 2, reservedBytes, cleanupCursor: 0 };
@@ -10716,7 +12327,7 @@ var EntryReplicationController = class {
   async importSnapshotPage(snapshotId, input) {
     this.snapshotId(snapshotId);
     const page = copy8(input);
-    if (bytes6(page) > Math.floor((this.maxBatchBytes - 16384) / 2)) throw new ResourceExhausted("snapshot page exceeds atomic staging budget");
+    if (bytes9(page) > Math.floor((this.maxBatchBytes - 16384) / 2)) throw new ResourceExhausted("snapshot page exceeds atomic staging budget");
     await this.check("import");
     return this.o.host.commit(async (tx) => {
       await this.check("import");
@@ -10747,7 +12358,7 @@ var EntryReplicationController = class {
       const chunk = await tx.doc(EntrySnapshotChunks, chunkKey(this.documentKey, snapshotId, page.index), null);
       if (chunk.page !== null) throw new ReplicationConflict("staging page is already occupied");
       chunk.page = copy8(page);
-      t.receivedBytes += bytes6(page.events) - 2 + (t.nextOffset > 0 && page.events.length > 0 ? 1 : 0);
+      t.receivedBytes += bytes9(page.events) - 2 + (t.nextOffset > 0 && page.events.length > 0 ? 1 : 0);
       t.nextPage++;
       t.nextOffset += page.events.length;
       t.chainHash = page.sha256;
@@ -10765,7 +12376,7 @@ var EntryReplicationController = class {
       const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = ledger.transfers[snapshotId];
       if (!t) throw new ReplicationConflict("unknown snapshot import");
       this.bindManifest(t.manifest);
-      if (t.phase === "completed") {
+      if (["completed", "retiring", "retired"].includes(t.phase)) {
         await this.check("import");
         return copy8(t.result);
       }
@@ -10777,7 +12388,7 @@ var EntryReplicationController = class {
       this.clockSafe(logical, now);
       const added = this.append(logical, events, now);
       const segments = [...base.segments ?? [], { manifest: copy8(t.manifest), overlayThrough: base.events.length }];
-      if (segments.length > 16 || bytes6({ ...logical, segments, config: this.config, configHash: this.configHash }) > this.maxHistoryBytes) throw new ResourceExhausted("published snapshot exceeds retained history budget");
+      if (segments.length > 16 || bytes9({ ...logical, segments, config: this.config, configHash: this.configHash }) > this.maxHistoryBytes) throw new ResourceExhausted("published snapshot exceeds retained history budget");
       base.config ??= copy8(this.config);
       base.configHash = this.configHash;
       base.segments = segments;
@@ -10798,7 +12409,7 @@ var EntryReplicationController = class {
       const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = ledger.transfers[snapshotId];
       if (!t) throw new ReplicationConflict("unknown snapshot import");
       this.bindManifest(t.manifest);
-      if (t.phase === "completed") throw new ReplicationConflict("published generation cannot be aborted");
+      if (["completed", "retiring", "retired", "consolidating"].includes(t.phase)) throw new ReplicationConflict("published or maintenance generation cannot be aborted");
       if (t.phase === "aborted") {
         await this.check("import");
         return copy8(t);
@@ -10815,6 +12426,125 @@ var EntryReplicationController = class {
       }
       await this.check("import");
       return copy8(t);
+    }, this.o.ctx);
+  }
+  /** Capture a stable logical prefix; replacement copies data, never discards causal/dedup history. */
+  async startSnapshotMaintenance(requestId, pageBytes = Math.floor((this.maxBatchBytes - 16384) / 2)) {
+    if (!id(requestId) || !number(pageBytes) || pageBytes < 1024 || 2 * pageBytes + 16384 > this.maxBatchBytes) throw new ReplicationConflict("invalid maintenance request or page budget");
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const maintenance = await tx.doc(EntrySnapshotMaintenance, this.documentKey, null);
+      if (maintenance.job?.requestId === requestId) {
+        if (maintenance.job.manifest.pageBytes !== pageBytes) throw new ReplicationConflict("maintenance request changed page budget");
+        await this.check("import");
+        return copy8(maintenance.job);
+      }
+      if (maintenance.job && maintenance.job.phase !== "completed") throw new ReplicationConflict("another snapshot maintenance request is active");
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null);
+      if (Object.values(ledger.transfers).some((t) => t.maintenanceRequestId === requestId)) throw new ReplicationConflict("older maintenance receipt cannot be restarted");
+      if (Object.values(ledger.transfers).some((t) => !["completed", "retired", "aborted"].includes(t.phase))) throw new ReplicationConflict("finish or abort existing snapshot transfers first");
+      if (Object.keys(ledger.transfers).length >= 17) throw new ResourceExhausted("retire expired snapshot receipts before maintenance");
+      const logical = await this.materializeIn(tx, base), now = this.now();
+      this.clockSafe(logical, now);
+      const template2 = { version: 1, id: "ss" + randomBytes10(16).toString("hex"), spaceId: this.config.spaceId, authorityId: this.config.authorityId, configHash: this.configHash, sourceReplicaId: this.config.replicaId, sourceIncarnation: this.config.incarnation, revision: logical.events.length, eventCount: logical.events.length, bytes: bytes9(logical.events), pageBytes, pageCount: 0, expiresAt: now + 6e4, seedHash: "", rootHash: "" };
+      if (!Number.isSafeInteger(template2.expiresAt)) throw new ReplicationConflict("maintenance deadline overflow");
+      const { manifest } = this.packSnapshot(logical.events, template2), reservedBytes = manifest.bytes + manifest.pageCount * 1024;
+      if (ledger.retainedBytes + reservedBytes > 3 * this.maxHistoryBytes + 2048 * 1024) throw new ResourceExhausted("maintenance retained byte bound exceeded");
+      ledger.transfers[manifest.id] = { maintenanceRequestId: requestId, manifest, phase: "consolidating", nextPage: 0, nextOffset: 0, chainHash: manifest.seedHash, receivedBytes: 2, reservedBytes, cleanupCursor: 0 };
+      ledger.retainedBytes += reservedBytes;
+      maintenance.job = { requestId, phase: "copying", manifest, nextPage: 0, overlayCount: base.events.length, previous: (base.segments ?? []).map((s) => ({ snapshotId: s.manifest.id, pageCount: s.manifest.pageCount, nextPage: 0 })) };
+      await this.check("import");
+      return copy8(maintenance.job);
+    }, this.o.ctx);
+  }
+  async snapshotMaintenanceStatus() {
+    await this.check("import");
+    const state = await this.o.host.snapshot(EntrySnapshotMaintenance, this.documentKey, this.o.ctx);
+    await this.check("import");
+    return state?.job ? copy8(state.job) : null;
+  }
+  /** One page copy, atomic reference publication, or one obsolete-page retirement per invocation. */
+  async advanceSnapshotMaintenance(requestId) {
+    if (!id(requestId)) throw new ReplicationConflict("invalid maintenance request");
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const maintenance = await tx.doc(EntrySnapshotMaintenance, this.documentKey, null), job = maintenance.job;
+      if (!job || job.requestId !== requestId) throw new ReplicationConflict("unknown maintenance request");
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      this.bindManifest(job.manifest);
+      const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), replacement = ledger.transfers[job.manifest.id];
+      if (!replacement) throw new ReplicationConflict("maintenance receipt missing");
+      if (job.phase === "copying") {
+        if ((base.segments ?? []).map((s) => s.manifest.id).join(",") !== job.previous.map((s) => s.snapshotId).join(",") || base.events.length < job.overlayCount) throw new ReplicationConflict("maintenance source references changed");
+        const logical = await this.materializeIn(tx, base), prefix = logical.events.slice(0, job.manifest.revision), packed = this.packSnapshot(prefix, job.manifest);
+        if (canonical2(packed.manifest) !== canonical2(job.manifest)) throw new ReplicationConflict("maintenance source prefix changed");
+        if (job.nextPage < job.manifest.pageCount) {
+          const page = packed.pages[job.nextPage], chunk = await tx.doc(EntrySnapshotChunks, chunkKey(this.documentKey, job.manifest.id, job.nextPage), null);
+          if (chunk.page !== null) throw new ReplicationConflict("maintenance page already occupied");
+          chunk.page = copy8(page);
+          job.nextPage++;
+          replacement.nextPage = job.nextPage;
+          replacement.nextOffset += page.events.length;
+          replacement.chainHash = page.sha256;
+          replacement.receivedBytes += bytes9(page.events) - 2 + (page.offset > 0 && page.events.length > 0 ? 1 : 0);
+        } else {
+          const staged = await this.stagedEvents(job.manifest, (key2) => tx.doc(EntrySnapshotChunks, key2, null));
+          if (canonical2(staged) !== canonical2(prefix)) throw new ReplicationConflict("maintenance publication prefix changed");
+          base.events.splice(0, job.overlayCount);
+          base.segments = [{ manifest: copy8(job.manifest), overlayThrough: 0 }];
+          for (const previous of job.previous) {
+            const t = ledger.transfers[previous.snapshotId];
+            if (!t || t.phase !== "completed") throw new ReplicationConflict("maintenance generation receipt changed");
+            t.phase = "retiring";
+          }
+          replacement.phase = "completed";
+          replacement.result = { added: 0, revision: job.manifest.revision, sourceRevision: job.manifest.revision };
+          job.phase = "cleaning";
+        }
+      } else if (job.phase === "cleaning") {
+        const previous = job.previous.find((p) => p.nextPage < p.pageCount);
+        if (previous) {
+          await tx.retireDoc(EntrySnapshotChunks, chunkKey(this.documentKey, previous.snapshotId, previous.nextPage));
+          previous.nextPage++;
+          if (previous.nextPage === previous.pageCount) {
+            const t = ledger.transfers[previous.snapshotId];
+            if (!t || t.phase !== "retiring") throw new ReplicationConflict("maintenance cleanup receipt changed");
+            t.phase = "retired";
+            t.cleanupCursor = t.nextPage;
+            ledger.retainedBytes -= t.reservedBytes;
+          }
+        } else job.phase = "completed";
+      }
+      await this.check("import");
+      return copy8(job);
+    }, this.o.ctx);
+  }
+  /** Drop one expired, unreachable transfer receipt. Never delete a live generation or its seed checkpoint. */
+  async forgetSnapshotReceipt(snapshotId) {
+    this.snapshotId(snapshotId);
+    await this.check("import");
+    return this.o.host.commit(async (tx) => {
+      await this.check("import");
+      const base = await tx.doc(EntryReplicas, this.documentKey, null);
+      this.bind(base);
+      const now = this.now();
+      this.clockSafe(base, now);
+      const ledger = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = ledger.transfers[snapshotId];
+      if (!t) {
+        await this.check("import");
+        return false;
+      }
+      this.bindManifest(t.manifest);
+      const maintenance = await tx.doc(EntrySnapshotMaintenance, this.documentKey, null);
+      if (!["retired", "aborted"].includes(t.phase) || t.manifest.expiresAt > now || base.segments?.some((s) => s.manifest.id === snapshotId) || maintenance.job?.phase !== "completed" && maintenance.job?.previous.some((p) => p.snapshotId === snapshotId)) throw new ReplicationConflict("snapshot receipt is live or has not expired");
+      delete ledger.transfers[snapshotId];
+      await this.check("import");
+      return true;
     }, this.o.ctx);
   }
   streamIdentity() {
@@ -10839,7 +12569,7 @@ var EntryReplicationController = class {
     const page = { source: this.streamIdentity(), after, next: after, headRevision: events.length, more: after < events.length, events: [], sha256: "0".repeat(64) };
     for (let n = after; n < events.length && page.events.length < 1024; n++) {
       const candidate = { ...page, events: [...page.events, copy8(events[n])], next: n + 1, more: n + 1 < events.length };
-      if (bytes6(candidate) > maxBytes) {
+      if (bytes9(candidate) > maxBytes) {
         if (!page.events.length) throw new ResourceExhausted("next change does not fit stream page");
         break;
       }
@@ -10860,11 +12590,11 @@ var EntryReplicationController = class {
       const ledger = await tx.doc(EntryStreamCheckpoints, this.documentKey, null), old = ledger.links[source.streamId];
       if (old && canonical2(old.source) !== canonical2(source)) throw new ReplicationConflict("stored stream source changed");
       let seed = 0;
-      if (snapshotId !== void 0) {
+      if (snapshotId !== void 0 && !(old && old.seedSnapshotId === snapshotId)) {
         const transfers = await tx.doc(EntrySnapshotTransfers, this.documentKey, null), t = transfers.transfers[snapshotId];
-        if (!t || t.phase !== "completed" || !t.result || t.manifest.sourceReplicaId !== source.replicaId || t.manifest.sourceIncarnation !== source.incarnation) throw new ReplicationConflict("stream seed requires completed snapshot from this source");
+        if (!t || !["completed", "retiring", "retired"].includes(t.phase) || !t.result || t.manifest.sourceReplicaId !== source.replicaId || t.manifest.sourceIncarnation !== source.incarnation) throw new ReplicationConflict("stream seed requires completed snapshot from this source");
         this.bindManifest(t.manifest);
-        if (t.result.sourceRevision !== t.manifest.revision || !base.segments?.some((s) => s.manifest.id === snapshotId && canonical2(s.manifest) === canonical2(t.manifest))) throw new ReplicationConflict("stream seed snapshot is not published");
+        if (t.result.sourceRevision !== t.manifest.revision || !(t.phase === "retiring" || t.phase === "retired" || base.segments?.some((s) => s.manifest.id === snapshotId && canonical2(s.manifest) === canonical2(t.manifest)))) throw new ReplicationConflict("stream seed snapshot is not published");
         seed = t.result.sourceRevision;
       }
       if (!old) {
@@ -10892,7 +12622,7 @@ var EntryReplicationController = class {
     const page = copy8(input);
     if (!page || !exact(page, ["source", "after", "next", "headRevision", "more", "events", "sha256"])) throw new ReplicationConflict("invalid stream page");
     this.validateStream(page.source);
-    if (!number(page.after) || !number(page.next) || !number(page.headRevision) || page.after > page.next || page.next > page.headRevision || typeof page.more !== "boolean" || page.more !== page.next < page.headRevision || !Array.isArray(page.events) || page.events.length > 1024 || page.next - page.after !== page.events.length || !page.events.length && page.more || !sha(page.sha256) || this.streamPageHash(page) !== page.sha256 || bytes6(page) > 256 * 1024) throw new ReplicationConflict("stream page range or hash changed");
+    if (!number(page.after) || !number(page.next) || !number(page.headRevision) || page.after > page.next || page.next > page.headRevision || typeof page.more !== "boolean" || page.more !== page.next < page.headRevision || !Array.isArray(page.events) || page.events.length > 1024 || page.next - page.after !== page.events.length || !page.events.length && page.more || !sha(page.sha256) || this.streamPageHash(page) !== page.sha256 || bytes9(page) > 256 * 1024) throw new ReplicationConflict("stream page range or hash changed");
     this.budget(page.events);
     await this.check("import");
     return this.o.host.commit(async (tx) => {
@@ -10920,9 +12650,259 @@ var EntryReplicationController = class {
   }
 };
 
+// src/primary-sync.ts
+init_canonical();
+import { DatabaseSync as DatabaseSync3 } from "node:sqlite";
+import { createHash as createHash24 } from "node:crypto";
+import { mkdirSync as mkdirSync5, lstatSync as lstatSync7, chmodSync as chmodSync3 } from "node:fs";
+import { dirname as dirname5 } from "node:path";
+var PrimarySyncBlocked = class extends Error {
+};
+var CommitSealed = class extends Error {
+  revision;
+  hash;
+  constructor(intent, cause) {
+    super("commit is durably sealed; resolve this candidate before admitting new work", { cause });
+    this.revision = intent.revision;
+    this.hash = intent.hash;
+  }
+};
+var canonical3 = (v) => canonicalJson(v);
+var hash8 = (v) => createHash24("sha256").update(canonical3(v)).digest("hex");
+var copy9 = (v) => JSON.parse(canonical3(v));
+var zero = "0".repeat(64);
+var kind = "pi-spaces.primary-sync-storage-marker";
+var exact2 = (v, keys) => Object.keys(v).sort().join(",") === [...keys].sort().join(",");
+var name2 = (v) => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
+var integer = (v) => Number.isSafeInteger(v) && v >= 0;
+function configOf2(input) {
+  const c = copy9(input);
+  if (!c || !exact2(c, ["spaceId", "authorityId", "primaryEpoch", "replicaConfigVersion", "primaryReplica", "standbyReplica"]) || ![c.spaceId, c.authorityId, c.primaryReplica, c.standbyReplica].every(name2) || c.primaryReplica === c.standbyReplica || !integer(c.primaryEpoch) || c.primaryEpoch < 1 || !integer(c.replicaConfigVersion) || c.replicaConfigVersion < 1) throw new PrimarySyncBlocked("invalid fixed primary/standby configuration");
+  return c;
+}
+var address = (spaceId) => ({ kind, key: spaceId, scope: { kind: "session" } });
+async function marker(storage, c, ctx) {
+  const record2 = await storage.findDocument(address(c.spaceId), "current", ctx);
+  if (!record2) return null;
+  const doc = await storage.document(record2.id, "current", ctx);
+  if (!doc || doc.version !== 1) throw new PrimarySyncBlocked("storage replication marker missing or invalid");
+  return { record: record2, value: doc.value };
+}
+var PrimarySyncJournal = class {
+  c;
+  get config() {
+    return copy9(this.c);
+  }
+  configHash;
+  maxIntentBytes;
+  db;
+  maxHistoryBytes;
+  constructor(path, config, o = {}) {
+    this.c = configOf2(config);
+    this.configHash = hash8(this.c);
+    this.maxIntentBytes = o.maxIntentBytes ?? 256 * 1024;
+    this.maxHistoryBytes = o.maxHistoryBytes ?? 64 * 1024 * 1024;
+    if (!integer(this.maxIntentBytes) || this.maxIntentBytes < 32768 || this.maxIntentBytes > 1024 * 1024 || !integer(this.maxHistoryBytes) || this.maxHistoryBytes < this.maxIntentBytes || this.maxHistoryBytes > 1024 * 1024 * 1024) throw new PrimarySyncBlocked("invalid journal bounds");
+    mkdirSync5(dirname5(path), { recursive: true, mode: 448 });
+    try {
+      if (lstatSync7(path).isSymbolicLink()) throw new PrimarySyncBlocked("journal must not be a symlink");
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    this.db = new DatabaseSync3(path);
+    chmodSync3(path, 384);
+    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sync_intents (revision INTEGER PRIMARY KEY, hash TEXT NOT NULL, intent TEXT NOT NULL)");
+    try {
+      this.transaction(() => {
+        const prior = this.meta("config");
+        if (prior && prior !== canonical3(this.config)) throw new PrimarySyncBlocked("stored replica configuration changed");
+        if (!prior) this.setMeta("config", canonical3(this.config));
+      });
+      let previous = zero, revision2 = 0;
+      for (const row of this.db.prepare("SELECT revision,hash,intent FROM sync_intents ORDER BY revision").all()) {
+        const i = JSON.parse(row.intent);
+        this.validate(i);
+        if (row.revision !== i.revision || row.hash !== i.hash) throw new PrimarySyncBlocked("journal index disagrees with immutable intent");
+        if (i.revision !== ++revision2 || i.previousHash !== previous) throw new PrimarySyncBlocked("journal history is not a complete prefix");
+        previous = i.hash;
+      }
+      if (!integer(this.appliedRevision) || this.appliedRevision > revision2) throw new PrimarySyncBlocked("journal applied position exceeds history");
+    } catch (e) {
+      this.db.close();
+      throw e;
+    }
+  }
+  transaction(fn) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const v = fn();
+      this.db.exec("COMMIT");
+      return v;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+  meta(key2) {
+    return this.db.prepare("SELECT value FROM sync_meta WHERE key=?").get(key2)?.value;
+  }
+  setMeta(key2, value) {
+    this.db.prepare("INSERT INTO sync_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key2, value);
+  }
+  get appliedRevision() {
+    return Number(this.meta("applied") ?? 0);
+  }
+  head() {
+    const row = this.db.prepare("SELECT revision,hash FROM sync_intents ORDER BY revision DESC LIMIT 1").get();
+    return { ...row ?? { revision: 0, hash: zero }, configHash: this.configHash };
+  }
+  intent(revision2) {
+    if (!integer(revision2) || revision2 < 1) throw new PrimarySyncBlocked("invalid commit revision");
+    const row = this.db.prepare("SELECT intent FROM sync_intents WHERE revision=?").get(revision2);
+    return row ? JSON.parse(row.intent) : null;
+  }
+  validate(i) {
+    if (!i || !exact2(i, ["version", "config", "revision", "previousHash", "batchHash", "deltas", "validatedAt", "hash"]) || i.version !== 1 || canonical3(i.config) !== canonical3(this.config) || !integer(i.revision) || i.revision < 1 || !integer(i.validatedAt) || !Array.isArray(i.deltas) || i.deltas.length < 2 || Buffer.byteLength(canonical3(i)) > this.maxIntentBytes) throw new PrimarySyncBlocked("invalid or oversized commit intent");
+    const { hash: signature, ...body } = i;
+    if (signature !== hash8(body) || i.batchHash !== hash8(i.deltas.slice(0, -1))) throw new PrimarySyncBlocked("commit intent hash changed");
+    const mark = i.deltas.at(-1);
+    if (mark.type !== "document.create" && mark.type !== "document.change" || mark.content.kind !== "base" || mark.content.version !== 1 || canonical3(mark.content.value) !== canonical3({ configHash: this.configHash, revision: i.revision, batchHash: i.batchHash, previousHash: i.previousHash })) throw new PrimarySyncBlocked("commit marker does not bind the batch");
+    if (mark.type === "document.create" && canonical3({ kind: mark.record.kind, key: mark.record.key, scope: mark.record.scope }) !== canonical3(address(this.config.spaceId))) throw new PrimarySyncBlocked("commit marker address changed");
+    for (const write2 of i.deltas.slice(0, -1)) if (write2.type === "document.create" && write2.record.kind === kind || write2.type === "document.change" && write2.id === (mark.type === "document.create" ? mark.record.id : mark.id) || write2.type === "document.retire" && write2.id === (mark.type === "document.create" ? mark.record.id : mark.id)) throw new PrimarySyncBlocked("business batch touches replication marker");
+  }
+  insert(i) {
+    const old = this.intent(i.revision);
+    if (old) {
+      if (canonical3(old) !== canonical3(i)) throw new PrimarySyncBlocked("immutable commit revision changed");
+      return;
+    }
+    const head = this.head();
+    if (i.revision !== head.revision + 1 || i.previousHash !== head.hash) throw new PrimarySyncBlocked("commit history gap or fork");
+    const encoded = canonical3(i), used = this.db.prepare("SELECT COALESCE(SUM(length(CAST(intent AS BLOB))),0) AS n FROM sync_intents").get().n;
+    if (used + Buffer.byteLength(encoded) > this.maxHistoryBytes) throw new PrimarySyncBlocked("sync history is full; no committed result was discarded");
+    this.db.prepare("INSERT INTO sync_intents(revision,hash,intent) VALUES(?,?,?)").run(i.revision, i.hash, encoded);
+  }
+  seal(deltas, validatedAt) {
+    return this.transaction(() => {
+      const head = this.head();
+      if (head.revision !== this.appliedRevision) throw new PrimarySyncBlocked("a sealed candidate is already unresolved");
+      const body = { version: 1, config: copy9(this.config), revision: head.revision + 1, previousHash: head.hash, batchHash: hash8(deltas.slice(0, -1)), deltas: copy9(deltas), validatedAt }, intent = { ...body, hash: hash8(body) };
+      this.validate(intent);
+      this.insert(intent);
+      return copy9(intent);
+    });
+  }
+  async accept(input) {
+    const i = copy9(input);
+    this.validate(i);
+    this.transaction(() => this.insert(i));
+    return { revision: i.revision, hash: i.hash, configHash: this.configHash };
+  }
+  markApplied(i) {
+    this.transaction(() => {
+      const stored = this.intent(i.revision);
+      if (!stored || stored.hash !== i.hash) throw new PrimarySyncBlocked("cannot apply an unknown intent");
+      if (this.appliedRevision === i.revision) return;
+      if (this.appliedRevision !== i.revision - 1) throw new PrimarySyncBlocked("applied history gap");
+      this.setMeta("applied", String(i.revision));
+    });
+  }
+  close() {
+    this.db.close();
+  }
+};
+async function apply3(storage, journal, intent, ctx) {
+  const m = await marker(storage, journal.config, ctx), expected = { configHash: journal.configHash, revision: intent.revision, batchHash: intent.batchHash, previousHash: intent.previousHash };
+  if (m && canonical3(m.value) === canonical3(expected)) {
+    journal.markApplied(intent);
+    return null;
+  }
+  const previous = intent.revision > 1 ? journal.intent(intent.revision - 1) : null;
+  if (intent.revision === 1 ? m !== null : !m || m.value.configHash !== journal.configHash || m.value.revision !== intent.revision - 1 || m.value.batchHash !== previous?.batchHash || m.value.previousHash !== previous?.previousHash) throw new PrimarySyncBlocked("data marker disagrees with the complete journal prefix");
+  const seq = await storage.commit(copy9(intent.deltas), ctx);
+  journal.markApplied(intent);
+  return seq;
+}
+async function verifyDataPrefix(storage, journal, ctx) {
+  const m = await marker(storage, journal.config, ctx), applied = journal.appliedRevision;
+  if (applied === 0) {
+    if (m) throw new PrimarySyncBlocked("untracked replicated data marker");
+    const docs = await storage.scanDocuments({ scope: { kind: "session" }, at: "current" }, 1, void 0, ctx), conversations = await storage.scanConversations({}, 1, void 0, ctx), tasks = await storage.scanTasks({}, 1, void 0, ctx), submissions = await storage.scanSubmissions({}, 1, void 0, ctx);
+    if (docs.items.length || conversations.items.length || tasks.items.length || submissions.items.length) throw new PrimarySyncBlocked("bootstrap requires an empty dedicated storage domain");
+  } else {
+    const i = journal.intent(applied);
+    if (!m || canonical3(m.value) !== canonical3({ configHash: journal.configHash, revision: applied, batchHash: i.batchHash, previousHash: i.previousHash })) throw new PrimarySyncBlocked("materialized data does not match applied journal prefix");
+  }
+}
+async function materializeSyncHistory(storage, journal, ctx) {
+  const next = journal.appliedRevision < journal.head().revision ? journal.intent(journal.appliedRevision + 1) : null;
+  const current = await marker(storage, journal.config, ctx);
+  if (!(next && current?.value.revision === next.revision && current.value.batchHash === next.batchHash)) await verifyDataPrefix(storage, journal, ctx);
+  for (let r = journal.appliedRevision + 1; r <= journal.head().revision; r++) {
+    const i = journal.intent(r);
+    if (!i) throw new PrimarySyncBlocked("missing accepted prefix");
+    await apply3(storage, journal, i, ctx);
+  }
+}
+async function recoverPrimarySync(storage, journal, peer, ctx, assertPrimary) {
+  if (journal.head().revision - journal.appliedRevision > 1) throw new PrimarySyncBlocked("primary has more than one unresolved candidate");
+  if (journal.head().revision === journal.appliedRevision) {
+    await verifyDataPrefix(storage, journal, ctx);
+    return;
+  }
+  const i = journal.intent(journal.head().revision), m = await marker(storage, journal.config, ctx);
+  if (!m || canonical3(m.value) !== canonical3({ configHash: journal.configHash, revision: i.revision, batchHash: i.batchHash, previousHash: i.previousHash })) await verifyDataPrefix(storage, journal, ctx);
+  await assertPrimary();
+  const ack = await peer.accept(copy9(i));
+  if (canonical3(ack) !== canonical3({ revision: i.revision, hash: i.hash, configHash: journal.configHash })) throw new PrimarySyncBlocked("standby ACK does not match sealed intent");
+  await assertPrimary();
+  await apply3(storage, journal, i, ctx);
+}
+function primarySyncStorage(storage, journal, peer, o) {
+  let poisoned = false, busy = false;
+  return new Proxy(storage, { get(target, property, receiver) {
+    if (property !== "commit") {
+      const v = Reflect.get(target, property, receiver);
+      return typeof v === "function" ? v.bind(target) : v;
+    }
+    return async (writes, ctx) => {
+      if (poisoned || busy || journal.head().revision !== journal.appliedRevision) throw new PrimarySyncBlocked("restart and resolve sealed history before more work");
+      busy = true;
+      let sealed;
+      try {
+        await o.assertPrimary();
+        await verifyDataPrefix(storage, journal, ctx);
+        const head = journal.head(), m = await marker(storage, journal.config, ctx);
+        if (head.revision === 0 && m || head.revision > 0 && (!m || m.value.revision !== head.revision || m.value.configHash !== journal.configHash || m.value.batchHash !== journal.intent(head.revision)?.batchHash)) throw new PrimarySyncBlocked("replication data marker differs from local history");
+        if (!writes.length) throw new PrimarySyncBlocked("empty storage batches are not sync decisions");
+        const value = { configHash: journal.configHash, revision: head.revision + 1, batchHash: hash8(writes), previousHash: head.hash };
+        const mark = m ? { type: "document.change", id: m.record.id, content: { version: 1, kind: "base", value } } : { type: "document.create", record: { ...address(journal.config.spaceId), id: await storage.mintId() }, content: { version: 1, kind: "base", value } };
+        const now = (o.now ?? Date.now)();
+        if (!integer(now)) throw new PrimarySyncBlocked("invalid validation timestamp");
+        await o.assertPrimary();
+        sealed = journal.seal([...copy9(writes), mark], now);
+        const ack = await peer.accept(copy9(sealed));
+        if (canonical3(ack) !== canonical3({ revision: sealed.revision, hash: sealed.hash, configHash: journal.configHash })) throw new PrimarySyncBlocked("standby ACK does not match sealed intent");
+        await o.assertPrimary();
+        const seq = await apply3(storage, journal, sealed, ctx);
+        if (seq === null) throw new PrimarySyncBlocked("unexpected already-applied candidate");
+        return seq;
+      } catch (e) {
+        if (sealed) {
+          poisoned = true;
+          throw new CommitSealed(sealed, e);
+        }
+        throw e;
+      } finally {
+        busy = false;
+      }
+    };
+  } });
+}
+
 // src/index.ts
 var MAX_WAIT_MS = 6e4;
-var Claim = defineDoc6({
+var Claim = defineDoc10({
   kind: "pi-spaces.claim",
   version: 1,
   scope: "task",
@@ -11330,6 +13310,7 @@ export {
   COUNTERS,
   CapabilityDirectory,
   CapacityUnavailable,
+  CommitSealed,
   CompletionViolation,
   ControlAccess,
   ControlAckService,
@@ -11344,6 +13325,8 @@ export {
   DataAdminController,
   DelegationDenied,
   DelegationVerifier,
+  DeploymentController,
+  DeploymentState,
   DirectoryDown,
   DistributedPrincipalErasure,
   ENROLLABLE_ROLES,
@@ -11354,6 +13337,7 @@ export {
   EntryReplicationPump,
   EntryReplicationUnavailable,
   EntrySnapshotChunks,
+  EntrySnapshotMaintenance,
   EntrySnapshotTransfers,
   EntryStreamCheckpoints,
   EntryStreamCursorConflict,
@@ -11396,6 +13380,8 @@ export {
   PROTOCOL_VERSION,
   PermissionError,
   PiSpaces,
+  PrimarySyncBlocked,
+  PrimarySyncJournal,
   ProfileTransitionController,
   ProfileTransitions,
   ProvingService,
@@ -11425,9 +13411,18 @@ export {
   RouterJournal,
   RouterLeaseAuthority,
   RoutingConflict,
+  RunBusy,
+  RunController,
+  RunGateConflict,
+  RunGateService,
+  RunJournal,
   SocketRecoveryRegister,
   Space,
+  SpaceInUse,
   SpaceKeyDirectory,
+  SpaceLifecycle,
+  SpaceLifecycleJournal,
+  SpaceLifecycleService,
   SpaceService,
   SqliteRecoveryRegister,
   SshRecoveryRegister,
@@ -11440,13 +13435,21 @@ export {
   UnknownSpaceError,
   UnsupportedOperation,
   WAKE_DEBOUNCE_MS,
+  WorkerAssignments,
+  WorkerJournal,
+  WorkerSupervisor,
+  abortableSleep,
   advanceHybridClock,
+  appliedWorkers,
   argHash,
+  auditLog,
   beginRestore,
   bootstrapEnroll,
   canonicalJson,
+  capabilityHostStatus,
   checkErasureBarrier,
   claims_exports as claims,
+  collectAlerts,
   compactErasedSqlite,
   compareHybridClock,
   completeRestore,
@@ -11461,6 +13464,7 @@ export {
   dataRecoveryHandler,
   delegationForCall,
   deliverEvents,
+  deploymentCommands,
   enrollQr,
   entryChangeId,
   formatStatus,
@@ -11474,6 +13478,8 @@ export {
   keyFingerprint,
   listSpaces,
   loadFileSigner,
+  localRunMember,
+  materializeSyncHistory,
   memberReferencesIn,
   meter,
   newEnrollToken,
@@ -11482,12 +13488,15 @@ export {
   parentJournalKey,
   partitionRouterId,
   piServerTransport,
+  primarySyncStorage,
   principalId,
   principalKey,
   privateFile,
   provisionFileSigner,
+  recoverPrimarySync,
   recoveryBytes,
   releaseRestored,
+  remoteRunMember,
   renewableRouterLease,
   resolveSpaceId,
   restoreBatch,
@@ -11496,20 +13505,26 @@ export {
   rotateKeyIn,
   rotationBytes,
   rpcDomain,
+  runCommands,
+  runRecoveryIdOf,
   searchMembers,
   serveRecovery,
   serveRegister,
   serveSpace,
   serveTlsRegister,
   signDelegation,
+  signLifecycle,
   signMembership,
+  signRun,
   signedBytes,
   snapshotHash,
   snapshotSpace,
   socketTransport,
+  spaceCommands,
   spaceDoc,
   spaces,
   sshRecoveryTransport,
+  startAlertMonitor,
   startConfiguredFederation,
   startConfiguredRecovery,
   startDelivery,
@@ -11519,15 +13534,22 @@ export {
   startMemberRecoveryOnly,
   startRecoveryOnly,
   startService,
+  startWorkerSupervisor,
+  validateDeployment,
   validateFederationPolicy,
   validateHybridClock,
   validateJournalPartitions,
   verifyDetached,
   verifyFederationPolicy,
+  verifyLifecycle,
   verifyMembership,
+  verifyRun,
   verifySignature,
   verifySshFence,
+  verifyWorkers,
   watchLive,
+  webhookPublisher,
   withSpaceService,
+  workerCommands,
   writeMember
 };

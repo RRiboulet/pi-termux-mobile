@@ -48,6 +48,7 @@ export function renderMenu() {
       { href: '/terminal.html',icon: '>_', label: 'pi CLI (local)' },
       { href: '/clients.html', icon: '⊟',  label: 'Clients' },
       { href: '/spaces.html', icon: '▦', label: 'Spaces' },
+      { href: '/steuerung.html', icon: '⚙', label: 'Spaces-Steuerung' },
       { href: '/keys.html',    icon: '⚿',  label: 'Accounts' },
     ];
     for (const t of tabs) {
@@ -93,7 +94,7 @@ export function renderMenu() {
     term:     ['term'],
     clients:  ['clients'],
     keys:     ['keys'],
-    spaces:   ['spaces'],
+    spaces:   ['spaces', 'spacectl'],
   };
   const tabs = [
     { key: 'chat',    href: '/',             icon: '💬', label: 'Chat' },
