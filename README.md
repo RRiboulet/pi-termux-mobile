@@ -244,11 +244,18 @@ Volta, asdf and nodenv set `PATH` in `~/.bashrc` — through a prelude that sour
 
 ## Build
 
+From a clean checkout:
+
 ```bash
+node scripts/package-rootfs.ts            # assets/rootfs.bin  (once, or after changing the package list)
+cd runtime && npm ci --omit=dev --omit=optional --ignore-scripts && cd ..
 cd android
 JAVA_HOME=<path-to>/tools/jdk21 ./gradlew assembleDebug
-# APK: app/build/outputs/apk/debug/app-debug.apk (~107 MB, aarch64 only content)
+# APK: app/build/outputs/apk/debug/app-debug.apk (~106 MB, aarch64 only content)
 ```
+
+`gradlew` runs `scripts/prepare-runtime.py` before `preBuild`, so
+`runtime.bin` and `payload.sha256` are rebuilt on every build.
 
 Toolchain notes:
 
@@ -296,13 +303,19 @@ not additional mobile buttons or Federation services. Remote provisioning includ
 and transfers them along with the library; existing update confirmation rules still apply.
 
 ```bash
-# rootfs.bin = gzipped tar of the Termux usr/ tree
-cd debs/rootfs/data/data/com.termux/files
-tar czf ../../../../../android/app/src/main/assets/rootfs.bin usr
+# 1. the Termux userland the app runs -> assets/rootfs.bin (a few minutes, ~81 MB)
+node scripts/package-rootfs.ts
 
-# Optional manual preparation from the repository root (also performed by Gradle):
+# 2. the mobile runtime + the payload fingerprint (also performed by Gradle):
 python3 scripts/prepare-runtime.py
 ```
+
+`scripts/package-rootfs.ts` resolves the aarch64 Termux index, checks every
+.deb against its SHA-256, extracts it without maintainer scripts, and rewrites
+the prefix `/data/data/com.termux` to `/data/data/<applicationId>` in place.
+The rewrite patches the same offset, so **the applicationId must be exactly
+as long as `com.termux`** — ten characters. The script reads it from
+`android/app/build.gradle` and refuses to run otherwise.
 
 The script omits node_modules/.bin and broken links from the archive without deleting local files.
 (.bin suffix because aapt decompresses *.gz assets into the APK uncompressed.
