@@ -1,6 +1,8 @@
 # Review — PR #3 `feat(tools): a small gh for this fork`
 
 **Scope:** `feat/gh-tool` @ `c91819a`, against `master` @ `07b4199`.
+**Merged:** squash-merged as `c17be60`; the reviewed head `c91819a` and the
+fixes `f71c6a8` are in the pull request's history, not in `master`.
 +870 lines across 5 files. Two independent passes (adversarial, design), both
 on `opencode-go/minimax-m3.1-flash-free` at max thinking, plus the author's
 own checks. The branch was reviewed in a worktree at `/tmp/pr3-review`.

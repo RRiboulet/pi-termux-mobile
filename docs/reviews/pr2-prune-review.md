@@ -1,6 +1,8 @@
 # Review — PR #2 `chore: prune to a phone-only app`
 
 **Scope:** `chore/prune-unused-subsystems` @ `59bfd54`, against `master` @ `48dac56`.
+**Merged:** squash-merged as `c354e2e`; the reviewed head `59bfd54` and the
+fixes `f9180f3` are in the pull request's history, not in `master`.
 29 files, +396 / −16,598. Two independent passes (adversarial, design/complexity),
 both on `opencode-go/minimax-m3.1-flash-free` at max thinking, plus the author's
 own checks. The branches were reviewed in a worktree at `/tmp/pr2-review`.
