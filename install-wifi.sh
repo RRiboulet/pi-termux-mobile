@@ -59,7 +59,10 @@ echo "device: $DEV"
 echo "installed: $APK"
 
 # optional: start app and show bridge port once the runtime is up
-"$ADB" -s "$DEV" shell am start -n org.pimobile.app/.MainActivity >/dev/null
+# The package id, read from the build so it cannot drift from the APK.
+PKG=$(sed -n "s/^\s*applicationId\s*['\"]\([^'\"]*\)['\"].*/\1/p" android/app/build.gradle | head -1)
+echo "package: $PKG"
+"$ADB" -s "$DEV" shell am start -n "$PKG/.MainActivity" >/dev/null
 echo "app started; bridge port (after first-boot extraction):"
-echo "  $ADB -s $DEV shell run-as org.pimobile.app cat /data/data/org.pimobile.app/files/home/.pi-mobile/port"
+echo "  $ADB -s $DEV shell run-as $PKG cat /data/data/$PKG/files/home/.pi-mobile/port"
 echo "runtime log: ... files/log/node.log (same run-as trick)"

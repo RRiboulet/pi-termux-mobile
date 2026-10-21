@@ -2,8 +2,10 @@
 """Refresh pi-spaces from source and package the mobile runtime before every Android build."""
 import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -15,7 +17,8 @@ RUNTIME = ROOT / 'runtime'
 ASSETS = ROOT / 'android/app/src/main/assets'
 FILES = ['server.mjs', 'common.mjs', 'remote-env.mjs', 'env-server.mjs', 'pi-serverd.mjs',
          'space-keystore.mjs', 'spaces-mobile.mjs', 'remote-client.mjs', 'remote-provision.mjs', 'remote-state.mjs', 'pi-spaces.mjs', 'package.json',
-         'package-lock.json', 'public', 'node_modules', 'space-examples']
+         'package-lock.json', 'public', 'node_modules']
+# space-examples is optional and gitignored: it is added below only when it is actually there.
 
 source_available = (SOURCE / 'scripts/bundle-mobile.mjs').is_file()
 if not source_available:
@@ -25,9 +28,22 @@ if not source_available:
 if not (RUNTIME / 'node_modules/@earendil-works/pi-durable').is_dir():
     raise SystemExit('Mobile runtime dependencies missing; install the locked runtime dependencies first')
 if not (ASSETS / 'rootfs.bin').is_file():
-    raise SystemExit('Termux rootfs.bin is missing; prepare the rootfs asset first')
+    raise SystemExit('Termux rootfs.bin is missing; run: node scripts/package-rootfs.ts')
+
+# The rootfs is built for one package id: the Termux binaries have the prefix compiled in, and the builder rewrites
+# it in place. A rootfs built for another id half works -- the libraries load, and the shebangs and the global
+# prefix do not -- so refuse to package it instead of shipping a runtime that breaks on the phone.
+manifest_path = ASSETS / 'termux-packages.json'
+if manifest_path.is_file():
+    built_for = json.loads(manifest_path.read_text()).get('applicationId')
+    gradle = (ROOT / 'android' / 'app' / 'build.gradle').read_text()
+    ids = re.findall(r"^\s*applicationId\s+['\"]([^'\"]+)['\"]", gradle, re.M)
+    current = ids[0] if ids else None
+    if built_for != current:
+        raise SystemExit(f'rootfs.bin was built for {built_for!r} but the app id is {current!r}: '
+                         'run: node scripts/package-rootfs.ts')
 for name in FILES:
-    if name not in ('pi-spaces.mjs', 'space-examples') and not (RUNTIME / name).exists():
+    if name != 'pi-spaces.mjs' and not (RUNTIME / name).exists():
         raise SystemExit(f'Required runtime input missing: {name}')
 if source_available:
     subprocess.run(['npm', 'run', 'bundle'], cwd=SOURCE, check=True,
@@ -41,6 +57,9 @@ else:
 
 def entries(path):
     if path.name == '.bin':
+        return
+    # A path that is not there is not packaged; the optional inputs are absent in a clean checkout.
+    if not path.exists() and not path.is_symlink():
         return
     # Retain valid links, exclude broken links without deleting developer files.
     if path.is_symlink():

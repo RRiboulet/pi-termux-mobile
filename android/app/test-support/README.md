@@ -14,8 +14,8 @@ Modi: `prepare`, `pair`, `data`, `authenticate`, `enrollStatus`, `objects`,
 `rotationStatus`.
 
 Start: `adb shell am instrument -w -e mode MODE
-org.pimobile.app/org.pimobile.app.test.SpaceUiInstrumentation`; während des
-Starts die Activity mit `adb shell am start -n org.pimobile.app/.MainActivity`
+app.pidabl/org.pimobile.app.test.SpaceUiInstrumentation`; während des
+Starts die Activity mit `adb shell am start -n app.pidabl/.MainActivity`
 in den Vordergrund holen. Die Erstkopplung benötigt eine bewusst ersetzte
 eigene Identität und einen aktuellen, kurzlebigen Enrollment-QR-Inhalt.
 Nach der Abnahme die verbrauchte private Eingabedatei entfernen, normale

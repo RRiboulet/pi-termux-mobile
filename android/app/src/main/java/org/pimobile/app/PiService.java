@@ -113,10 +113,14 @@ public final class PiService extends Service {
 
         Map<String, String> env = new HashMap<>();
         env.put("HOME", home.getAbsolutePath());
-        env.put("PREFIX", prefix.getAbsolutePath());
+        // The prefix as the Termux binaries have it compiled in, not as the filesystem spells it: getFilesDir() is
+        // /data/user/0/<id>/files, while the binaries were built for /data/data/<id>/files. Same directory, different
+        // string, and pkg/dpkg compare the compiled-in one. scripts/package-rootfs.ts rewrote them to ours.
+        String prefixPath = "/data/data/" + getPackageName() + "/files/usr";
+        env.put("PREFIX", prefixPath);
         env.put("TMPDIR", new File(files, "tmp").getAbsolutePath());
-        env.put("PATH", prefix.getAbsolutePath() + "/bin:/system/bin:/system/xbin");
-        env.put("LD_LIBRARY_PATH", prefix.getAbsolutePath() + "/lib");
+        env.put("PATH", prefixPath + "/bin:/system/bin:/system/xbin");
+        env.put("LD_LIBRARY_PATH", prefixPath + "/lib");
         env.put("TERM", "dumb");
         env.put("LANG", "C.UTF-8");
         env.put("PI_WORKDIR", new File(files, "work").getAbsolutePath());
@@ -125,6 +129,12 @@ public final class PiService extends Service {
         env.put("OPENSSL_CONF", new File(prefix, "etc/tls/openssl.cnf").getAbsolutePath());
         env.put("SSL_CERT_FILE", new File(prefix, "etc/tls/cert.pem").getAbsolutePath());
         env.put("PI_SPACES_KEY_SOCKET", SpaceKeyStore.socketName());
+        // termux-exec intercepts every exec, so a child process of node (bash, git, rg) runs through the system
+        // linker instead of being exec'd out of app-private storage, and a `#!/usr/bin/env ...` script finds its
+        // interpreter. The prefix inside the preload library was rewritten to ours by the rootfs builder.
+        env.put("LD_PRELOAD", new File(prefix, "lib/libtermux-exec-ld-preload.so").getAbsolutePath());
+        env.put("TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE", "force");
+        env.put("TERMUX_EXEC__EXECVE_CALL__INTERCEPT", "1");
 
         // a stale port file would make the UI load a dead bridge address
         new File(new File(home, ".pi-mobile"), "port").delete();

@@ -238,17 +238,43 @@ Volta, asdf and nodenv set `PATH` in `~/.bashrc` — through a prelude that sour
   + ssh tunnel), `remote-env.mjs`/`env-server.mjs` (tool exec),
   `public/` (chat, keys, clients, remote, terminal pages + shared menu),
   package.json for prod node_modules
-- `debs/` — Termux apt packages (aarch64) + extracted `rootfs/` used to build
-  `rootfs.bin` (see below)
+- `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
+  index), `prepare-runtime.py` (packages `runtime.bin` + `payload.sha256`)
 - `tools/` — local toolchain (JDK 21, Android SDK, Gradle 8.10.2) — not committed
 
 ## Build
 
+From a clean checkout:
+
 ```bash
+node scripts/package-rootfs.ts            # assets/rootfs.bin  (once, or after changing the package list)
+cd runtime && npm ci --omit=dev --omit=optional --ignore-scripts && cd ..
 cd android
 JAVA_HOME=<path-to>/tools/jdk21 ./gradlew assembleDebug
-# APK: app/build/outputs/apk/debug/app-debug.apk (~107 MB, aarch64 only content)
+# APK: app/build/outputs/apk/debug/app-debug.apk (~96 MB, aarch64 only content)
 ```
+
+`package-rootfs.ts` needs Linux with `dpkg`, `dpkg-deb`, GNU `tar` and
+`gzip`, and a Node that can run `.ts` directly — type stripping is on by
+default from 22.18 and 23.6, and the runtime already asks for >= 22.19. It
+refuses to start without the tools, rather than failing 200 MB in.
+
+The Termux index is pinned in `scripts/termux-index.lock`: the per-package
+SHA-256 is read from the same index the packages come from, so it proves
+index/deb consistency and not index authenticity. The lock makes the index
+moving a reviewed diff instead of a silent upgrade of the binaries inside
+the APK. When the index moves, the builder stops and says what changed; to
+take it, review it and run `node scripts/package-rootfs.ts
+--update-index-lock`. Verifying Termux's own signature over the index (a
+pinned key) is the remaining gap.
+
+`gradlew` runs `scripts/prepare-runtime.py` before `preBuild`, so
+`runtime.bin` and `payload.sha256` are rebuilt on every build.
+
+An incremental build can leave the APK ~25 MB larger than its contents
+(106 MB of assets in a 131 MB file) because the previous archive is not
+rewritten from scratch. Delete `android/app/build` before measuring or
+shipping an APK.
 
 Toolchain notes:
 
@@ -296,18 +322,33 @@ not additional mobile buttons or Federation services. Remote provisioning includ
 and transfers them along with the library; existing update confirmation rules still apply.
 
 ```bash
-# rootfs.bin = gzipped tar of the Termux usr/ tree
-cd debs/rootfs/data/data/com.termux/files
-tar czf ../../../../../android/app/src/main/assets/rootfs.bin usr
+# 1. the Termux userland the app runs -> assets/rootfs.bin (a few minutes, ~81 MB)
+node scripts/package-rootfs.ts
 
-# Optional manual preparation from the repository root (also performed by Gradle):
+# 2. the mobile runtime + the payload fingerprint (also performed by Gradle):
 python3 scripts/prepare-runtime.py
 ```
 
-The script omits node_modules/.bin and broken links from the archive without deleting local files.
-(.bin suffix because aapt decompresses *.gz assets into the APK uncompressed.
-`RuntimeInstaller` tolerates tar's non-zero exit when the expected payload
-files are present — bad-symlink warnings are only logged.)
+`scripts/package-rootfs.ts` resolves the aarch64 Termux index, checks every
+.deb against its SHA-256, extracts it without maintainer scripts, and rewrites
+the prefix `/data/data/com.termux` to `/data/data/<applicationId>` in place.
+The rewrite patches the same offset, so **the applicationId must be exactly
+as long as `com.termux`** — ten characters. The script reads it from
+`android/app/build.gradle` and refuses to run otherwise.
+
+`prepare-runtime.py` omits node_modules/.bin and broken links from the archive
+without deleting local files. (.bin suffix because aapt decompresses *.gz
+assets into the APK uncompressed. `RuntimeInstaller` tolerates tar's non-zero
+exit when the expected payload files are present — bad-symlink warnings are
+only logged.)
+
+The rootfs builder is deterministic: the same index gives the same
+`rootfs.bin` byte for byte, so `payload.sha256` only changes when the package
+set really changed and the device does not re-extract 200 MB for nothing. It
+prunes `usr/include`, `usr/share/man`, `usr/share/info` and
+`usr/libexec/installed-tests`, and it keeps `usr/share/doc` and
+`usr/share/LICENSES` — the licence texts and the per-package notices of the
+binaries this APK redistributes.
 
 ## Install / run
 
@@ -315,6 +356,13 @@ files are present — bad-symlink warnings are only logged.)
 adb install android/app/build/outputs/apk/debug/app-debug.apk
 # or wireless: ./install-wifi.sh (pairs via mDNS, installs, starts)
 ```
+
+The package id is `app.pidabl`, so an install over an older
+`org.pimobile.app` build fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`:
+uninstall the old one first. The app's data directory moves with the package
+id, so `home/` (the provider keys, the sessions) does not come across. The id
+is not free to change afterwards either — the Termux binaries carry it
+compiled in, and `scripts/package-rootfs.ts` has to rewrite it.
 
 First launch extracts ~170 MB to app-private storage, then a foreground
 service starts `node runtime/server.mjs`. The service runs exactly one bridge:
@@ -339,9 +387,10 @@ Caveats on device:
   workaround needs `adb shell settings put global
   settings_enable_monitor_phantom_procs false` or the Android 14+ developer
   option. Foreground service + PARTIAL_WAKE_LOCK are held while running.
-- Termux scripts inside the bundle have `com.termux` shebangs and will fail;
-  binaries are invoked directly by absolute path (npm CLI shim may need
-  `node $PREFIX/lib/node_modules/npm/bin/npm-cli.js` instead of `npm`).
+- The bundle's shebangs and compiled-in paths were rewritten to this app's
+  package id by `scripts/package-rootfs.ts`, so `npm` and the other scripts
+  find their interpreter. The Android *package* names inside Termux's own
+  tools (`am`, `pkg`, `termux-*`) still say `com.termux`; they are dead here.
 - `stty -F /dev/pts/N` is used to push terminal resizes into the `script`
   PTY (control frames are `\x01`-prefixed JSON on the WS).
 

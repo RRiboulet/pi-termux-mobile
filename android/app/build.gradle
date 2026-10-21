@@ -15,7 +15,10 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'org.pimobile.app'
+        // Exactly 10 characters, like com.termux: scripts/package-rootfs.ts rewrites the Termux prefix
+        // /data/data/com.termux to /data/data/<applicationId> in place, so the two must have the same length
+        // or the patched binaries keep the wrong paths. The script asserts it and fails the build.
+        applicationId 'app.pidabl'
         minSdk 26
         // targetSdk 28 keeps direct exec() of app-private binaries working
         // (Android 10+ blocks exec in app home for targetSdk >= 29).
