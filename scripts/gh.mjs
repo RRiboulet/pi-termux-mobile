@@ -164,7 +164,9 @@ export function pushWithToken(remote, branch, token, { cwd = process.cwd() } = {
   chmodSync(helper, 0o700);
   const env = { ...process.env, GH_TOKEN: token, GIT_ASKPASS: helper, GIT_TERMINAL_PROMPT: '0' };
   try {
-    const result = spawnSync('git', ['-c', 'credential.helper=', 'push', remote, `HEAD:${branch}`], {
+    // Push the named branch, not HEAD: the branch the pull request is for does
+    // not have to be the one that is checked out.
+    const result = spawnSync('git', ['-c', 'credential.helper=', 'push', remote, `${branch}:${branch}`], {
       env, stdio: 'inherit', cwd,
     });
     if (result.status !== 0) throw new Error(`git push failed (${result.status})`);
@@ -370,7 +372,9 @@ async function commandPrCreate(values) {
 
   const token = readToken(values.token);
   if (values.push) {
-    if (!branchOnRemote('origin', branch)) {
+    if (branchOnRemote('origin', branch)) {
+      console.error(`${branch} is already on origin`);
+    } else {
       console.error(`pushing ${branch} to origin ...`);
       pushWithToken('origin', branch, token);
     }
