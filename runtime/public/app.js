@@ -412,6 +412,7 @@ async function stop() {
 async function openSheet(which) {
   // A sheet is an overlay, not a navigation, so without this the Android back button exits the app with a
   // sheet open. Pushing a history entry lets the WebView's own back handling fire popstate, which closes it.
+  if (state.sheet !== 'oauth' && state.oauth) state.oauth = null;
   if (state.sheet === null && typeof history.pushState === 'function') {
     try { history.pushState({ sheet: which }, ''); } catch { /* a file:// page may refuse */ }
   }
@@ -494,7 +495,9 @@ async function pollOauth() {
   if (oauthTimer) clearTimeout(oauthTimer);
   oauthTimer = setTimeout(async () => {
     const o = state.oauth;
-    if (!o || o.done) return;
+    // Stop when the sheet is closed: the server keeps the login alive for ten minutes, and there is
+    // no reason to keep asking about it once the user has walked away.
+    if (!o || o.done || state.sheet !== 'oauth') { if (state.sheet !== 'oauth') state.oauth = null; return; }
     try {
       const r = await get(`/api/oauth/status?id=${encodeURIComponent(o.id)}`);
       const next = { ...o, prompt: r.prompt ?? null, done: Boolean(r.done), error: r.error ?? null,

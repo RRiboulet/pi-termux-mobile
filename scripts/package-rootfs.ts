@@ -435,12 +435,25 @@ function assertNoOldPrefix(files: string): void {
  * member's CRC and length.
  */
 function assertCompressedFilesIntact(files: string): void {
-    try {
-        execFileSync("sh", ["-c", `find "$1" -name '*.gz' -type f -print0 | xargs -0 -r gzip -t`, "sh", files], {
-            stdio: ["ignore", "ignore", "pipe"],
-        });
-    } catch (error) {
-        throw new Error(`a compressed file in the rootfs did not survive the rewrite: ${String(error)}`);
+    // The rewrite is format-blind, so every COMPRESSED member has to be checked -- not only the gzip ones.
+    // Today the tree has 93 .gz (npm man pages) and one .zip (termux-am's am.apk); the gzip check alone would have
+    // left the zip unverified, and a deflate stream patched in the middle is corrupt with no error.
+    const checks: [string, string][] = [
+        ['*.gz', 'gzip -t'],
+        ['*.zip', 'unzip -t'],
+        ['*.apk', 'unzip -t'],
+        ['*.jar', 'unzip -t'],
+    ];
+    for (const [pattern, test] of checks) {
+        try {
+            execFileSync(
+                "sh",
+                ["-c", `find "$1" -name '${pattern}' -type f -print0 | xargs -0 -r ${test}`, "sh", files],
+                { stdio: ["ignore", "ignore", "pipe"] },
+            );
+        } catch (error) {
+            throw new Error(`a compressed file in the rootfs did not survive the rewrite (${pattern}): ${String(error)}`);
+        }
     }
 }
 

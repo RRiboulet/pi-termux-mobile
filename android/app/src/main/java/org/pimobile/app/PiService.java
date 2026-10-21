@@ -129,9 +129,10 @@ public final class PiService extends Service {
         env.put("OPENSSL_CONF", new File(prefix, "etc/tls/openssl.cnf").getAbsolutePath());
         env.put("SSL_CERT_FILE", new File(prefix, "etc/tls/cert.pem").getAbsolutePath());
         env.put("PI_SPACES_KEY_SOCKET", SpaceKeyStore.socketName());
-        // termux-exec intercepts every exec, so a child process of node (bash, git, rg) runs through the system
-        // linker instead of being exec'd out of app-private storage, and a `#!/usr/bin/env ...` script finds its
-        // interpreter. The prefix inside the preload library was rewritten to ours by the rootfs builder.
+        // termux-exec intercepts every exec, so a `#!/usr/bin/env ...` script finds its interpreter and a child
+        // process of node (bash, git, rg) is launched the way Termux launches them. It is NOT needed to escape
+        // the API-29+ exec ban: at targetSdk 28 there is no ban, and app-private binaries can be exec'd directly.
+        // The prefix inside the preload library was rewritten to ours by the rootfs builder.
         env.put("LD_PRELOAD", new File(prefix, "lib/libtermux-exec-ld-preload.so").getAbsolutePath());
         env.put("TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE", "force");
         env.put("TERMUX_EXEC__EXECVE_CALL__INTERCEPT", "1");
