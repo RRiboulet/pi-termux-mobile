@@ -14,7 +14,6 @@
 
 # Node.js dependencies
 /runtime/node_modules/
-/runtime/space-examples/
 
 # OS noise
 .DS_Store

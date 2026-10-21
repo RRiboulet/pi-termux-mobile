@@ -71,13 +71,28 @@ ban is keyed on targetSdk). The cost is a different set of constraints:
   16 KB alignment, no `libtalloc` rename, no `nativeLibraryDir` SELinux
   gamble.
 
-### §1.5 Option C1 (remote execution) — **already built, not a fallback**
+### §1.5 Option C1 (remote execution) — **was built, and has now been pruned**
 
-The plan treats C1 as something to build if Option A fails. The fork *has* it:
+The plan treats C1 as something to build if Option A fails. The fork *had* it:
 `RemoteExecutionEnv`, a `remote:<name>:/path` cwd convention, SSH tunnelling,
-and an `env-server` that runs commands on another host. The plan's C1 is a
-finished feature here, and the plan's §1.6 `envFor` seam exists in the fork's
-shape (`places.env(cwd)` picks the local or the remote env from the cwd).
+and an `env-server` that runs commands on another host. The plan's C1 was a
+finished feature here, and the plan's §1.6 `envFor` seam existed in the fork's
+shape (`places.env(cwd)` picked the local or the remote env from the cwd).
+
+**That is no longer true of the tree.** PR #2 (`chore: prune to a phone-only
+app`) removed the whole remote plane — `remote-env.mjs`, `env-server.mjs`,
+`remote-client.mjs`, `remote-provision.mjs`, `remote-state.mjs`,
+`pi-serverd.mjs` and the SSH host registry — along with the pages that were
+its only entry points. The code is in `feature/remote-subsystem` and in the
+`pre-prune-2026-10-21` tag, so it was *parked*, not lost.
+
+The decision it rests on: a phone cannot arm a remote plane. `PI_REMOTES` was
+never set by the Android host, and `remotes.json` lives in app-private
+storage, so the capability had no reachable entry point in this app. The cost
+of the bet is 322 lines of code that will have to be re-merged if the app ever
+grows a second host — against 16,598 lines of desktop-shaped machinery
+removed. The `envFor` seam survives in `runtime/server.mjs` with nothing to
+swap in, which is the shape to restore from if that day comes.
 
 ### §1.7 Storage — **unchanged, and confirmed on the device**
 

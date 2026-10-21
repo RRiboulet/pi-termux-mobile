@@ -109,7 +109,9 @@ const PACKAGES = [
     "git",
     "ripgrep",
     "fd",
-    "openssh",
+    // util-linux stays: it is the agent's userland (flock, script), not the
+    // bridge's dependency set. openssh does not stay: the SSH client existed
+    // for the remote subsystem, and that is gone.
     "util-linux",
     "ca-certificates",
     // Ships usr/share/LICENSES (GPL-2.0, GPL-3.0, Apache-2.0, ...). Without it every package's
@@ -130,7 +132,6 @@ const REQUIRED = [
     "usr/bin/git",
     "usr/bin/rg",
     "usr/bin/fd",
-    "usr/bin/ssh",
     "usr/lib/node_modules/npm/bin/npm-cli.js",
     "usr/etc/tls/cert.pem",
     // PiService preloads it so `#!/usr/bin/env` scripts run, and every child exec of bash/git/rg goes through it.
