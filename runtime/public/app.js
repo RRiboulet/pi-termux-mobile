@@ -36,11 +36,27 @@ async function get(path) {
   return r.json();
 }
 
-async function post(path, body) {
-  const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
-  const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
-  if (!r.ok) throw new Error(j.error || `http ${r.status}`);
-  return j;
+/**
+ * POST, with the retry the old client had: a phone loses the bridge for a moment all the time, and
+ * the body carries a requestId, so a retried prompt is answered once and only once.
+ */
+async function post(path, body, { retries = 3 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
+      const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
+      // 503 with "reconnecting" is the bridge restarting; the same body is safe to send again.
+      if (r.status === 503 && j.reconnecting && attempt < retries) {
+        await new Promise((res) => setTimeout(res, 1500));
+        continue;
+      }
+      if (!r.ok) throw new Error(j.error || `http ${r.status}`);
+      return j;
+    } catch (e) {
+      if (attempt >= retries) throw e;
+      await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+    }
+  }
 }
 
 const requestId = () => (crypto.randomUUID
@@ -58,9 +74,11 @@ function textOf(message) {
 // make a transcript readable, and nothing that can execute anything.
 function markdown(src) {
   const out = [];
+  // The split ALTERNATES: even indices are prose, odd ones are code. Treating every index
+  // after the first as code turned the prose after a fence into a code block.
   const blocks = String(src ?? '').split(/```/);
   blocks.forEach((block, i) => {
-    if (i === 0) { out.push(...paragraphs(block)); return; }
+    if (i % 2 === 0) { out.push(...paragraphs(block)); return; }
     const nl = block.indexOf('\n');
     const lang = nl === -1 ? '' : block.slice(0, nl).trim();
     const body = nl === -1 ? '' : block.slice(nl + 1);
@@ -143,6 +161,7 @@ const redraw = () => {
   redrawQueued = true;
   const paint = () => {
     redrawQueued = false;
+    rememberScroll();
     render(html`<${App} />`, document.getElementById('app'));
     stickToBottom();
   };
@@ -151,6 +170,10 @@ const redraw = () => {
 };
 
 // ── the transcript ───────────────────────────────────────────────────────
+/** A monotonic counter: entries and tool calls share one order, so the transcript can be read causally. */
+let ordinal = 0;
+const nextOrdinal = () => ordinal++;
+
 function pushEntry(entry) {
   if (entry?.id !== undefined) {
     if (state.seen.has(entry.id)) return;
@@ -169,10 +192,10 @@ function pushEntry(entry) {
         const optimistic = state.entries.find((e) => e.kind === 'user' && e.pending && e.text === body);
         if (optimistic) optimistic.pending = false;
         state.pending.splice(i, 1);
-      } else if (body) state.entries.push({ kind: 'user', text: body });
+      } else if (body) state.entries.push({ kind: 'user', text: body, ord: nextOrdinal() });
     } else if (m.role === 'assistant') {
       const body = textOf(m);
-      if (body) state.entries.push({ kind: 'assistant', text: body });
+      if (body) state.entries.push({ kind: 'assistant', text: body, ord: nextOrdinal() });
       for (const c of Array.isArray(m.content) ? m.content : []) {
         if (c?.type === 'toolCall') startTool(c.id, c.name, c.arguments);
       }
@@ -191,7 +214,7 @@ function pushEntry(entry) {
 }
 
 function sys(text, tone) {
-  state.entries.push({ kind: 'sys', text, tone: tone || null });
+  state.entries.push({ kind: 'sys', text, tone: tone || null, ord: nextOrdinal() });
 }
 
 function startTool(callId, name, args) {
@@ -199,7 +222,7 @@ function startTool(callId, name, args) {
   const brief = args
     ? (args.command || args.path || args.pattern || args.task || JSON.stringify(args).slice(0, 80))
     : '';
-  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: 'run' });
+  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: 'run', ord: nextOrdinal() });
 }
 
 function renderSnapshot(snapshot) {
@@ -208,6 +231,7 @@ function renderSnapshot(snapshot) {
   state.pending = [];
   state.tools = new Map();
   state.live = null;
+  ordinal = 0;
 
   for (const e of snapshot?.entries ?? []) pushEntry(e);
   const partial = snapshot?.generation?.message;
@@ -335,7 +359,8 @@ async function refreshState() {
       thinking: { ...state.thinking, level: s.thinkingLevel ?? state.thinking.level ?? 'off' },
       busy: Boolean(s.busy),
       usage: s.usage ?? null,
-      inbox: s.inbox ?? [],
+      // The inbox arrives as the pi.inbox DOCUMENT, whose shape is {items:[...]}.
+      inbox: s.inbox?.items ?? (Array.isArray(s.inbox) ? s.inbox : []),
       sessionName: s.sessionName ?? 'Main',
       error: null,
     });
@@ -355,8 +380,11 @@ async function refreshState() {
 async function send(text) {
   const body = text.trim();
   if (!body) return;
-  state.entries.push({ kind: 'user', text: body, pending: true });
-  state.pending.push({ text: body });
+  const optimistic = { kind: 'user', text: body, pending: true, ord: nextOrdinal() };
+  state.entries.push(optimistic);
+  // The entry OBJECT, not its index: between this push and the POST resolving, an
+  // assistant message or a system line can arrive, and the last entry is then not this one.
+  state.pending.push({ text: body, entry: optimistic });
   set({ live: null });
   redraw();
   try {
@@ -367,9 +395,11 @@ async function send(text) {
     });
   } catch (e) {
     const i = state.pending.findIndex((p) => p.text === body);
-    if (i >= 0) state.pending.splice(i, 1);
-    const last = state.entries[state.entries.length - 1];
-    if (last && last.pending) { last.pending = false; last.tone = 'bad'; }
+    if (i >= 0) {
+      state.pending[i].entry.pending = false;
+      state.pending[i].entry.tone = 'bad';
+      state.pending.splice(i, 1);
+    }
     sys(`error: ${e.message || e}`, 'bad');
     redraw();
   }
@@ -414,10 +444,12 @@ async function openSheet(which) {
 
 async function saveKey(key) {
   if (!state.addKeyFor) return;
+  const provider = state.addKeyFor;
   try {
-    await post('/api/auth', { provider: state.addKeyFor, key });
-    set({ addKeyFor: null, sheet: 'provider', notice: `${state.addKeyFor} key saved` });
+    await post('/api/auth', { provider, key });
     await openSheet('provider');
+    // After the sheet opened: openSheet resets the notice, so setting it before was pointless.
+    set({ addKeyFor: null, notice: `${provider} key saved` });
   } catch (e) {
     set({ notice: String(e.message || e) });
     redraw();
@@ -427,8 +459,8 @@ async function saveKey(key) {
 async function deleteKey(provider) {
   try {
     await post('/api/auth', { provider, delete: true });
-    set({ notice: `${provider} key removed` });
     await openSheet('provider');
+    set({ notice: `${provider} key removed` });
   } catch (e) {
     set({ notice: String(e.message || e) });
     redraw();
@@ -555,11 +587,15 @@ function Message({ m }) {
 }
 
 function Transcript() {
+  // One list, ordered by when each thing happened: a tool call that happened between two
+  // answers belongs BETWEEN them, not in a block at the bottom.
   const items = [];
-  for (const m of state.entries) items.push(html`<${Message} key=${`e${items.length}`} m=${m} />`);
-  for (const [id, t] of state.tools) items.push(html`<${Tool} key=${`t${id}`} t=${t} />`);
-  if (state.live) items.push(html`<div class="msg assistant live" key="live"><div class="body">${markdown(state.live.text)}</div></div>`);
-  return html`<div class="log" id="log">${items}</div>`;
+  for (const m of state.entries) items.push({ ord: m.ord ?? 0, node: html`<${Message} key=${`e${m.ord ?? 0}`} m=${m} />` });
+  for (const [id, t] of state.tools) items.push({ ord: t.ord ?? 0, node: html`<${Tool} key=${`t${id}`} t=${t} />` });
+  items.sort((a, b) => a.ord - b.ord);
+  const nodes = items.map((i) => i.node);
+  if (state.live) nodes.push(html`<div class="msg assistant live" key="live"><div class="body">${markdown(state.live.text)}</div></div>`);
+  return html`<div class="log" id="log">${nodes}</div>`;
 }
 
 function Composer() {
@@ -859,16 +895,25 @@ function usageShort(usage) {
 
 function modelShort(model) {
   if (!model) return '–';
-  const s = typeof model === 'string' ? model : (model.id ?? model.model ?? '');
+  // The agent doc stores the model as {provider, modelId} -- the same shape /api/model is given.
+  const s = typeof model === 'string' ? model : (model.modelId ?? model.id ?? model.model ?? '');
   return String(s).split('/').pop().slice(0, 12) || '–';
 }
 
 // ── keep the transcript pinned to the bottom while it grows ──────────────
+// Whether the view was at the bottom BEFORE the DOM changed. Measuring afterwards means one tall
+// frame (a snapshot, a long answer) puts the distance over the threshold and the view stops
+// following -- permanently, because the next measurement is from an even greater distance.
+let wasAtBottom = true;
 function stickToBottom() {
   const log = document.getElementById('log');
   if (!log) return;
-  const near = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
-  if (near) log.scrollTop = log.scrollHeight;
+  if (wasAtBottom) log.scrollTop = log.scrollHeight;
+}
+function rememberScroll() {
+  const log = document.getElementById('log');
+  if (!log) return;
+  wasAtBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
 }
 
 // The Android back button, in a WebView, is a history pop. Close the sheet when it fires.
