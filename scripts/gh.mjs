@@ -189,6 +189,32 @@ export function branchOnRemote(remote, branch, cwd = process.cwd()) {
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
+/** The commit the remote has for a branch, or null. */
+export function remoteSha(remote, branch, cwd = process.cwd()) {
+  const result = spawnSync('git', ['ls-remote', '--heads', remote, branch], { cwd, encoding: 'utf8' });
+  const line = result.stdout.trim().split('\n')[0] ?? '';
+  return line ? line.split('\t')[0] : null;
+}
+
+/** The commit the local checkout has for a branch, or null. */
+export function localSha(branch, cwd = process.cwd()) {
+  const result = spawnSync('git', ['rev-parse', branch], { cwd, encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+/**
+ * Whether the remote is behind the local branch.
+ * "The branch exists on the remote" is not the question: a branch that is
+ * there but three commits behind still has to be pushed, and a pull request
+ * opened against the stale one would be reviewed in the wrong state.
+ */
+export function needsPush(remote, branch, cwd = process.cwd()) {
+  const local = localSha(branch, cwd);
+  if (!local) return false;
+  const remoteCommit = remoteSha(remote, branch, cwd);
+  return remoteCommit !== local;
+}
+
 // ── output ─────────────────────────────────────────────────────────────────
 
 /** A projection of an object: "number,title,url" -> { number, title, url }. */
@@ -446,11 +472,11 @@ async function commandPrCreate(values) {
 
   const token = readToken(values.token);
   if (values.push) {
-    if (branchOnRemote('origin', branch)) {
-      console.error(`${branch} is already on origin`);
-    } else {
+    if (needsPush('origin', branch)) {
       console.error(`pushing ${branch} to origin ...`);
       pushWithToken('origin', branch, token);
+    } else {
+      console.error(`${branch} is already up to date on origin`);
     }
   }
 

@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { apiUrl, project, repoFromRemote, targetRepo, parse, pushWithToken, collectComments, commentsSince } from '../scripts/gh.mjs';
+import { apiUrl, project, repoFromRemote, targetRepo, parse, pushWithToken, collectComments, commentsSince, needsPush } from '../scripts/gh.mjs';
 
 function withRemote(url, fn) {
   const dir = mkdtempSync(path.join(tmpdir(), 'gh-test-'));
@@ -120,6 +120,26 @@ test('comments can be filtered to the ones that are new', async () => {
   const fresh = commentsSince(comments, '2026-10-21T12:00:00Z');
   assert.deepEqual(fresh.map((c) => c.body), ['new']);
   assert.throws(() => commentsSince(comments, 'not a date'), /timestamp/);
+});
+
+test('a branch that exists on the remote but is behind still has to be pushed', () => {
+  // "The branch is already there" is the wrong question. A pull request opened
+  // against a stale branch is reviewed in the wrong state.
+  const root = mkdtempSync(path.join(tmpdir(), 'gh-stale-'));
+  try {
+    const bare = path.join(root, 'remote.git');
+    const clone = path.join(root, 'clone');
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+    execFileSync('git', ['-C', clone, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'one']);
+    execFileSync('git', ['-C', clone, 'remote', 'add', 'origin', bare]);
+    pushWithToken('origin', 'main', 'a-token', { cwd: clone });
+    assert.equal(needsPush('origin', 'main', clone), false, 'in sync after the push');
+    execFileSync('git', ['-C', clone, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'two']);
+    assert.equal(needsPush('origin', 'main', clone), true, 'a new commit needs a push');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('the flags are parsed the way the help says', () => {
