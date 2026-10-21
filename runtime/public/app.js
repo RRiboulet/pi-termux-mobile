@@ -36,27 +36,11 @@ async function get(path) {
   return r.json();
 }
 
-/**
- * POST, with the retry the old client had: a phone loses the bridge for a moment all the time, and
- * the body carries a requestId, so a retried prompt is answered once and only once.
- */
-async function post(path, body, { retries = 3 } = {}) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
-      const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
-      // 503 with "reconnecting" is the bridge restarting; the same body is safe to send again.
-      if (r.status === 503 && j.reconnecting && attempt < retries) {
-        await new Promise((res) => setTimeout(res, 1500));
-        continue;
-      }
-      if (!r.ok) throw new Error(j.error || `http ${r.status}`);
-      return j;
-    } catch (e) {
-      if (attempt >= retries) throw e;
-      await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
-    }
-  }
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
+  const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
+  if (!r.ok) throw new Error(j.error || `http ${r.status}`);
+  return j;
 }
 
 const requestId = () => (crypto.randomUUID
@@ -70,54 +54,194 @@ function textOf(message) {
   return message.content.filter((c) => c?.type === 'text').map((c) => c.text).join('\n');
 }
 
-// A very small markdown: fenced code, inline code, paragraphs. Enough to
-// make a transcript readable, and nothing that can execute anything.
-function markdown(src) {
+// Thinking blocks, kept per content index so a message with several of them
+// (or a redacted one between two live ones) reassembles in the right order.
+// A block whose text is empty is dropped: redacted thinking arrives whole with
+// its payload in `thinkingSignature`, and there is nothing to show for it.
+function thinkingSegments(message) {
   const out = [];
-  // The split ALTERNATES: even indices are prose, odd ones are code. Treating every index
-  // after the first as code turned the prose after a fence into a code block.
-  const blocks = String(src ?? '').split(/```/);
-  blocks.forEach((block, i) => {
-    if (i % 2 === 0) { out.push(...paragraphs(block)); return; }
-    const nl = block.indexOf('\n');
-    const lang = nl === -1 ? '' : block.slice(0, nl).trim();
-    const body = nl === -1 ? '' : block.slice(nl + 1);
-    out.push(html`<div class="fence">${lang || 'code'}</div>`, html`<pre><code>${body.replace(/\n$/, '')}</code></pre>`);
+  if (!Array.isArray(message?.content)) return out;
+  message.content.forEach((c, i) => {
+    if (c?.type === 'thinking' && typeof c.thinking === 'string' && c.thinking.trim()) out[i] = c.thinking;
   });
   return out;
 }
 
-function paragraphs(src) {
-  return String(src ?? '')
-    .split(/\n{2,}/)
-    .filter((p) => p.trim() !== '')
-    .map((p) => html`<p>${inline(p)}</p>`);
+function thoughtsText(segments) {
+  return (segments ?? []).filter(Boolean).join('\n\n');
 }
 
-function inline(src) {
-  // Inline code first, so the code spans are not re-processed for emphasis.
-  // Plain strings are fine as children: htm turns them into text nodes.
-  const parts = [];
-  const re = /`([^`]+)`/g;
+function thinkingOf(message) {
+  return thoughtsText(thinkingSegments(message));
+}
+
+// ── markdown ─────────────────────────────────────────────────────────────
+// Block level: ATX headings, fenced code, bullet and ordered lists,
+// blockquotes, pipe tables, rules, paragraphs. Inline: code, bold, italic,
+// strikethrough, links.
+//
+// Everything becomes a vnode. Model output is never turned into an HTML
+// string, so nothing a reply contains can execute anything; the only attribute
+// it can influence is a link href, and only http(s)/mailto survive that.
+
+const RE_FENCE   = /^\s*(`{3,}|~{3,})\s*([^\s`]*)\s*$/;
+const RE_HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+const RE_RULE    = /^\s*([-*_])(?:\s*\1){2,}\s*$/;
+const RE_QUOTE   = /^\s*>\s?(.*)$/;
+const RE_ITEM    = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+const RE_TDIV    = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
+const RE_INLINE  = /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|(?<![\w*])\*(?!\*)((?:\*\*[^*\n]+?\*\*|[^*\n])+?)\*(?![\w*])|(?<![\w])_(?!_)((?:__[^_\n]+?__|[^_\n])+?)_(?![\w])|\[([^\[\]\n]{0,200})\]\(([^)\s]{1,400})\)/g;
+
+const splitRow = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+const isTable = (lines, i) => {
+  if (!lines[i]?.includes('|') || lines[i + 1] === undefined || !RE_TDIV.test(lines[i + 1])) return false;
+  // header and separator must agree on the column count, so `a|b` followed by
+  // a plain `---` rule does not become a table
+  return splitRow(lines[i]).length === splitRow(lines[i + 1]).length;
+};
+const startsBlock = (lines, i) =>
+  !lines[i].trim() || RE_FENCE.test(lines[i]) || RE_HEADING.test(lines[i]) ||
+  RE_RULE.test(lines[i]) || RE_QUOTE.test(lines[i]) || RE_ITEM.test(lines[i]) || isTable(lines, i);
+
+function markdown(src) {
+  return blocks(String(src ?? '').replace(/\r\n?/g, '\n').split('\n'));
+}
+
+// Soft line breaks inside a paragraph are kept as <br>, which is what the
+// transcript did before with white-space: pre-wrap.
+const linesToNodes = (ls) => ls.flatMap((l, i) => (i ? [h('br'), ...inline(l)] : inline(l)));
+
+function blocks(lines) {
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const key = out.length;
+
+    if (!lines[i].trim()) { i++; continue; }
+
+    // ── fenced code
+    const fence = RE_FENCE.exec(lines[i]);
+    if (fence) {
+      const close = new RegExp(`^\\s*${fence[1][0] === '`' ? '`' : '~'}{${fence[1].length},}\\s*$`);
+      const body = [];
+      i++;
+      while (i < lines.length && !close.test(lines[i])) { body.push(lines[i]); i++; }
+      if (i < lines.length) i++;
+      out.push(h('div', { class: 'fence', key: 'f' + key }, fence[2] || 'code'));
+      out.push(h('pre', { key: 'p' + key }, h('code', null, body.join('\n'))));
+      continue;
+    }
+
+    // ── heading
+    const head = RE_HEADING.exec(lines[i]);
+    if (head) {
+      out.push(h('h' + head[1].length, { key }, inline(head[2])));
+      i++;
+      continue;
+    }
+
+    // ── rule
+    if (RE_RULE.test(lines[i])) { out.push(h('hr', { key })); i++; continue; }
+
+    // ── blockquote (its contents are parsed as blocks again)
+    if (RE_QUOTE.test(lines[i])) {
+      const inner = [];
+      while (i < lines.length && RE_QUOTE.test(lines[i])) { inner.push(RE_QUOTE.exec(lines[i])[1]); i++; }
+      out.push(h('blockquote', { key }, blocks(inner)));
+      continue;
+    }
+
+    // ── pipe table
+    if (isTable(lines, i)) {
+      const cells = splitRow;
+      const head = cells(lines[i]);
+      const align = cells(lines[i + 1]).map((c) => {
+        const left = c.startsWith(':'), right = c.endsWith(':');
+        return left && right ? 'center' : right ? 'right' : left ? 'left' : null;
+      });
+      const style = (k) => (align[k] ? { style: `text-align:${align[k]}` } : null);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
+      out.push(h('div', { class: 'tablewrap', key },
+        h('table', null,
+          h('thead', null, h('tr', null, head.map((c, k) => h('th', style(k), inline(c))))),
+          rows.length
+            ? h('tbody', null, rows.map((r) => h('tr', null,
+                head.map((_, k) => h('td', style(k), inline(r[k] ?? ''))))))
+            : null)));
+      continue;
+    }
+
+    // ── list
+    const item = RE_ITEM.exec(lines[i]);
+    if (item) {
+      const indent = item[1].length;
+      const ordered = /\d/.test(item[2]);
+      const items = [];
+      while (i < lines.length) {
+        const m = RE_ITEM.exec(lines[i]);
+        if (!m || m[1].length !== indent || /\d/.test(m[2]) !== ordered) break;
+        const buf = [m[3]];
+        i++;
+        // more-indented lines, and blank lines followed by more of this list
+        while (i < lines.length) {
+          const l = lines[i];
+          if (!l.trim()) {
+            const next = RE_ITEM.exec(lines[i + 1] ?? '');
+            if (next && next[1].length === indent && /\d/.test(next[2]) === ordered) { i++; break; }
+            if (next && next[1].length > indent) { i++; continue; }
+            break;
+          }
+          if (l.length - l.trimStart().length > indent) { buf.push(l.trim()); i++; continue; }
+          break;
+        }
+        items.push(buf);
+      }
+      out.push(h(ordered ? 'ol' : 'ul', { key },
+        items.map((buf) => h('li', null, linesToNodes(buf)))));
+      continue;
+    }
+
+    // ── paragraph
+    const para = [];
+    while (i < lines.length && !startsBlock(lines, i)) { para.push(lines[i]); i++; }
+    out.push(h('p', { key }, linesToNodes(para)));
+  }
+  return out;
+}
+
+// Only http(s) and mailto links are emitted; anything else stays as written.
+function safeHref(url) {
+  const s = String(url ?? '').trim();
+  return /^(https?:|mailto:)/i.test(s) ? s : null;
+}
+
+function inline(src, depth = 0) {
+  const text = String(src ?? '');
+  if (!text) return [];
+  const out = [];
+  // a fresh lastIndex per call, because emphasis recurses into this function
+  const re = new RegExp(RE_INLINE.source, 'g');
+  const inner = (s) => (depth < 3 ? inline(s, depth + 1) : [s]);
   let last = 0;
   let m;
-  while ((m = re.exec(src)) !== null) {
-    if (m.index > last) parts.push(src.slice(last, m.index));
-    parts.push(html`<code>${m[1]}</code>`);
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1] !== undefined) out.push(h('code', null, m[2]));
+    else if (m[3] !== undefined || m[4] !== undefined) out.push(h('strong', null, inner(m[3] ?? m[4])));
+    else if (m[5] !== undefined) out.push(h('del', null, inner(m[5])));
+    else if (m[6] !== undefined || m[7] !== undefined) out.push(h('em', null, inner(m[6] ?? m[7])));
+    else if (m[8] !== undefined) {
+      const href = safeHref(m[9]);
+      out.push(href
+        ? h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, m[8])
+        : m[0]);
+    }
     last = m.index + m[0].length;
   }
-  if (last < src.length) parts.push(src.slice(last));
-  return parts;
-}
-
-/** An OAuth event is an object ({type, url}, {type, userCode}, ...), not a string. */
-function eventText(e) {
-  if (e == null) return '';
-  if (typeof e === 'string') return e;
-  if (e.type === 'auth_url') return e.url ?? '';
-  if (e.type === 'device_code') return `code: ${e.userCode ?? e.code ?? ''}`;
-  if (e.type === 'message') return e.message ?? '';
-  return e.message ?? e.text ?? JSON.stringify(e);
+  if (last < text.length) out.push(text.slice(last));
+  return out;
 }
 
 // ── state ────────────────────────────────────────────────────────────────
@@ -126,17 +250,15 @@ const state = {
   error: null,
   busy: false,
   model: null,
-  usage: null,          // the session usage, as /api/state reports it
-  usageTotal: null,     // the whole-harness total, from /api/usage
-  usageSession: null,   // the session slice of /api/usage
-  thinkingLevel: null,  // the agent's thinking level, from /api/state
+  usage: null,
   inbox: [],
   sessionName: 'Main',
-  entries: [],          // { id, kind: 'user'|'assistant'|'sys', text, tone }
+  entries: [],          // { id, kind: 'user'|'assistant'|'sys', text, thinking, tools, tone }
   seen: new Set(),
+  attachedTools: new Set(), // tool calls already placed in the transcript
   pending: [],          // optimistic user messages awaiting their entry
-  live: null,           // the assistant message being streamed
-  tools: new Map(),     // callId -> { name, brief, out, status, child }
+  live: null,           // the assistant message being streamed: { text, think[] }
+  tools: new Map(),     // callId -> { name, brief, out, status, child, live }
   mode: 'followUp',     // 'followUp' | 'steer'
   sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
                         //      | 'addkey' | 'oauth' | 'sessions' | 'usage'
@@ -152,28 +274,12 @@ const state = {
 };
 
 const set = (patch) => Object.assign(state, patch);
-// A full-tree diff per SSE frame is a full-tree diff per text delta while the agent is
-// streaming, over a transcript that only grows. Coalesce into one frame: many events, one
-// render, whatever the event rate.
-let redrawQueued = false;
 const redraw = () => {
-  if (redrawQueued) return;
-  redrawQueued = true;
-  const paint = () => {
-    redrawQueued = false;
-    rememberScroll();
-    render(html`<${App} />`, document.getElementById('app'));
-    stickToBottom();
-  };
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(paint);
-  else setTimeout(paint, 16);
+  render(html`<${App} />`, document.getElementById('app'));
+  stickToBottom();
 };
 
 // ── the transcript ───────────────────────────────────────────────────────
-/** A monotonic counter: entries and tool calls share one order, so the transcript can be read causally. */
-let ordinal = 0;
-const nextOrdinal = () => ordinal++;
-
 function pushEntry(entry) {
   if (entry?.id !== undefined) {
     if (state.seen.has(entry.id)) return;
@@ -186,18 +292,24 @@ function pushEntry(entry) {
     if (m.role === 'user') {
       const body = textOf(m);
       const i = state.pending.findIndex((p) => p.text === body);
-      if (i >= 0) {
-        // Clear the flag on the RENDERED entry too: removing the slot from the
-        // pending list left the message at half opacity for the rest of the run.
-        const optimistic = state.entries.find((e) => e.kind === 'user' && e.pending && e.text === body);
-        if (optimistic) optimistic.pending = false;
-        state.pending.splice(i, 1);
-      } else if (body) state.entries.push({ kind: 'user', text: body, ord: nextOrdinal() });
+      if (i >= 0) state.pending.splice(i, 1);
+      else if (body) state.entries.push({ kind: 'user', text: body });
     } else if (m.role === 'assistant') {
       const body = textOf(m);
-      if (body) state.entries.push({ kind: 'assistant', text: body, ord: nextOrdinal() });
+      const thoughts = thinkingOf(m);
+      const calls = [];
       for (const c of Array.isArray(m.content) ? m.content : []) {
-        if (c?.type === 'toolCall') startTool(c.id, c.name, c.arguments);
+        if (c?.type !== 'toolCall') continue;
+        // `false`: a tool call recorded in history is not a live one.
+        startTool(c.id, c.name, c.arguments, false);
+        if (c.id !== undefined && !state.attachedTools.has(c.id)) {
+          state.attachedTools.add(c.id);
+          calls.push(c.id);
+        }
+      }
+      // A turn that only called a tool still deserves a row in the transcript.
+      if (body || thoughts || calls.length) {
+        state.entries.push({ kind: 'assistant', text: body, thinking: thoughts, tools: calls });
       }
       if (m.stopReason === 'aborted') sys('(interrupted)');
       if (m.stopReason === 'error' && m.errorMessage) sys(`error: ${m.errorMessage}`, 'bad');
@@ -205,6 +317,7 @@ function pushEntry(entry) {
       const t = state.tools.get(m.toolCallId);
       if (t) {
         t.status = m.isError ? 'err' : 'done';
+        t.out = textOf(m);
         if (m.details?.conversationId !== undefined) t.child = m.details.conversationId;
       } else if (m.toolName) {
         sys(`⚙ ${m.toolName}`, m.isError ? 'bad' : null);
@@ -214,28 +327,32 @@ function pushEntry(entry) {
 }
 
 function sys(text, tone) {
-  state.entries.push({ kind: 'sys', text, tone: tone || null, ord: nextOrdinal() });
+  state.entries.push({ kind: 'sys', text, tone: tone || null });
 }
 
-function startTool(callId, name, args) {
-  if (callId !== undefined && state.tools.has(callId)) return;
+function startTool(callId, name, args, live = true) {
+  if (callId !== undefined && state.tools.has(callId)) {
+    // A tool first seen in committed history can still turn out to be running.
+    if (live) state.tools.get(callId).live = true;
+    return;
+  }
   const brief = args
     ? (args.command || args.path || args.pattern || args.task || JSON.stringify(args).slice(0, 80))
     : '';
-  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: 'run', ord: nextOrdinal() });
+  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: 'run', live });
 }
 
 function renderSnapshot(snapshot) {
   state.entries = [];
   state.seen = new Set();
+  state.attachedTools = new Set();
   state.pending = [];
   state.tools = new Map();
   state.live = null;
-  ordinal = 0;
 
   for (const e of snapshot?.entries ?? []) pushEntry(e);
   const partial = snapshot?.generation?.message;
-  if (partial) state.live = { text: textOf(partial) };
+  if (partial) state.live = { text: textOf(partial), think: thinkingSegments(partial) };
 
   for (const t of snapshot?.tools ?? []) {
     if (!t?.callId || t.status === 'done') continue;
@@ -253,39 +370,31 @@ function renderSnapshot(snapshot) {
 
 // ── events ───────────────────────────────────────────────────────────────
 function handle(ev) {
-  // The server wraps the attach-time snapshot in its OWN frame, and only later
-  // batches arrive as pi-durable events. The old client handled this case
-  // explicitly; without it the transcript is empty on every load, every
-  // reconnect and every session switch.
-  if (ev.type === 'bridge_snapshot') {
-    renderSnapshot(ev.snapshot);
-    if (ev.sessionName) set({ sessionName: ev.sessionName });
-    redraw();
-    return;
-  }
-  if (ev.type === 'bridge_error') {
-    sys(`error: ${ev.error}`);
-    redraw();
-    return;
-  }
-  if (ev.type === 'bridge_connected') {
-    return;
-  }
   switch (ev.type) {
     case 'snapshot': renderSnapshot(ev); break;
     case 'run_start': set({ busy: true }); break;
     case 'run_end': set({ busy: false, live: null }); break;
 
     case 'message_start':
-      if (ev.message?.role === 'assistant') set({ live: { text: textOf(ev.message) } });
+      if (ev.message?.role === 'assistant') set({ live: { text: textOf(ev.message), think: thinkingSegments(ev.message) } });
       break;
     case 'message_update': {
-      const live = state.live ?? { text: '' };
+      const live = state.live ?? { text: '', think: [] };
+      let text = live.text ?? '';
+      let think = [...(live.think ?? [])];
       for (const c of ev.changes ?? []) {
-        if (c.type === 'text_delta') live.text += c.delta;
-        else if (c.type === 'message') live.text = textOf(c.message);
+        if (c.type === 'text_delta') text += c.delta;
+        // A thinking block is empty when it starts and grows only through its
+        // deltas — except redacted thinking, which is whole at start.
+        else if (c.type === 'thinking_delta') think[c.contentIndex] = (think[c.contentIndex] ?? '') + c.delta;
+        else if (c.type === 'thinking_start') {
+          if (c.block?.thinking?.trim()) think[c.contentIndex] = c.block.thinking;
+        } else if (c.type === 'message') {
+          text = textOf(c.message);
+          think = thinkingSegments(c.message);
+        }
       }
-      set({ live });
+      set({ live: { text, think } });
       break;
     }
     case 'message_end': {
@@ -309,8 +418,12 @@ function handle(ev) {
     }
     case 'tool_execution_end': {
       const t = state.tools.get(ev.toolCallId);
-      const failed = !ev.entry || ev.entry.model?.[0]?.isError;
-      if (t) t.status = failed ? 'err' : 'done';
+      const result = ev.entry?.model?.find((m) => m?.role === 'toolResult');
+      const failed = !result || result.isError;
+      if (t) {
+        t.status = failed ? 'err' : 'done';
+        t.out = textOf(result);
+      }
       if (ev.entry && ev.entry.id !== undefined) state.seen.add(ev.entry.id);
       break;
     }
@@ -354,25 +467,16 @@ async function refreshState() {
     const s = await get('/api/state');
     set({
       model: s.model ?? null,
-      // The menu shows the thinking level, so it has to be here, not fetched
-      // by the sheet that displays it.
-      thinking: { ...state.thinking, level: s.thinkingLevel ?? state.thinking.level ?? 'off' },
+      thinkingLevel: s.thinkingLevel ?? 'off',
       busy: Boolean(s.busy),
       usage: s.usage ?? null,
-      // The inbox arrives as the pi.inbox DOCUMENT, whose shape is {items:[...]}.
-      inbox: s.inbox?.items ?? (Array.isArray(s.inbox) ? s.inbox : []),
+      inbox: s.inbox ?? [],
       sessionName: s.sessionName ?? 'Main',
       error: null,
     });
   } catch (e) {
     set({ error: String(e.message || e) });
   }
-  // The provider count is a menu hint, so it is fetched at boot rather than
-  // when the provider sheet happens to be opened.
-  try {
-    const p = await get('/api/providers');
-    set({ providers: p.providers ?? [] });
-  } catch { /* the menu hint is not worth an error */ }
   redraw();
 }
 
@@ -380,11 +484,8 @@ async function refreshState() {
 async function send(text) {
   const body = text.trim();
   if (!body) return;
-  const optimistic = { kind: 'user', text: body, pending: true, ord: nextOrdinal() };
-  state.entries.push(optimistic);
-  // The entry OBJECT, not its index: between this push and the POST resolving, an
-  // assistant message or a system line can arrive, and the last entry is then not this one.
-  state.pending.push({ text: body, entry: optimistic });
+  state.entries.push({ kind: 'user', text: body, pending: true });
+  state.pending.push({ text: body });
   set({ live: null });
   redraw();
   try {
@@ -395,11 +496,9 @@ async function send(text) {
     });
   } catch (e) {
     const i = state.pending.findIndex((p) => p.text === body);
-    if (i >= 0) {
-      state.pending[i].entry.pending = false;
-      state.pending[i].entry.tone = 'bad';
-      state.pending.splice(i, 1);
-    }
+    if (i >= 0) state.pending.splice(i, 1);
+    const last = state.entries[state.entries.length - 1];
+    if (last && last.pending) { last.pending = false; last.tone = 'bad'; }
     sys(`error: ${e.message || e}`, 'bad');
     redraw();
   }
@@ -410,12 +509,6 @@ async function stop() {
 }
 
 async function openSheet(which) {
-  // A sheet is an overlay, not a navigation, so without this the Android back button exits the app with a
-  // sheet open. Pushing a history entry lets the WebView's own back handling fire popstate, which closes it.
-  if (state.sheet !== 'oauth' && state.oauth) state.oauth = null;
-  if (state.sheet === null && typeof history.pushState === 'function') {
-    try { history.pushState({ sheet: which }, ''); } catch { /* a file:// page may refuse */ }
-  }
   set({ sheet: which, notice: null });
   try {
     if (which === 'model') {
@@ -432,10 +525,7 @@ async function openSheet(which) {
       const r = await get('/api/sessions');
       set({ sessions: r.sessions ?? r ?? [] });
     } else if (which === 'usage') {
-      // /api/usage returns {session, total}; /api/state returns the session
-      // usage directly. They are different shapes, so they get different fields.
-      const u = await get('/api/usage');
-      set({ usageTotal: u.total ?? null, usageSession: u.session ?? null });
+      set({ usage: await get('/api/usage') });
     }
   } catch (e) {
     set({ notice: String(e.message || e) });
@@ -445,12 +535,10 @@ async function openSheet(which) {
 
 async function saveKey(key) {
   if (!state.addKeyFor) return;
-  const provider = state.addKeyFor;
   try {
-    await post('/api/auth', { provider, key });
+    await post('/api/auth', { provider: state.addKeyFor, key });
+    set({ addKeyFor: null, sheet: 'provider', notice: `${state.addKeyFor} key saved` });
     await openSheet('provider');
-    // After the sheet opened: openSheet resets the notice, so setting it before was pointless.
-    set({ addKeyFor: null, notice: `${provider} key saved` });
   } catch (e) {
     set({ notice: String(e.message || e) });
     redraw();
@@ -460,8 +548,8 @@ async function saveKey(key) {
 async function deleteKey(provider) {
   try {
     await post('/api/auth', { provider, delete: true });
-    await openSheet('provider');
     set({ notice: `${provider} key removed` });
+    await openSheet('provider');
   } catch (e) {
     set({ notice: String(e.message || e) });
     redraw();
@@ -495,9 +583,7 @@ async function pollOauth() {
   if (oauthTimer) clearTimeout(oauthTimer);
   oauthTimer = setTimeout(async () => {
     const o = state.oauth;
-    // Stop when the sheet is closed: the server keeps the login alive for ten minutes, and there is
-    // no reason to keep asking about it once the user has walked away.
-    if (!o || o.done || state.sheet !== 'oauth') { if (state.sheet !== 'oauth') state.oauth = null; return; }
+    if (!o || o.done) return;
     try {
       const r = await get(`/api/oauth/status?id=${encodeURIComponent(o.id)}`);
       const next = { ...o, prompt: r.prompt ?? null, done: Boolean(r.done), error: r.error ?? null,
@@ -562,43 +648,81 @@ function StatusStrip() {
     </div>`;
 }
 
+// Tool calls use the same quiet, collapsed disclosure as Thoughts: a one-line
+// summary and a body behind a left rule. The output stays monospace, because
+// it is command output rather than prose.
 function Tool({ t }) {
-  const open = t.status === 'err' || (t.out && t.out.length > 0);
+  const running = t.status === 'run';
+  const failed = t.status === 'err';
+  const out = String(t.out ?? '');
+  const brief = t.child !== undefined ? `subagent #${t.child}` : t.brief;
+  const meta = running ? 'running…' : failed ? 'failed' : out ? `${out.length.toLocaleString()} chars` : 'done';
   return html`
-    <details class=${`tool ${t.status === 'err' ? 'err' : ''}`} open=${open}>
+    <details class=${`thoughts tool${running ? ' live' : ''}${failed ? ' err' : ''}`}>
       <summary>
         <span class="caret">▶</span>
         <span class="name">${t.name}</span>
-        <span class="brief">${t.child !== undefined ? `subagent #${t.child}` : t.brief}</span>
-        <span class=${`state ${t.status === 'run' ? 'run' : t.status === 'err' ? 'err' : ''}`}>
-          ${t.status === 'run' ? 'running' : t.status === 'err' ? 'failed' : 'done'}
-        </span>
+        ${brief ? html`<span class="brief">${brief}</span>` : null}
+        <span class="meta">${meta}</span>
       </summary>
-      ${t.out ? html`<pre>${t.out}</pre>` : null}
+      <div class="think-body">
+        ${out
+          ? html`<pre>${out}</pre>`
+          : html`<div class="tool-empty">${running ? 'Running…' : 'No output'}</div>`}
+      </div>
+    </details>`;
+}
+
+// Collapsed by default: `open` is never passed, so Preact leaves the attribute
+// alone and the browser keeps whatever the reader chose across redraws.
+function Thoughts({ text, live }) {
+  return html`
+    <details class=${`thoughts${live ? ' live' : ''}`}>
+      <summary>
+        <span class="caret">▶</span>
+        <span class="name">Thoughts</span>
+        <span class="meta">${live ? 'thinking…' : `${text.length.toLocaleString()} chars`}</span>
+      </summary>
+      <div class="think-body md">${markdown(text)}</div>
     </details>`;
 }
 
 function Message({ m }) {
   if (m.kind === 'sys') return html`<div class=${`sys ${m.tone || ''}`}>${m.text}</div>`;
-  if (m.kind === 'tool') return html`<div class=${`tool ${m.tone === 'bad' ? 'err' : ''}`}><pre>${m.text}</pre></div>`;
+  if (m.kind === 'tool') return html`<div class=${`thoughts tool ${m.tone === 'bad' ? 'err' : ''}`}><div class="think-body"><pre>${m.text}</pre></div></div>`;
   if (m.kind === 'user') {
     return html`<div class=${`msg user ${m.pending ? 'pending' : ''} ${m.tone === 'bad' ? 'failed' : ''}`}>
       <div class="body">${m.text}</div>
     </div>`;
   }
-  return html`<div class="msg assistant"><div class="body">${markdown(m.text)}</div></div>`;
+  return html`<div class="msg assistant">
+    ${m.thinking ? html`<${Thoughts} text=${m.thinking} />` : null}
+    ${(m.tools ?? []).map((id) => {
+      const t = state.tools.get(id);
+      return t ? html`<${Tool} key=${`tool-${id}`} t=${t} />` : null;
+    })}
+    ${m.text ? html`<div class="body md">${markdown(m.text)}</div>` : null}
+  </div>`;
 }
 
 function Transcript() {
-  // One list, ordered by when each thing happened: a tool call that happened between two
-  // answers belongs BETWEEN them, not in a block at the bottom.
   const items = [];
-  for (const m of state.entries) items.push({ ord: m.ord ?? 0, node: html`<${Message} key=${`e${m.ord ?? 0}`} m=${m} />` });
-  for (const [id, t] of state.tools) items.push({ ord: t.ord ?? 0, node: html`<${Tool} key=${`t${id}`} t=${t} />` });
-  items.sort((a, b) => a.ord - b.ord);
-  const nodes = items.map((i) => i.node);
-  if (state.live) nodes.push(html`<div class="msg assistant live" key="live"><div class="body">${markdown(state.live.text)}</div></div>`);
-  return html`<div class="log" id="log">${nodes}</div>`;
+  for (const m of state.entries) items.push(html`<${Message} key=${`e${items.length}`} m=${m} />`);
+  // Normally every tool sits inside the assistant turn that called it. A tool
+  // that starts before that turn is committed is still shown at the end until
+  // the history arrives and takes it over.
+  for (const [id, t] of state.tools) {
+    if (state.attachedTools.has(id)) continue;
+    items.push(html`<${Tool} key=${`t${id}`} t=${t} />`);
+  }
+  if (state.live) {
+    const think = thoughtsText(state.live.think);
+    items.push(html`<div class="msg assistant live" key="live">
+      ${think ? html`<${Thoughts} text=${think} live=${true} />` : null}
+      ${state.live.text ? html`<div class="body md">${markdown(state.live.text)}</div>` : null}
+    </div>`);
+  }
+  return html`<div class="log" id="log">${items}</div>`;
 }
 
 function Composer() {
@@ -612,13 +736,14 @@ function Composer() {
       ta.style.height = 'auto';
       await send(value);
     }}>
-      <div class="modes" hidden=${!busy}>
-        <span class="label">send as</span>
-        <div class="seg">
-          <button type="button" aria-pressed=${state.mode === 'steer'} onClick=${() => { set({ mode: 'steer' }); redraw(); }}>Steer</button>
-          <button type="button" aria-pressed=${state.mode === 'followUp'} onClick=${() => { set({ mode: 'followUp' }); redraw(); }}>Queue</button>
-        </div>
-      </div>
+      ${busy ? html`
+        <div class="modes">
+          <span class="label">send as</span>
+          <div class="seg">
+            <button type="button" aria-pressed=${state.mode === 'steer'} onClick=${() => { set({ mode: 'steer' }); redraw(); }}>Steer</button>
+            <button type="button" aria-pressed=${state.mode === 'followUp'} onClick=${() => { set({ mode: 'followUp' }); redraw(); }}>Queue</button>
+          </div>
+        </div>` : null}
       <div class="field">
         <textarea name="message" rows="1" placeholder=${busy ? 'Steer the running work…' : 'Message pi…'}
           onInput=${(e) => {
@@ -632,18 +757,8 @@ function Composer() {
     </form>`;
 }
 
-function closeSheet() {
-  if (state.sheet !== null && typeof history.back === 'function') {
-    // Let the history entry go back rather than rewriting the URL: the browser's own back
-    // then lands where it should.
-    try { history.back(); return; } catch { /* fall through */ }
-  }
-  set({ sheet: null });
-  redraw();
-}
-
 function Scrim() {
-  return html`<div class="scrim" onClick=${closeSheet}></div>`;
+  return html`<div class="scrim" onClick=${() => { set({ sheet: null }); redraw(); }}></div>`;
 }
 
 function MenuSheet() {
@@ -659,7 +774,7 @@ function MenuSheet() {
     <div class="sheet">
       <div class="grab"></div>
       <header><h2>pi</h2>
-        <button class="icon" onClick=${closeSheet} aria-label="Close">✕</button>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">
         ${items.map((it) => html`
@@ -667,11 +782,8 @@ function MenuSheet() {
             <span class="grow">${it.label}</span>
             <small>${it.hint}</small>
           </button>`)}
-        <button class="row" onClick=${async () => { await post('/api/sessions/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
-          <span class="grow">New session</span>
-        </button>
         <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
-          <span class="grow">Reset this conversation</span>
+          <span class="grow">New session</span>
         </button>
         <button class="row" onClick=${async () => { await post('/api/compact').catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">Compact context</span>
@@ -696,7 +808,7 @@ function ThinkingSheet() {
       <header>
         <button class="icon" onClick=${() => openSheet('menu')} aria-label="Back">‹</button>
         <h2>Thinking</h2>
-        <button class="icon" onClick=${closeSheet} aria-label="Close">✕</button>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">
         ${supported.length <= 1 && supported[0] === 'off'
@@ -718,7 +830,7 @@ function ProviderSheet() {
       <header>
         <button class="icon" onClick=${() => openSheet('menu')} aria-label="Back">‹</button>
         <h2>Provider</h2>
-        <button class="icon" onClick=${closeSheet} aria-label="Close">✕</button>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">
         ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
@@ -750,11 +862,11 @@ function AddKeySheet() {
       <header>
         <button class="icon" onClick=${() => openSheet('provider')} aria-label="Back">‹</button>
         <h2>${state.addKeyFor} key</h2>
-        <button class="icon" onClick=${closeSheet} aria-label="Close">✕</button>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">
         <div class="row" style="display:block">
-          <input class="keyin" type="password" placeholder="API key" autocomplete="off" spellcheck=${false}
+          <input class="keyin" type="password" placeholder="API key" autocomplete="off" spellcheck="false"
             onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); const v = e.target.value; saveKey(v); } }} />
           <button class="savekey" onClick=${(e) => saveKey(e.target.closest('.row').querySelector('input').value)}>Save</button>
         </div>
@@ -771,26 +883,17 @@ function OauthSheet() {
       <header>
         <button class="icon" onClick=${() => { set({ sheet: 'provider' }); redraw(); }} aria-label="Back">‹</button>
         <h2>Sign in</h2>
-        <button class="icon" onClick=${closeSheet} aria-label="Close">✕</button>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">
         ${o.error ? html`<div class="empty" style="color:var(--bad)">${o.error}</div>` : null}
         ${o.done ? html`<div class="empty">Signed in. You can close this.</div>` : null}
-        ${(o.events ?? []).map((e, i) => html`<div class="row" key=${'e' + i}><span class="grow">${eventText(e)}</span></div>`)}
-        ${(o.events ?? []).filter((e) => e && e.type === 'auth_url').map((e, i) => html`
-          <div class="row" key=${'au' + i}>
-            <span class="grow">Open the sign-in page</span>
-            <button class="row" onClick=${() => { location.assign(e.url); }}>Open</button>
-          </div>`)}
-        ${(o.events ?? []).filter((e) => e && e.type === 'device_code').map((e, i) => html`
-          <div class="row" key=${'dc' + i}>
-            <span class="grow">${e.userCode ?? e.code ?? ''}<br /><small>${e.verificationUri ?? e.verification_uri ?? ''}</small></span>
-          </div>`)}
+        ${(o.events ?? []).map((e, i) => html`<div class="row" key=${'e' + i}><span class="grow">${String(e)}</span></div>`)}
         ${o.prompt ? html`
           <div class="row" style="display:block">
             <div style="margin-bottom:8px">${o.prompt.message || o.prompt.type}</div>
             ${o.prompt.options?.length
-              ? o.prompt.options.map((opt) => html`<button class="row" key=${opt.id ?? opt.label ?? String(opt)} onClick=${() => answerOauth(opt.id ?? opt.label ?? opt)}><span class="grow">${opt.label ?? opt.name ?? String(opt)}</span></button>`)
+              ? o.prompt.options.map((opt) => html`<button class="row" key=${opt} onClick=${() => answerOauth(opt)}><span class="grow">${opt}</span></button>`)
               : html`<input class="keyin" type="text" placeholder=${o.prompt.placeholder || 'value'} autocomplete="off"
                   onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); answerOauth(e.target.value); } }} />`}
           </div>` : null}
@@ -832,23 +935,13 @@ function Sheet() {
         })
       : html`<div class="empty">No sessions yet.</div>`;
   } else {
-    // /api/usage returns {session, total}; the session usage has the same shape as /api/state's.
-    const session = state.usageSession ?? state.usage ?? {};
-    const rows = Object.entries(session.models ?? {});
-    const total = state.usageTotal;
-    body = rows.length || total
-      ? [
-          ...rows.map(([m, u]) => html`<div class="row" key=${m}>
-            <span class="grow">${m}</span>
-            <span>${(u.totalTokens ?? 0).toLocaleString()} tok${u.cost?.total ? ` · $${u.cost.total.toFixed(3)}` : ''}</span>
-          </div>`),
-          total
-            ? html`<div class="row" key=${'total'}>
-                <span class="grow">Everything</span>
-                <span>${(total.totalTokens ?? 0).toLocaleString()} tok${total.cost?.total ? ` · $${total.cost.total.toFixed(3)}` : ''}</span>
-              </div>`
-            : null,
-        ]
+    const usage = state.usage ?? {};
+    const rows = Object.entries(usage.models ?? {});
+    body = rows.length
+      ? rows.map(([m, u]) => html`<div class="row" key=${m}>
+          <span class="grow">${m}</span>
+          <span>${(u.totalTokens ?? 0).toLocaleString()} tok${u.cost?.total ? ` · $${u.cost.total.toFixed(3)}` : ''}</span>
+        </div>`)
       : html`<div class="empty">No usage yet.</div>`;
   }
   return html`
@@ -856,7 +949,7 @@ function Sheet() {
       <div class="grab"></div>
       <header>
         <h2>${title}</h2>
-        <button class="icon" onClick=${closeSheet} aria-label="Close">✕</button>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">${body}</div>
     </div>`;
@@ -898,38 +991,24 @@ function usageShort(usage) {
 
 function modelShort(model) {
   if (!model) return '–';
-  // The agent doc stores the model as {provider, modelId} -- the same shape /api/model is given.
-  const s = typeof model === 'string' ? model : (model.modelId ?? model.id ?? model.model ?? '');
+  const s = typeof model === 'string' ? model : (model.id ?? model.model ?? '');
   return String(s).split('/').pop().slice(0, 12) || '–';
 }
 
 // ── keep the transcript pinned to the bottom while it grows ──────────────
-// Whether the view was at the bottom BEFORE the DOM changed. Measuring afterwards means one tall
-// frame (a snapshot, a long answer) puts the distance over the threshold and the view stops
-// following -- permanently, because the next measurement is from an even greater distance.
-let wasAtBottom = true;
 function stickToBottom() {
   const log = document.getElementById('log');
   if (!log) return;
-  if (wasAtBottom) log.scrollTop = log.scrollHeight;
-}
-function rememberScroll() {
-  const log = document.getElementById('log');
-  if (!log) return;
-  wasAtBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
-}
-
-// The Android back button, in a WebView, is a history pop. Close the sheet when it fires.
-if (typeof addEventListener === 'function') {
-  addEventListener('popstate', () => {
-    if (state.sheet !== null) {
-      set({ sheet: null });
-      redraw();
-    }
-  });
+  const near = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
+  if (near) log.scrollTop = log.scrollHeight;
 }
 
 // ── boot ─────────────────────────────────────────────────────────────────
+// index.html ships a static `.boot` placeholder inside #app. Preact appends to
+// its container rather than replacing it, so the placeholder would survive
+// every render as a stray line below the composer. Drop it once, before the
+// first render; subsequent redraws diff against the tree Preact owns.
+document.getElementById('app').replaceChildren();
 subscribe();
 refreshState();
 redraw();
