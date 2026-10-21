@@ -28,6 +28,7 @@ import {
     readdirSync,
     readlinkSync,
     rmSync,
+    statSync,
     symlinkSync,
     unlinkSync,
     writeFileSync,
@@ -42,16 +43,28 @@ const ROOT = resolve(import.meta.dirname, "..");
 const ASSETS = join(ROOT, "android/app/src/main/assets");
 const BUILD_GRADLE = join(ROOT, "android/app/build.gradle");
 
-/** The package the app installs as. The prefix rewrite targets it, so it must be exactly as long as `com.termux`. */
+/**
+ * The package the app installs as. The prefix rewrite targets it, so it must be exactly as long as `com.termux`.
+ *
+ * Every `applicationId` in the file is collected, not just the first: a commented-out or product-flavour override
+ * further down would otherwise silently change which prefix this script targets.
+ */
 function applicationId(): string {
     const gradle = readFileSync(BUILD_GRADLE, "utf8");
-    const match = /applicationId\s+['"]([^'"]+)['"]/.exec(gradle);
+    const ids = [...gradle.matchAll(/^\s*applicationId\s+['"]([^'"]+)['"]/gm)].map((match) => match[1]!);
 
-    if (match === null) {
+    if (ids.length === 0) {
         throw new Error("no applicationId in android/app/build.gradle");
     }
 
-    return match[1]!;
+    if (ids.length > 1) {
+        throw new Error(
+            `android/app/build.gradle sets ${ids.length} applicationIds (${ids.join(", ")}). ` +
+                "This script cannot tell which one the APK installs as; leave exactly one.",
+        );
+    }
+
+    return ids[0]!;
 }
 
 const APP_ID = applicationId();
@@ -59,7 +72,9 @@ const APP = `/data/data/${APP_ID}`;
 
 /** What the agent and the server need; dependencies are added from the index. */
 const PACKAGES = [
-    "nodejs",
+    // The floor the runtime asks for: runtime/package.json wants node >= 22.19.0, so a Termux index that drops
+    // below it must fail the build here, not on the phone.
+    "nodejs (>= 22.19)",
     "npm",
     "bash",
     "coreutils",
@@ -70,6 +85,10 @@ const PACKAGES = [
     "openssh",
     "util-linux",
     "ca-certificates",
+    // Ships usr/share/LICENSES (GPL-2.0, GPL-3.0, Apache-2.0, ...). Without it every package's
+    // usr/share/doc/<pkg>/copyright is a symlink to a file that is not there, and the licence notices of the
+    // binaries we redistribute would be dropped from the APK.
+    "termux-licenses",
     // sqlite3 on the phone, to read the durable store by hand when something looks wrong.
     "sqlite",
 ];
@@ -78,6 +97,9 @@ const PACKAGES = [
 const REQUIRED = [
     "usr/bin/node",
     "usr/bin/bash",
+    // node falls back to /usr/bin/sh when it needs a shell, and every `#!/usr/bin/env ...` script needs env.
+    "usr/bin/sh",
+    "usr/bin/env",
     "usr/bin/git",
     "usr/bin/rg",
     "usr/bin/fd",
@@ -86,19 +108,44 @@ const REQUIRED = [
     "usr/etc/tls/cert.pem",
     // PiService preloads it so `#!/usr/bin/env` scripts run, and every child exec of bash/git/rg goes through it.
     "usr/lib/libtermux-exec-ld-preload.so",
+    // The licence texts of the binaries we redistribute, and the per-package notices that point at them.
+    "usr/share/LICENSES/GPL-3.0.txt",
+    "usr/share/LICENSES/GPL-2.0.txt",
+    "usr/share/LICENSES/Apache-2.0.txt",
 ];
 
 if (TERMUX.length !== APP.length) {
     throw new Error(
-        `the app prefix must be as long as the Termux prefix: "${APP_ID}" gives ${APP.length}, ` +
-            `"com.termux" gives ${TERMUX.length}. The rewrite patches the prefix in place, so the lengths must match.`,
+        `the applicationId must be exactly ${TERMUX.length - "/data/data/".length} characters, like "com.termux": ` +
+            `"${APP_ID}" gives ${APP.length} and "com.termux" gives ${TERMUX.length}. The rewrite patches the prefix ` +
+            "in place, so the two must be the same length. Pick a 10-character id (e.g. \"app.pidabl\"), or keep " +
+            "\"com.termux\".",
     );
+}
+
+/** The build host needs these; a missing one must fail before the 200 MB download, not after it. */
+function requireTools(): void {
+    for (const tool of ["dpkg", "dpkg-deb", "tar", "gzip"]) {
+        try {
+            execFileSync("which", [tool], { stdio: "ignore" });
+        } catch {
+            throw new Error(`${tool} is required to build the rootfs (see the README's Build section)`);
+        }
+    }
+
+    // --hard-dereference is GNU tar only; bsdtar (macOS) fails at the very last step of the build.
+    try {
+        execFileSync("tar", ["--hard-dereference", "--version"], { stdio: "ignore" });
+    } catch {
+        throw new Error("GNU tar is required: --hard-dereference is not supported by this tar");
+    }
 }
 
 type Fields = Record<string, string>;
 
 async function download(url: string): Promise<Buffer> {
-    const response = await fetch(url);
+    // A half-open connection would hang the build forever with no output; name the URL when it does.
+    const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
 
     if (!response.ok) {
         throw new Error(`GET ${url}: HTTP ${response.status}`);
@@ -129,18 +176,49 @@ function parseIndex(text: string): Map<string, Fields> {
     return packages;
 }
 
+/** Virtual packages: a name a package Provides but does not exist under. Depending on one needs a real provider. */
+function virtualProviders(index: Map<string, Fields>): Map<string, string[]> {
+    const providers = new Map<string, string[]>();
+
+    for (const [name, fields] of index) {
+        for (const provided of (fields.Provides ?? "").split(",")) {
+            const virtual = provided.trim().split(" ").filter((part) => part !== "").pop();
+
+            if (virtual === undefined || virtual === "") {
+                continue;
+            }
+
+            providers.set(virtual, [...(providers.get(virtual) ?? []), name]);
+        }
+    }
+
+    return providers;
+}
+
 function versionSatisfies(version: string, operator: string, wanted: string): boolean {
     try {
         execFileSync("dpkg", ["--compare-versions", version, operator, wanted]);
 
         return true;
-    } catch {
-        return false;
+    } catch (error) {
+        // dpkg exits 1 when the versions do not satisfy the constraint, and that is the only "no" here. Anything else
+        // (dpkg missing, bad arguments) is a broken toolchain, not a version mismatch, and must not be read as "no".
+        const status = (error as { status?: number | null }).status;
+
+        if (status === 1) {
+            return false;
+        }
+
+        throw new Error(
+            `dpkg --compare-versions ${version} ${operator} ${wanted} failed (${String(error)}). ` +
+                "The build host needs a working dpkg; see the README's Build section.",
+        );
     }
 }
 
 function resolvePackages(index: Map<string, Fields>): Map<string, Fields> {
     const selected = new Map<string, Fields>();
+    const virtual = virtualProviders(index);
 
     const add = (expression: string): void => {
         for (const alternative of expression.split("|")) {
@@ -154,6 +232,15 @@ function resolvePackages(index: Map<string, Fields>): Map<string, Fields> {
             const fields = index.get(name!);
 
             if (fields === undefined) {
+                // A name that no package carries is either a virtual package or a typo. Say which, instead of
+                // "No package satisfies" later on.
+                if (virtual.has(name!)) {
+                    throw new Error(
+                        `"${name}" is a virtual package provided by ${virtual.get(name!)!.join(", ")}. ` +
+                            "Add one of those to PACKAGES, or pick a real package.",
+                    );
+                }
+
                 continue;
             }
 
@@ -201,7 +288,7 @@ function* walk(dir: string): Generator<string> {
 }
 
 /** Rewrites the prefix in files and symlinks under `files` (the extracted `.../com.termux/files`). */
-function rewritePrefix(files: string): { files: number; links: number; dangling: string[] } {
+function rewritePrefix(files: string): { files: number; links: number; dangling: string[]; kept: string[] } {
     const from = Buffer.from(TERMUX);
     const to = Buffer.from(APP);
     let patchedFiles = 0;
@@ -237,6 +324,7 @@ function rewritePrefix(files: string): { files: number; links: number; dangling:
     // Links last: their targets must be in place to tell which dangle.
     const appFiles = `${APP}/files/`;
     const dangling: string[] = [];
+    const kept: string[] = [];
 
     for (const path of links) {
         let target = readlinkSync(path).replaceAll(TERMUX, APP);
@@ -251,21 +339,108 @@ function rewritePrefix(files: string): { files: number; links: number; dangling:
     }
 
     for (const path of links) {
+        const target = readlinkSync(path);
+
+        // A link is judged against the DEVICE's namespace, not the build host's: an absolute target that exists only
+        // on Android (/system/bin/sh, or the app's own data directory) is valid there and must be kept, even though
+        // existsSync() on the build machine cannot see it. Only a relative link that does not resolve inside the
+        // extracted tree is really broken -- and the device's tar fails on those.
+        if (target.startsWith("/")) {
+            kept.push(relative(files, path));
+            continue;
+        }
+
         if (!existsSync(path)) {
             dangling.push(relative(files, path));
             unlinkSync(path);
         }
     }
 
-    return { files: patchedFiles, links: patchedLinks, dangling };
+    return { files: patchedFiles, links: patchedLinks, dangling, kept };
+}
+
+/**
+ * The one invariant that matters: no file in the tree may still point at the old prefix. A leftover path is a runtime
+ * that half works -- the libraries load, and the shebangs and the global prefix do not.
+ */
+function assertNoOldPrefix(files: string): void {
+    const leftovers: string[] = [];
+
+    for (const path of walk(files)) {
+        if (!lstatSync(path).isFile()) {
+            continue;
+        }
+
+        if (readFileSync(path).includes(TERMUX)) {
+            leftovers.push(relative(files, path));
+        }
+    }
+
+    if (leftovers.length > 0) {
+        throw new Error(
+            `${leftovers.length} files still contain "${TERMUX}" after the rewrite: ${leftovers.slice(0, 5).join(", ")}` +
+                (leftovers.length > 5 ? ", ..." : ""),
+        );
+    }
+}
+
+/**
+ * The rewrite is format-blind: it patches bytes wherever the prefix appears, and inside a gzip member that would
+ * corrupt the stream. Today the prefix happens to be encoded as back-references, so nothing breaks -- but "happens to"
+ * is not a property, and nothing else here would notice a corrupt member. So check them: gzip -t verifies every
+ * member's CRC and length.
+ */
+function assertCompressedFilesIntact(files: string): void {
+    try {
+        execFileSync("sh", ["-c", `find "$1" -name '*.gz' -type f -print0 | xargs -0 -r gzip -t`, "sh", files], {
+            stdio: ["ignore", "ignore", "pipe"],
+        });
+    } catch (error) {
+        throw new Error(`a compressed file in the rootfs did not survive the rewrite: ${String(error)}`);
+    }
+}
+
+/** Symlinked directories are not walked, so their contents are neither patched nor archived. Say so out loud. */
+function reportSymlinkedDirectories(files: string): string[] {
+    const found: string[] = [];
+
+    for (const path of walk(files)) {
+        if (lstatSync(path).isSymbolicLink() && existsSync(path) && statSync(path).isDirectory()) {
+            found.push(relative(files, path));
+        }
+    }
+
+    return found;
+}
+
+/**
+ * Trees nobody needs on a phone. usr/include is 12.9 MB of headers nothing compiles against, usr/share/man and
+ * usr/share/info are documentation, and usr/libexec/installed-tests holds the packages' own test binaries.
+ * usr/share/doc is KEPT: its copyright symlinks are the per-package notices of the binaries we redistribute.
+ */
+const PRUNED = ["usr/include", "usr/share/man", "usr/share/info", "usr/libexec/installed-tests"];
+
+function prune(files: string): string[] {
+    const removed: string[] = [];
+
+    for (const path of PRUNED) {
+        const target = join(files, path);
+
+        if (existsSync(target)) {
+            rmSync(target, { recursive: true, force: true });
+            removed.push(path);
+        }
+    }
+
+    return removed;
 }
 
 async function main(): Promise<void> {
+    requireTools();
     console.log(`prefix: ${TERMUX} -> ${APP}`);
 
-    const index = parseIndex(
-        gunzipSync(await download(`${REPO}dists/stable/main/binary-aarch64/Packages.gz`)).toString("utf8"),
-    );
+    const indexBytes = await download(`${REPO}dists/stable/main/binary-aarch64/Packages.gz`);
+    const index = parseIndex(gunzipSync(indexBytes).toString("utf8"));
     const selected = resolvePackages(index);
     const work = mkdtempSync(join(tmpdir(), "pi-termux-rootfs-"));
     const extracted = join(work, "root");
@@ -300,15 +475,66 @@ async function main(): Promise<void> {
             console.log(`removed ${rewritten.dangling.length} dangling symlinks: ${rewritten.dangling.join(", ")}`);
         }
 
+        if (rewritten.kept.length > 0) {
+            console.log(`kept ${rewritten.kept.length} symlinks with absolute targets: ${rewritten.kept.join(", ")}`);
+        }
+
         for (const path of REQUIRED) {
             if (!existsSync(join(files, path))) {
                 throw new Error(`Missing from the rootfs: ${path}`);
             }
         }
 
+        const symlinkedDirectories = reportSymlinkedDirectories(files);
+
+        if (symlinkedDirectories.length > 0) {
+            console.log(`symlinked directories (not walked, so their contents are not patched): ${symlinkedDirectories.join(", ")}`);
+        }
+
+        assertNoOldPrefix(files);
+        assertCompressedFilesIntact(files);
+
+        const pruned = prune(files);
+
+        if (pruned.length > 0) {
+            console.log(`pruned ${pruned.join(", ")}`);
+        }
+
         mkdirSync(ASSETS, { recursive: true });
-        execFileSync("tar", ["--hard-dereference", "-czf", join(ASSETS, "rootfs.bin"), "-C", files, "usr"]);
-        writeFileSync(join(ASSETS, "termux-packages.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+        // Reproducible: no owner, no group, no mtime, sorted names, and a gzip header without a name or a timestamp.
+        // The payload fingerprint is taken over this archive, so a machine-dependent one would make the device
+        // re-extract 200 MB for a byte-identical userland.
+        // The paths are passed as arguments, not interpolated into the script.
+        execFileSync(
+            "sh",
+            [
+                "-c",
+                'tar --hard-dereference --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name ' +
+                    '-cf - -C "$1" usr | gzip -n > "$2"',
+                "sh",
+                files,
+                join(ASSETS, "rootfs.bin"),
+            ],
+            { stdio: "inherit" },
+        );
+
+        writeFileSync(
+            join(ASSETS, "termux-packages.json"),
+            `${JSON.stringify(
+                {
+                    applicationId: APP_ID,
+                    prefix: APP,
+                    index: createHash("sha256").update(indexBytes).digest("hex"),
+                    removedSymlinks: rewritten.dangling,
+                    absoluteSymlinks: rewritten.kept,
+                    symlinkedDirectories,
+                    pruned,
+                    packages: manifest,
+                },
+                null,
+                2,
+            )}\n`,
+        );
         console.log(`rootfs.bin: ${selected.size} packages`);
     } finally {
         rmSync(work, { recursive: true, force: true });
