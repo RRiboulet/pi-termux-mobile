@@ -14,6 +14,7 @@ why the app looks the way it does.
 |---|---|
 | [plan-revision.md](plan-revision.md) | **Start here.** What changed in the plan when the app moved to this lineage, section by section, and the new critical path. |
 | [device-verification.md](device-verification.md) | What was actually run on a Galaxy S21 Ultra (Android 15): the runtime, the SQLite file, the loopback bridge, the service. |
+| [gh-tool.md](gh-tool.md) | `scripts/gh`, the small GitHub CLI the agents use: a pull request, a review, a comment, a diff — over the REST API, with a token that goes to one origin and nowhere else. |
 | [reviews/ui-review.md](reviews/ui-review.md) | The client review, in three passes, and the defects it found. |
 | [reviews/S0.1-review.md](reviews/S0.1-review.md) | The review of the *spike* — the proot route that was measured and then not taken. Kept as the audit trail for the decision. |
 

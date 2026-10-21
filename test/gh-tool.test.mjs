@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { apiUrl, project, repoFromRemote, targetRepo, parse, pushWithToken, collectComments, commentsSince, needsPush } from '../scripts/gh.mjs';
+import { apiUrl, project, repoFromRemote, targetRepo, parse, pushWithToken, collectComments, commentsSince, needsPush, ASKPASS_SOURCE } from '../scripts/gh.mjs';
 
 function withRemote(url, fn) {
   const dir = mkdtempSync(path.join(tmpdir(), 'gh-test-'));
@@ -43,10 +43,11 @@ test('owner/repo is read from an ssh remote', () => {
   });
 });
 
-test('a remote that is not a github URL is an error, not a wrong guess', () => {
+test('a remote on another host still parses into owner/repo', () => {
   withRemote('https://example.test/some/other-repo.git', (dir) => {
-    // the regex accepts any host, so this one still parses; what must not
-    // happen is a crash or an empty owner
+    // The regex accepts any host, so this one still parses. What must not
+    // happen is a crash or an empty owner: the tool is pointed at one API
+    // origin, so a remote on another host is a question, not a crash.
     const parsed = repoFromRemote('origin', dir);
     assert.equal(parsed.owner, 'some');
     assert.equal(parsed.repo, 'other-repo');
@@ -157,13 +158,16 @@ test('an unknown flag is refused instead of ignored', () => {
 
 test('the push helper leaves no token on disk', () => {
   // The askpass helper reads $GH_TOKEN, so the token is never written down.
+  // This asserts on the source the tool actually writes -- ASKPASS_SOURCE --
+  // and the file the tool really creates is checked in
+  // gh-tool-commands.test.mjs, by capturing it.
+  const source = ASKPASS_SOURCE;
+  assert.ok(!/ghp_|github_pat_/.test(source), 'no token literal in the helper');
+  assert.ok(source.includes('$GH_TOKEN'), 'the helper reads the environment');
   const dir = mkdtempSync(path.join(tmpdir(), 'gh-askpass-'));
   try {
     const helper = path.join(dir, 'askpass.sh');
-    writeFileSync(helper, '#!/bin/sh\ncase "$1" in\n  *sername*) echo x-access-token ;;\n  *assword*) printf "%s\\n" "$GH_TOKEN" ;;\nesac\n', { mode: 0o700 });
-    const source = readFileSync(helper, 'utf8');
-    assert.ok(!/ghp_|github_pat_/.test(source), 'no token literal in the helper');
-    assert.ok(source.includes('$GH_TOKEN'), 'the helper reads the environment');
+    writeFileSync(helper, source, { mode: 0o700 });
     const out = execFileSync('/bin/sh', [helper, 'Password for x'], { env: { GH_TOKEN: 'secret-token-value' }, encoding: 'utf8' });
     assert.equal(out.trim(), 'secret-token-value');
     assert.ok(!readFileSync(helper, 'utf8').includes('secret-token-value'), 'the token was not written into the file');

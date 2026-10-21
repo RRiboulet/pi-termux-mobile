@@ -49,6 +49,17 @@ remote URL. `gh pr create --push` pushes over HTTPS with a one-shot askpass
 helper that reads `$GH_TOKEN` from the environment, so the token appears in
 neither the process arguments nor any file on disk.
 
+Two things it does *not* do, so that they are not assumed:
+
+- The token is in the **environment of the `git push` child**, because that is
+  how the askpass helper reads it. Any process of the same user can read
+  `/proc/<pid>/environ` while the push runs. The push runs with
+  `--no-verify`, so a `pre-push` hook in the checkout -- which is somebody
+  else's code -- never runs and never sees it.
+- The token is **never sent to a host you name**. `gh api` takes a *path*,
+  and a path starts with `/`; an absolute URL is refused. The credential goes
+  to the API origin and nowhere else.
+
 ```sh
 mkdir -p ~/.config/gh && chmod 700 ~/.config/gh
 printf '%s' "$TOKEN" > ~/.config/gh/token && chmod 600 ~/.config/gh/token
@@ -69,11 +80,27 @@ printf '%s' "$TOKEN" > ~/.config/gh/token && chmod 600 ~/.config/gh/token
   comment's URL, which is what a human or an agent should quote in a reply.
 - `gh api GET <path> --field k=v` — the escape hatch for anything the tool
   does not wrap. On `GET`/`HEAD` a field becomes a query parameter, because
-  the API rejects a body on those verbs.
+  the API rejects a body on those verbs. The path is a path: it starts with
+  `/`, and a URL is refused, so the token cannot be pointed at another host.
 
-Everything that prints structured data prints JSON. There is no colour, no
-spinner and no prompt: the tool never asks a question, so it can run
-unattended.
+A command refuses a flag it does not take: `gh pr view 1 --push` is an error,
+not a flag that is quietly ignored.
+
+**Errors** go to stderr as one JSON object, `{"error":{"kind":...,"message":
+...}}`, and the exit code says the class: `2` auth, `3` not found, `4`
+transport, `5` usage or API error. A failure is never a success with a
+message.
+
+**Output** is JSON where a machine reads it (`--json`, and `gh api`), and
+prose where a human does. Text that came from GitHub -- a title, a body, a
+comment -- is printed with the escape sequences removed, so a pull request
+cannot drive the terminal of the agent that reads it.
+
+Lists are followed to the end, through the pages GitHub paginates; if the
+list is longer than the bound, stderr says so.
+
+There is no colour, no spinner and no prompt: the tool never asks a
+question, so it can run unattended.
 
 ## What it does not do
 
@@ -84,6 +111,7 @@ with credentials, no GraphQL. `gh api` is the way through to anything else.
 
 ```sh
 node test/gh-tool.test.mjs
+node test/gh-tool-commands.test.mjs
 ```
 
 They cover the parts that are easy to get quietly wrong: reading `owner/repo`
