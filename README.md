@@ -20,6 +20,28 @@ The durable harness gives: SQLite-backed conversations
 conversations owned by the calling task), model selection per conversation,
 and per-conversation execution environments — including remote hosts.
 
+## This fork
+
+This repository is now **pidabl** — a phone-native Pi Durable agent, and the
+only project of the two that runs on a phone.
+
+What changed here, and why, is written down in
+[`docs/`](docs/README.md):
+
+- **[`docs/plan-revision.md`](docs/plan-revision.md)** — the plan this app came
+  out of, and what changed when it moved to this lineage. **Start here.**
+- **[`docs/device-verification.md`](docs/device-verification.md)** — what was
+  actually run on a Galaxy S21 Ultra (Android 15).
+- **[`docs/reviews/ui-review.md`](docs/reviews/ui-review.md)** — the client
+  review, and the defects it found.
+- **[`docs/pi-durable-android-plan.md`](docs/pi-durable-android-plan.md)** —
+  the original plan, kept because it explains why the app looks the way it does.
+
+The shape of the app is unchanged from upstream: a foreground service owns the
+runtime, the WebView is a passive view over a loopback bridge, and the client
+has **no build step** — so the file the agent edits on the phone is the file
+that runs.
+
 ## Space RPC through pi-serverd
 
 `pi-serverd.mjs` connects the space service to socket requests with

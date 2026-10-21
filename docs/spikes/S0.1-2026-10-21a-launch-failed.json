@@ -1,0 +1,108 @@
+{
+  "runId": "9183b528-e89d-4bc9-bfb8-1d6ff4763c39",
+  "startedAt": "2026-10-21T14:56:04.447732Z",
+  "finishedAt": "2026-10-21T14:56:06.870219Z",
+  "complete": true,
+  "facts": {
+    "sdkInt": 35,
+    "androidRelease": "15",
+    "deviceModel": "SM-G998B",
+    "manufacturer": "samsung",
+    "supportedAbis": "arm64-v8a,armeabi-v7a,armeabi",
+    "nativeLibraryDir": "/data/app/~~wHTJX1atGkZ2JYx9IeJdCA==/dev.pidurable.android-_5yGQnC_CvjCxIig2oIhbg==/lib/arm64",
+    "filesDir": "/data/user/0/dev.pidurable.android/files",
+    "pageSizeBytes": "unavailable",
+    "selinuxSelfContext": "u:r:untrusted_app:s0:c40,c257,c512,c768\u0000",
+    "selinuxEnforcing": "unknown",
+    "targetSdk": 35,
+    "versionName": "0.1.0-spike (1)",
+    "apkBytes": 75524084,
+    "workingLaunchVariant": "none",
+    "appHomeExecBan": "denied"
+  },
+  "steps": [
+    {
+      "name": "environment",
+      "ok": true,
+      "detail": "SDK 35 (15) on samsung SM-G998B; page size unavailableB; selinux u:r:untrusted_app:s0:c40,c257,c512,c768\u0000",
+      "durationMs": 0,
+      "data": {}
+    },
+    {
+      "name": "native-libs",
+      "ok": true,
+      "detail": "libproot.so: exists=true isFile=true symlink=false exec=true size=264128\nlibtalloc.so: exists=true isFile=true symlink=false exec=true size=33592\nlibandroid-shmem.so: exists=true isFile=true symlink=false exec=true size=14432\n  dir contents: libandroid-shmem.so, libproot.so, libtalloc.so",
+      "durationMs": 0,
+      "data": {
+        "dir": "/data/app/~~wHTJX1atGkZ2JYx9IeJdCA==/dev.pidurable.android-_5yGQnC_CvjCxIig2oIhbg==/lib/arm64",
+        "entries": "libandroid-shmem.so,libproot.so,libtalloc.so",
+        "extractNativeLibs": true,
+        "allRealExecutables": true
+      }
+    },
+    {
+      "name": "rootfs-extract",
+      "ok": true,
+      "detail": "already extracted at /data/user/0/dev.pidurable.android/files/rootfs",
+      "durationMs": 0,
+      "data": {}
+    },
+    {
+      "name": "rootfs-contents",
+      "ok": true,
+      "detail": "the extracted rootfs has usr/local/bin/node, bin/sh",
+      "durationMs": 0,
+      "data": {}
+    },
+    {
+      "name": "launch-v1-exec-nativelib",
+      "ok": false,
+      "detail": "execve(nativeLibraryDir/libproot.so) - the plan's mechanism\nexit=1\nstdout: \nstderr: proot error: unknown option '-e'.\nfatal error: see `libproot.so --help`.",
+      "durationMs": 105,
+      "data": {
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "proot error: unknown option '-e'.\nfatal error: see `libproot.so --help`.\n",
+        "error": null,
+        "description": "execve(nativeLibraryDir/libproot.so) - the plan's mechanism"
+      }
+    },
+    {
+      "name": "launch-v2-exec-via-linker64",
+      "ok": false,
+      "detail": "/system/bin/linker64 nativeLibraryDir/libproot.so\nexit=1\nstdout: \nstderr: proot error: unknown option '-e'.\nfatal error: see `libproot.so --help`.",
+      "durationMs": 104,
+      "data": {
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "proot error: unknown option '-e'.\nfatal error: see `libproot.so --help`.\n",
+        "error": null,
+        "description": "/system/bin/linker64 nativeLibraryDir/libproot.so"
+      }
+    },
+    {
+      "name": "launch-v3-exec-from-filesdir",
+      "ok": false,
+      "detail": "execve(filesDir/proot) - expected to FAIL: proves the API-29+ app-home exec ban\nerror: IOException: Cannot run program \"/data/user/0/dev.pidurable.android/files/proot\": error=13, Permission denied\nexit=-1\nstdout: \nstderr: \nverdict: denied",
+      "durationMs": 2,
+      "data": {
+        "exitCode": -1,
+        "stdout": "",
+        "stderr": "",
+        "error": "IOException: Cannot run program \"/data/user/0/dev.pidurable.android/files/proot\": error=13, Permission denied",
+        "description": "execve(filesDir/proot) - expected to FAIL: proves the API-29+ app-home exec ban"
+      }
+    },
+    {
+      "name": "runtime-skipped-no-launch-variant",
+      "ok": false,
+      "detail": "skipped: no launch variant produced a working proot, so node was never reached",
+      "durationMs": 0,
+      "data": {}
+    }
+  ],
+  "totalSteps": 8,
+  "failedSteps": 3,
+  "expectedFailures": 1,
+  "_note": "The first device run. It measured a FAILURE: proot 5.1.107.98 has no -e option (it forwards its own environment to the guest), so every launch strategy died with 'unknown option -e' and no variant worked. It is kept because it is the report that found that, and because it shows the report machinery itself works: dated, run-id'd, with the v3 control classified as 'denied' -- the API-29+ app-home exec ban IS in force on this device, which is a real answer to one cell."
+}
