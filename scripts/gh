@@ -1,0 +1,20 @@
+#!/bin/sh
+# gh — a small GitHub CLI for this fork (scripts/gh.mjs).
+#
+#   scripts/gh pr create --title "..." --body "..." --push
+#
+# The token comes from GH_TOKEN, GITHUB_TOKEN or ~/.config/gh/token.
+# Put this on your PATH to type "gh" instead of "scripts/gh":
+#
+#   ln -s "$PWD/scripts/gh" ~/bin/gh
+#
+# The symlink is resolved, because $0 is the path of the link and not of the
+# script it points at: without this, the link runs "node ~/bin/gh.mjs".
+set -e
+self="$0"
+if command -v readlink >/dev/null 2>&1; then
+  resolved=$(readlink -f "$self" 2>/dev/null || true)
+  [ -n "$resolved" ] && self="$resolved"
+fi
+here=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+exec node "$here/gh.mjs" "$@"

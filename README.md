@@ -36,6 +36,8 @@ What changed here, and why, is written down in
   actually run on a Galaxy S21 Ultra (Android 15).
 - **[`docs/reviews/ui-review.md`](docs/reviews/ui-review.md)** — the client
   review, and the defects it found.
+- **[`docs/gh-tool.md`](docs/gh-tool.md)** — `scripts/gh`, the small GitHub CLI
+  this fork uses to open pull requests for other agents to review.
 - **[`docs/pi-durable-android-plan.md`](docs/pi-durable-android-plan.md)** —
   the original plan, kept because it explains why the app looks the way it does.
 
