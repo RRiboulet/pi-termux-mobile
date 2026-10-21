@@ -15,7 +15,8 @@ RUNTIME = ROOT / 'runtime'
 ASSETS = ROOT / 'android/app/src/main/assets'
 FILES = ['server.mjs', 'common.mjs', 'remote-env.mjs', 'env-server.mjs', 'pi-serverd.mjs',
          'space-keystore.mjs', 'spaces-mobile.mjs', 'remote-client.mjs', 'remote-provision.mjs', 'remote-state.mjs', 'pi-spaces.mjs', 'package.json',
-         'package-lock.json', 'public', 'node_modules', 'space-examples']
+         'package-lock.json', 'public', 'node_modules']
+# space-examples is optional and gitignored: it is added below only when it is actually there.
 
 source_available = (SOURCE / 'scripts/bundle-mobile.mjs').is_file()
 if not source_available:
@@ -41,6 +42,9 @@ else:
 
 def entries(path):
     if path.name == '.bin':
+        return
+    # A path that is not there is not packaged; the optional inputs are absent in a clean checkout.
+    if not path.exists() and not path.is_symlink():
         return
     # Retain valid links, exclude broken links without deleting developer files.
     if path.is_symlink():
