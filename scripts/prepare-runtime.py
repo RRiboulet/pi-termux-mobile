@@ -28,7 +28,7 @@ if not (RUNTIME / 'node_modules/@earendil-works/pi-durable').is_dir():
 if not (ASSETS / 'rootfs.bin').is_file():
     raise SystemExit('Termux rootfs.bin is missing; prepare the rootfs asset first')
 for name in FILES:
-    if name not in ('pi-spaces.mjs', 'space-examples') and not (RUNTIME / name).exists():
+    if name != 'pi-spaces.mjs' and not (RUNTIME / name).exists():
         raise SystemExit(f'Required runtime input missing: {name}')
 if source_available:
     subprocess.run(['npm', 'run', 'bundle'], cwd=SOURCE, check=True,
