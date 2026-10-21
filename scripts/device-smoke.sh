@@ -17,7 +17,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PKG="$(sed -n "s/^\s*applicationId\s*['\"]\([^'\"]*\)['\"].*/\1/p" "$ROOT/android/app/build.gradle" | head -1)"
+# awk on the quote character, not sed with a backreference: inside double quotes the shell
+# eats the backslash and the expression fails outright.
+PKG="$(awk -F"'" '/^[[:space:]]*applicationId/ {print $2; exit}' "$ROOT/android/app/build.gradle")"
 APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 ADB="${ANDROID_HOME:-/opt/android-sdk}/platform-tools/adb"
 [ -x "$ADB" ] || ADB="$(command -v adb || true)"
@@ -36,9 +38,18 @@ sh_() { if [ -n "$SERIAL" ]; then "$ADB" -s "$SERIAL" "$@"; else "$ADB" "$@"; fi
 # The app's own files, read as the app's uid.
 app_cat() { sh_ shell run-as "$PKG" cat "files/$1" 2>/dev/null; }
 # The pid of the bridge process, found by its command line.
+# The node process, not the shell that is looking for it. The old version grepped every
+# /proc/*/cmdline for "server.mjs" -- and the helper process running THIS script has that
+# string in its own command line, so it found itself, killed its own shell, and reported a
+# pass. It also walked the pids in lexicographic order, so a 4-digit helper sorted before a
+# 3-digit node.
 bridge_pid() {
     sh_ shell run-as "$PKG" sh -c \
-        'for p in /proc/[0-9]*; do [ -r "$p/cmdline" ] || continue; if tr "\0" " " < "$p/cmdline" 2>/dev/null | grep -q server.mjs; then echo "${p##*/}"; break; fi; done' \
+        'for p in $(ls -d /proc/[0-9]* 2>/dev/null | sort -t/ -k3 -n); do
+             [ -r "$p/cmdline" ] || continue
+             [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+             if tr "\0" " " < "$p/cmdline" 2>/dev/null | grep -q server.mjs; then echo "${p##*/}"; break; fi
+         done' \
         2>/dev/null | tr -d '\r' | head -1
 }
 
@@ -74,7 +85,10 @@ TOKEN="$(app_cat 'home/.pi-mobile/token' | tr -d '\r\n ')"
 
 # Make the phone's loopback reachable from here.
 sh_ forward tcp:"$PORT" tcp:"$PORT" >/dev/null 2>&1
-api() { curl -sS -m 20 -H "x-token: $TOKEN" "http://127.0.0.1:$PORT$1"; }
+# The port is a parameter: the bridge binds an EPHEMERAL port, so the one read before the
+# force-stop is not the one after it. Step 6 used to query the old port, which made the
+# durability check a guaranteed false failure.
+api() { curl -sS -m 20 -H "x-token: $TOKEN" "http://127.0.0.1:${2:-$PORT}$1"; }
 
 say "3. the bridge answers"
 STATE="$(api /api/state)"
@@ -128,7 +142,7 @@ if [ -n "$PORT2" ]; then
     ok "the bridge is back on 127.0.0.1:$PORT2"
     sh_ forward tcp:"$PORT2" tcp:"$PORT2" >/dev/null 2>&1
     TOKEN="$(app_cat 'home/.pi-mobile/token' | tr -d '\r\n ')"
-    [ -n "$(api /api/state)" ] && ok "and it answers" || bad "and it does not answer"
+    [ -n "$(api /api/state "$PORT2")" ] && ok "and it answers" || bad "and it does not answer"
 else
     bad "the bridge did not come back after force-stop"
 fi

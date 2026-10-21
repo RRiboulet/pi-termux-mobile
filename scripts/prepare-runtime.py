@@ -34,7 +34,11 @@ if not (ASSETS / 'rootfs.bin').is_file():
 # it in place. A rootfs built for another id half works -- the libraries load, and the shebangs and the global
 # prefix do not -- so refuse to package it instead of shipping a runtime that breaks on the phone.
 manifest_path = ASSETS / 'termux-packages.json'
-if manifest_path.is_file():
+# A MISSING manifest is not a pass: the check exists so a rootfs built for another package id
+# cannot ship, and without the manifest there is nothing to compare against.
+if not manifest_path.is_file():
+    raise SystemExit(f'{manifest_path} is missing; rebuild the rootfs: node scripts/package-rootfs.ts')
+if True:
     built_for = json.loads(manifest_path.read_text()).get('applicationId')
     gradle = (ROOT / 'android' / 'app' / 'build.gradle').read_text()
     ids = re.findall(r"^\s*applicationId\s+['\"]([^'\"]+)['\"]", gradle, re.M)

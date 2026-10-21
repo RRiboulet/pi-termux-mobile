@@ -59,10 +59,16 @@ echo "device: $DEV"
 echo "installed: $APK"
 
 # optional: start app and show bridge port once the runtime is up
-# The package id, read from the build so it cannot drift from the APK.
-PKG=$(sed -n "s/^\s*applicationId\s*['\"]\([^'\"]*\)['\"].*/\1/p" android/app/build.gradle | head -1)
+# The package id and the CLASS are different things: the manifest's .MainActivity resolves
+# against the namespace (org.pimobile.app), not against the applicationId. And the path is
+# relative to the script, not to the CWD, with a POSIX class so BSD sed works too.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# awk on the quote character, not sed with a backreference: inside double quotes the shell
+# eats the backslash and the expression fails outright.
+PKG=$(awk -F"'" '/^[[:space:]]*applicationId/ {print $2; exit}' "$HERE/android/app/build.gradle")
+CLS=org.pimobile.app.MainActivity
 echo "package: $PKG"
-"$ADB" -s "$DEV" shell am start -n "$PKG/.MainActivity" >/dev/null
+"$ADB" -s "$DEV" shell am start -n "$PKG/$CLS" >/dev/null
 echo "app started; bridge port (after first-boot extraction):"
 echo "  $ADB -s $DEV shell run-as $PKG cat /data/data/$PKG/files/home/.pi-mobile/port"
 echo "runtime log: ... files/log/node.log (same run-as trick)"
