@@ -2,34 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>pi mobile</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#0d0f14" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>pi</title>
   <link rel="stylesheet" href="style.css">
 </head>
-<body data-page="chat">
-  <header>
-    <div id="menubar">
-      <span id="status">connecting…</span>
-      <select id="model-select" title="Model"><option value="">no model</option></select>
-      <div class="hdr-actions">
-        <button id="btn-new"     class="btn-icon" title="New session">＋</button>
-        <button id="btn-compact" class="btn-icon" title="Compact context">⇊</button>
-        <button id="btn-abort"   class="btn-icon hidden" title="Abort">■</button>
-      </div>
-    </div>
-  </header>
-  <div id="session-bar">
-    <a id="session-link" href="sessions.html" title="Manage sessions">
-      <span id="session-name">Main</span>
-    </a>
-    <span id="session-usage"></span>
-    <label id="steer-wrap" class="hidden" title="Steer running work"><input type="checkbox" id="steer"> steer</label>
+<body>
+  <div id="app">
+    <div class="boot">connecting…</div>
   </div>
-  <main id="chat"></main>
-  <form id="composer">
-    <textarea id="input" rows="2" placeholder="Message…" autocomplete="off"></textarea>
-    <button type="submit">↑</button>
-  </form>
   <script type="module" src="app.js"></script>
 </body>
 </html>
