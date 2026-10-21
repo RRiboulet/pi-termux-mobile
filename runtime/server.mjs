@@ -5,7 +5,9 @@
 // over $HOME/.pi-mobile/remotes.json) — a conversation whose cwd is
 // "remote:<name>:/path" runs its tools on that host.
 import http from 'node:http';
-import { MobileSpaces } from './spaces-mobile.mjs';
+// The federation bundle (pi-spaces.mjs, 718 KB) is imported LAZILY: it is pulled in only when a
+// /api/spaces route is actually called. The client has no page or sheet for spaces any more, so
+// parsing it on every phone start is pure cost.
 import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import { createReadStream, existsSync, readdirSync, readFileSync, readlinkSync, statSync, unlinkSync } from 'node:fs';
@@ -34,7 +36,16 @@ const WORKDIR = process.env.PI_WORKDIR || HOME_DIR;
 const AGENT_DIR = path.join(HOME_DIR, '.pi', 'agent');
 const AUTH_PATH = path.join(AGENT_DIR, 'auth.json');
 const STATE_DIR = path.join(HOME_DIR, '.pi-mobile');
-const mobileSpaces = new MobileSpaces(path.join(STATE_DIR, 'space-profile.json'));
+let mobileSpacesPromise = null;
+/** The spaces module, loaded on first use. */
+async function mobileSpaces() {
+  if (!mobileSpacesPromise) {
+    mobileSpacesPromise = import('./spaces-mobile.mjs').then(
+      (m) => new m.MobileSpaces(path.join(STATE_DIR, 'space-profile.json')),
+    );
+  }
+  return mobileSpacesPromise;
+}
 const PORT_FILE = path.join(STATE_DIR, 'port');
 const TOKEN_FILE = path.join(STATE_DIR, 'token');
 const LEGACY_SESSIONS_FILE = path.join(STATE_DIR, 'sessions.json');
@@ -288,7 +299,12 @@ function serveStatic(res, pathname) {
   let st = null;
   try { st = statSync(filePath); } catch {}
   if (!st?.isFile()) { filePath = path.join(PUBLIC, 'index.html'); }
-  res.writeHead(200, { 'content-type': MIME[path.extname(filePath)] || 'application/octet-stream' });
+  // No caching: the whole point of the no-build client is that the file the agent edits on the
+  // phone is the file that runs, and that only works if a reload really re-fetches it.
+  res.writeHead(200, {
+    'content-type': MIME[path.extname(filePath)] || 'application/octet-stream',
+    'cache-control': 'no-store',
+  });
   const stream = createReadStream(filePath);
   stream.on('error', () => { try { res.destroy(); } catch {} });
   stream.pipe(res);
@@ -358,7 +374,7 @@ async function handleApi(req, res, url, p) {
   if (p.startsWith('/api/spaces/') && ['GET', 'POST'].includes(req.method)) {
     const method = p.slice('/api/spaces/'.length);
     if (req.method === 'GET' && method !== 'status') throw Object.assign(new Error('use POST'), { status: 405 });
-    return json(res, 200, await mobileSpaces.call(method, body));
+    return json(res, 200, await (await mobileSpaces()).call(method, body));
   }
   if (!active && !p.startsWith('/api/oauth') && p !== '/api/auth' && p !== '/api/providers') {
     throw Object.assign(new Error('harness not ready'), { status: 503 });
@@ -481,7 +497,9 @@ async function handleApi(req, res, url, p) {
       const model = modelByRef(agent.model);
       return json(res, 200, {
         level: agent.thinkingLevel ?? 'off',
-        supported: model ? thinkingLevelsOf(model) : ['off'],
+        // "off" is always offered: a provider can map "off" to null and leave it out of its
+        // supported list, and then the user would have no way to turn thinking off.
+        supported: model ? Array.from(new Set(['off', ...thinkingLevelsOf(model)])) : ['off'],
       });
     } finally { view?.dispose?.(); }
   }
@@ -490,7 +508,7 @@ async function handleApi(req, res, url, p) {
     const view = active ? await active.viewState(ctx) : null;
     try {
       const model = modelByRef(agentOf(view).model);
-      const supported = model ? thinkingLevelsOf(model) : ['off'];
+      const supported = model ? Array.from(new Set(['off', ...thinkingLevelsOf(model)])) : ['off'];
       // Refuse a level the model cannot take, rather than storing it and
       // letting the provider reject it at the next call.
       if (!supported.includes(level)) {
