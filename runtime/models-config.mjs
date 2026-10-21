@@ -95,10 +95,15 @@ export function modelFromDefinition(providerId, providerConfig, definition, defa
  * Layer the configured models over a provider's own catalog.
  * A model with a known id replaces that entry; a new id is appended. The
  * provider's other models stay exactly as they were.
+ *
+ * A provider that throws while listing its models yields no configured models
+ * rather than taking the caller down: pi-ai treats a badly-behaved provider
+ * the same way ("best-effort: ill-behaved providers yield no models"), and a
+ * models.json on the phone must not be able to stop the bridge from starting.
  */
 export function configuredModels(provider, providerConfig) {
   if (!Array.isArray(providerConfig?.models) || !providerConfig.models.length) return [];
-  const baseModels = provider.getModels();
+  const baseModels = providerModels(provider);
   return providerConfig.models
     .map((definition) => {
       const existing = baseModels.find((model) => model.id === definition?.id);
@@ -108,20 +113,49 @@ export function configuredModels(provider, providerConfig) {
     .filter(Boolean);
 }
 
+/** The provider's own catalog, or an empty list if it cannot produce one. */
+function providerModels(provider) {
+  return listModels(provider, () => provider.getModels());
+}
+
+/**
+ * A provider's catalog, as a list, without ever throwing.
+ * pi-ai treats a badly-behaved provider the same way ("best-effort:
+ * ill-behaved providers yield no models"), and a models.json on the phone must
+ * not be able to stop the bridge from starting.
+ */
+function listModels(provider, fn) {
+  try {
+    const models = fn();
+    return Array.isArray(models) ? models : [];
+  } catch (e) {
+    console.error(`models.json: ${provider?.id} would not list its models: ${e?.message || e}`);
+    return [];
+  }
+}
+
 /**
  * Apply models.json to a live model collection.
  * Returns the ids that were added or replaced, for logging.
+ *
+ * The configured models are merged at CALL time, not over a snapshot taken
+ * here: a provider that refreshes its catalog (models.refresh(), reached from
+ * /api/auth and after an OAuth login) would otherwise never show the change.
  */
 export function applyModelsConfig(models, config) {
   const applied = [];
   if (!config?.providers || typeof config.providers !== 'object') return applied;
   for (const [providerId, providerConfig] of Object.entries(config.providers)) {
     const provider = models.getProvider(providerId);
-    if (!provider) continue; // a provider this runtime does not know
+    if (!provider) {
+      // A models.json entry for a provider this runtime does not know is
+      // almost always a typo, and saying nothing about it is how "my model is
+      // missing" goes unexplained.
+      console.error(`models.json: no provider named "${providerId}" in this runtime; its models were skipped`);
+      continue;
+    }
     const configured = configuredModels(provider, providerConfig);
     if (!configured.length) continue;
-    const baseModels = provider.getModels();
-    const baseAll = provider.getAllModels?.() ?? baseModels;
     const merge = (entries) => {
       const result = [...entries];
       for (const model of configured) {
@@ -130,8 +164,12 @@ export function applyModelsConfig(models, config) {
       }
       return result;
     };
-    provider.getModels = () => merge(baseModels);
-    if (provider.getAllModels) provider.getAllModels = () => merge(baseAll);
+    const originalGetModels = provider.getModels.bind(provider);
+    provider.getModels = () => merge(listModels(provider, originalGetModels));
+    if (provider.getAllModels) {
+      const originalGetAllModels = provider.getAllModels.bind(provider);
+      provider.getAllModels = () => merge(listModels(provider, originalGetAllModels));
+    }
     applied.push(...configured.map((model) => `${providerId}/${model.id}`));
   }
   return applied;

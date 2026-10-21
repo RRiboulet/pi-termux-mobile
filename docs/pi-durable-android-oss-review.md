@@ -1640,6 +1640,15 @@ block at `:339-342` — plus one re-export in `common.mjs:236`. Delete
 (`remote-client.mjs`, `remote-provision.mjs`, `remote-state.mjs`,
 `pi-serverd.mjs`, `public/remote.*`, `public/clients.*`) for the PoC.
 
+> **What actually happened.** PR #2 pruned the whole remote plane, the
+> `env-server` half included — the C1 fallback included. The reasoning it
+> rests on is in [`plan-revision.md`](plan-revision.md) §1.5: a phone cannot
+> arm a remote plane (`PI_REMOTES` was never set by the Android host, and
+> `remotes.json` lives in app-private storage), so the capability had no
+> reachable entry point. The code is parked in `feature/remote-subsystem` and
+> the `pre-prune-2026-10-21` tag, not lost. The advice above is kept as the
+> record of what the survey recommended; the tree is what the decision made.
+
 **Day 3 — prove the three things that matter.**
 
 1. A prompt produces a committed `pi.user` and a committed `pi.assistant`

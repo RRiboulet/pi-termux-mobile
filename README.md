@@ -134,7 +134,7 @@ file back.
 - `android/` — Gradle project (app module, Java only, no NDK)
 - `runtime/` — `server.mjs` (durable bridge: the HTTP/SSE API and the static
   client), `common.mjs` (harness setup, credential store with file lock,
-  durable session registry, sequenced event hub, single-owner lock),
+  durable session registry, single-owner lock),
   `models-config.mjs` (the reader for `~/.pi/agent/models.json`),
   `public/` (the single-screen client), package.json for prod node_modules
 - `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
@@ -503,21 +503,14 @@ service.
 
 *vibe coding fun with pi* — [Earendil Pi on GitHub](https://github.com/earendil-works/pi)
 
-The Spaces page prepares a P-256 device key in Android Keystore, pairs via an
-entered token/QR JSON, checks pairing/authentication and resolves own-key
-rotation. It connects to explicitly trusted control/data hosts over the overlay
-and displays the selected space's objects and statistics. Private keys are never
-exported; request identities and public metadata are saved privately before
-sending, without persisting enrollment tokens. Camera QR scanning and the live
-Keystore/phone-to-server acceptance remain pending.
+---
 
-`PI_SERVERD_FEDERATION_CONFIG` opts pi-serverd into the provisioned federation
-runtime, independent boot/authority checks and its supervisor. Configuration,
-keys and register endpoints must be provisioned explicitly. A persistent
-`restart.lock` blocks normal server startup. Operational requirements and open
-recovery integration are documented in the sibling pi-spaces
-`docs/ap1b-betrieb.md` and `docs/ap1b-abnahme.md`.
+### Removed after this report
 
-Mobile lifecycle checks: `node --test test/spaces-mobile.test.mjs`.
-
-The **Spaces-Steuerung** page (`runtime/public/steuerung.html`) sends admin commands (runs, workers) through the paired control connection. Each command ID is stored in the private profile before it is sent and is reused after a timeout, double tap or restart; results are polled only while the page is visible.
+The Spaces page, the federation runtime and the **Spaces-Steuerung** page
+(`runtime/public/steuerung.html`) were removed when the server was pruned to a
+phone-only app; `PI_SERVERD_FEDERATION_CONFIG`, the Android Keystore device
+key, `node --test test/spaces-mobile.test.mjs` and the `pi-spaces` sibling
+repository's operational documents went with them. The prose above is left as
+the record of what the 0.0.1 report measured. The code is in
+`feature/remote-subsystem` and in the `pre-prune-2026-10-21` tag.
