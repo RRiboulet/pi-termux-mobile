@@ -1,0 +1,12 @@
+{
+  "name": "pi-termux-mobile",
+  "private": true,
+  "type": "module",
+  "description": "Host-side checks for the pi mobile client. The root package.json is NOT shipped: runtime/package.json is what goes into the APK, and these dependencies must never land on the phone.",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.5"
+  }
+}
