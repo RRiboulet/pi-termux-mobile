@@ -162,6 +162,40 @@ test('an OAuth device code is shown, not [object Object]', async () => {
   assert.doesNotMatch(app.text(), /\[object Object\]/, 'an OAuth event was rendered as [object Object]');
 });
 
+test('prose after a code fence is prose, not code', async () => {
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
+  await app.settle();
+  app.send({
+    type: 'message_end',
+    entry: { id: 11, model: [{ role: 'assistant', content: [{ type: 'text', text: 'Here is code:\n\n```js\nconsole.log(1)\n```\n\nAnd here is prose after the fence.' }] }] },
+  });
+  await app.settle();
+  const body = app.document.querySelector('.msg.assistant .body');
+  assert.ok(body, 'the assistant message is not in the transcript');
+  // The split alternates prose and code; treating every block after the first as code put the prose
+  // after the fence inside a <pre>.
+  assert.equal(body.querySelectorAll('pre').length, 1, 'the prose after the fence was rendered as code');
+  assert.match(body.textContent, /And here is prose after the fence\./);
+});
+
+test('a tool call appears where it happened, not in a block at the bottom', async () => {
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
+  await app.settle();
+  app.send({ type: 'message_end', entry: { id: 20, model: [{ role: 'assistant', content: [{ type: 'text', text: 'first' }] }] } });
+  await app.settle();
+  app.send({ type: 'tool_execution_start', toolCallId: 'c9', toolName: 'read', args: { path: 'x' } });
+  await app.settle();
+  app.send({ type: 'message_end', entry: { id: 21, model: [{ role: 'assistant', content: [{ type: 'text', text: 'second' }] }] } });
+  await app.settle();
+  const order = [...app.document.querySelectorAll('.log > *')].map((n) => (n.textContent ?? '').trim().slice(0, 12));
+  assert.ok(order.length >= 3, 'the transcript is shorter than expected');
+  assert.match(order[0], /first/);
+  assert.match(order[1], /read/, 'the tool call is not between the two answers');
+  assert.match(order[2], /second/);
+});
+
 test('the menu shows the thinking level and the provider count without opening their sheets', async () => {
   const app = await mount({
     state: { model: { provider: 'anthropic', modelId: 'claude' }, thinkingLevel: 'high', busy: false, sessionName: 'Main' },
