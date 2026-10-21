@@ -42,6 +42,33 @@ const TERMUX = "/data/data/com.termux";
 const ROOT = resolve(import.meta.dirname, "..");
 const ASSETS = join(ROOT, "android/app/src/main/assets");
 const BUILD_GRADLE = join(ROOT, "android/app/build.gradle");
+const INDEX_LOCK = join(ROOT, "scripts/termux-index.lock");
+
+/**
+ * The Termux index is the whole trust root: the per-package SHA-256 is read from the same index the packages come
+ * from, so the checks prove index/deb consistency and never index authenticity. Termux signs the index (InRelease),
+ * but verifying that needs a pinned Termux key in this repository, which is a decision of its own.
+ *
+ * Until then, the index is pinned here: a lock file holds the hash of the index the build expects. The index moving is
+ * then a change to a committed file, reviewed like any other, instead of a silent upgrade of the binaries that ship
+ * inside the APK. Run with --update-index-lock to move it deliberately, and look at what the diff says.
+ */
+interface IndexLock {
+    indexSha256: string;
+    packages: Record<string, string>;
+}
+
+function readIndexLock(): IndexLock | undefined {
+    if (!existsSync(INDEX_LOCK)) {
+        return undefined;
+    }
+
+    return JSON.parse(readFileSync(INDEX_LOCK, "utf8")) as IndexLock;
+}
+
+function writeIndexLock(lock: IndexLock): void {
+    writeFileSync(INDEX_LOCK, `${JSON.stringify(lock, null, 2)}\n`);
+}
 
 /**
  * The package the app installs as. The prefix rewrite targets it, so it must be exactly as long as `com.termux`.
@@ -169,11 +196,28 @@ function parseIndex(text: string): Map<string, Fields> {
         }
 
         if (fields.Package !== undefined) {
-            packages.set(fields.Package, fields);
+            // The live index carries some names twice, with different versions (poppler, libvips, gegl, ...). Keep the
+            // newer one, decided by dpkg's comparison, not by whichever paragraph happened to come last.
+            const existing = packages.get(fields.Package);
+
+            if (existing === undefined || newerVersion(fields.Version!, existing.Version!)) {
+                packages.set(fields.Package, fields);
+            }
         }
     }
 
     return packages;
+}
+
+/** Whether `a` is a newer version than `b`, by dpkg's rules. */
+function newerVersion(a: string, b: string): boolean {
+    try {
+        execFileSync("dpkg", ["--compare-versions", a, "gt", b]);
+
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** Virtual packages: a name a package Provides but does not exist under. Depending on one needs a real provider. */
@@ -435,16 +479,73 @@ function prune(files: string): string[] {
     return removed;
 }
 
+/**
+ * The archive that ships is what has to be checked, not the tree it came from: a truncated or half-written file
+ * would otherwise be accepted, installed on the phone, and the installer tolerates a partial extraction as long as
+ * usr/bin/node is there.
+ */
+function assertArchiveIntact(archive: string, required: string[]): void {
+    try {
+        execFileSync("gzip", ["-t", archive], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch (error) {
+        throw new Error(`the produced archive is not a valid gzip stream: ${String(error)}`);
+    }
+
+    let listing: string;
+
+    try {
+        listing = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    } catch (error) {
+        throw new Error(`the produced archive is not a readable tar: ${String(error)}`);
+    }
+
+    const names = new Set(listing.split("\n").filter((line) => line !== ""));
+
+    for (const path of required) {
+        // REQUIRED names are already relative to the prefix ("usr/bin/node"), which is how the archive lists them.
+        if (!names.has(path)) {
+            throw new Error(`the produced archive is missing ${path}`);
+        }
+    }
+}
+
 async function main(): Promise<void> {
     requireTools();
     console.log(`prefix: ${TERMUX} -> ${APP}`);
 
     const indexBytes = await download(`${REPO}dists/stable/main/binary-aarch64/Packages.gz`);
+    const indexSha256 = createHash("sha256").update(indexBytes).digest("hex");
     const index = parseIndex(gunzipSync(indexBytes).toString("utf8"));
     const selected = resolvePackages(index);
     const work = mkdtempSync(join(tmpdir(), "pi-termux-rootfs-"));
     const extracted = join(work, "root");
     const manifest: { package: string; version: string; sha256: string; filename: string }[] = [];
+
+    // The pinned index. Either it is the one we expect, or the move has to be taken deliberately.
+    const lock = readIndexLock();
+    const resolved = Object.fromEntries([...selected].map(([name, fields]) => [name, fields.Version!]));
+
+    if (lock === undefined) {
+        writeIndexLock({ indexSha256, packages: resolved });
+        console.log(`index lock written: ${indexSha256.slice(0, 12)}`);
+    } else if (lock.indexSha256 !== indexSha256) {
+        if (process.argv.includes("--update-index-lock")) {
+            writeIndexLock({ indexSha256, packages: resolved });
+            console.log(`index lock updated: ${lock.indexSha256.slice(0, 12)} -> ${indexSha256.slice(0, 12)}`);
+        } else {
+            const moved = Object.entries(resolved).filter(
+                ([name, version]) => lock.packages[name] !== undefined && lock.packages[name] !== version,
+            );
+            const added = Object.keys(resolved).filter((name) => lock.packages[name] === undefined);
+
+            throw new Error(
+                `the Termux index changed (${lock.indexSha256.slice(0, 12)} -> ${indexSha256.slice(0, 12)}). ` +
+                    (moved.length > 0 ? `Versions moved: ${moved.map(([n, v]) => `${n} ${lock.packages[n]} -> ${v}`).join(", ")}. ` : "") +
+                    (added.length > 0 ? `New: ${added.join(", ")}. ` : "") +
+                    "Review the change, then take it deliberately with: node scripts/package-rootfs.ts --update-index-lock",
+            );
+        }
+    }
 
     mkdirSync(extracted);
 
@@ -518,13 +619,15 @@ async function main(): Promise<void> {
             { stdio: "inherit" },
         );
 
+        assertArchiveIntact(join(ASSETS, "rootfs.bin"), REQUIRED);
+
         writeFileSync(
             join(ASSETS, "termux-packages.json"),
             `${JSON.stringify(
                 {
                     applicationId: APP_ID,
                     prefix: APP,
-                    index: createHash("sha256").update(indexBytes).digest("hex"),
+                    index: indexSha256,
                     removedSymlinks: rewritten.dangling,
                     absoluteSymlinks: rewritten.kept,
                     symlinkedDirectories,
