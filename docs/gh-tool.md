@@ -13,6 +13,7 @@ phone.
 scripts/gh pr create --title "..." --body "..." --base master --push
 scripts/gh pr list --state open --json number,title,url
 scripts/gh pr view 12 --comments
+scripts/gh pr comments 12 --since 2026-10-21T12:00:00Z
 scripts/gh pr diff 12
 scripts/gh pr comment 12 --body "one line about what is wrong"
 scripts/gh pr checks 12
@@ -57,6 +58,10 @@ printf '%s' "$TOKEN" > ~/.config/gh/token && chmod 600 ~/.config/gh/token
 
 - `gh pr diff <n>` — the diff, as text, to read.
 - `gh pr view <n> --comments` — the description and the review thread.
+- `gh pr comments <n>` — every comment, from all three places GitHub keeps
+  them: the conversation, the diff (inline review comments) and the review
+  submissions. `--since <timestamp>` keeps only the new ones, which is how
+  a review round is followed.
 - `gh pr list --json number,title,state,head,base,url` — one JSON array, no
   prose. A field that is not there comes back as `null`, never as a missing
   key, so the JSON always has the same shape.

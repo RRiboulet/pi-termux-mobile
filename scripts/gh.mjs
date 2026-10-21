@@ -57,6 +57,7 @@ const OPTIONS = {
   'limit': { type: 'string' },
   'push': { type: 'boolean' },
   'comments': { type: 'boolean' },
+  'since': { type: 'string' },
 };
 
 export function parse(argv) {
@@ -291,6 +292,74 @@ async function commandPrList(values) {
   }
 }
 
+/**
+ * Every comment on a pull request, from all three places GitHub keeps them:
+ * the conversation (issue comments), the diff (inline review comments), and
+ * the review submissions themselves. A reviewer working on the diff leaves
+ * inline comments, so reading only the conversation would miss most of it.
+ */
+export async function collectComments({ owner, repo, number }, token, { api: apiFn = api } = {}) {
+  const headers = { accept: 'application/vnd.github+json' };
+  const [conversation, inline, reviews] = await Promise.all([
+    apiFn('GET', `/repos/${owner}/${repo}/issues/${number}/comments`, { token, query: { per_page: '100' }, headers }),
+    apiFn('GET', `/repos/${owner}/${repo}/pulls/${number}/comments`, { token, query: { per_page: '100' }, headers }),
+    apiFn('GET', `/repos/${owner}/${repo}/pulls/${number}/reviews`, { token, query: { per_page: '100' }, headers }),
+  ]);
+  const out = [];
+  for (const c of conversation ?? []) {
+    out.push({ kind: 'conversation', user: c.user?.login, created: c.created_at, body: c.body, path: null, line: null });
+  }
+  for (const c of inline ?? []) {
+    out.push({
+      kind: 'inline',
+      user: c.user?.login,
+      created: c.created_at,
+      body: c.body,
+      path: c.path ?? null,
+      line: c.line ?? c.original_line ?? null,
+      in_reply_to: c.in_reply_to_id ?? null,
+    });
+  }
+  for (const r of reviews ?? []) {
+    out.push({
+      kind: 'review',
+      user: r.user?.login,
+      created: r.submitted_at ?? r.created_at,
+      body: r.body ?? '',
+      state: r.state,
+      path: null,
+      line: null,
+    });
+  }
+  out.sort((a, b) => String(a.created ?? '').localeCompare(String(b.created ?? '')));
+  return out;
+}
+
+/** The comments that arrived at or after a timestamp. */
+export function commentsSince(comments, since) {
+  const at = Date.parse(since);
+  if (Number.isNaN(at)) throw new Error(`--since expects a timestamp, got "${since}"`);
+  return comments.filter((c) => c.created && Date.parse(c.created) >= at);
+}
+
+async function commandPrComments(values, positionals) {
+  const target = targetRepo(values);
+  const token = readToken(values.token, { required: false });
+  const number = positionals[0];
+  if (!number) throw new Error('usage: gh pr comments <number>');
+  let comments = await collectComments({ ...target, number }, token);
+  if (values.since) comments = commentsSince(comments, values.since);
+  if (values.json) { print(project(comments, values.json)); return; }
+  if (!comments.length) { console.log('no comments'); return; }
+  for (const c of comments) {
+    const where = c.path ? ` on ${c.path}${c.line ? `:${c.line}` : ''}` : '';
+    const state = c.state ? ` [${c.state}]` : '';
+    console.log(`--- ${c.kind} by ${c.user} at ${c.created}${state}${where}`);
+    console.log(c.body ?? '');
+    console.log('');
+  }
+}
+
 async function commandPrView(values, positionals) {
   const { owner, repo } = targetRepo(values);
   const token = readToken(values.token, { required: false });
@@ -298,8 +367,10 @@ async function commandPrView(values, positionals) {
   if (!number) throw new Error('usage: gh pr view <number>');
   const pr = await api('GET', `/repos/${owner}/${repo}/pulls/${number}`, { token });
   if (values.comments) {
-    const comments = await api('GET', `/repos/${owner}/${repo}/issues/${number}/comments`, { token, query: { per_page: '100' } });
-    pr.comments = comments.map((c) => ({ user: c.user?.login, created: c.created_at, body: c.body }));
+    const comments = await collectComments({ owner, repo, number }, token);
+    pr.comments = comments.map((c) => ({
+      kind: c.kind, user: c.user, created: c.created, body: c.body, path: c.path, line: c.line, state: c.state,
+    }));
   }
   if (values.json) { print(project(pr, values.json)); return; }
   console.log(`#${pr.number} ${pr.title}`);
@@ -312,7 +383,10 @@ async function commandPrView(values, positionals) {
   if (pr.comments?.length) {
     console.log('');
     console.log(`--- ${pr.comments.length} comment(s) ---`);
-    for (const c of pr.comments) console.log(`[${c.user} ${c.created}]\n${c.body}\n`);
+    for (const c of pr.comments) {
+      const where = c.path ? ` on ${c.path}${c.line ? `:${c.line}` : ''}` : '';
+      console.log(`[${c.kind} ${c.user} ${c.created}${c.state ? ' ' + c.state : ''}${where}]\n${c.body}\n`);
+    }
   }
 }
 
@@ -408,6 +482,7 @@ function usage() {
   gh pr create --title T [--body B | --body-file F] [--base B] [--head H] [--draft] [--label L] [--push]
   gh pr list [--state open|closed|all] [--limit N] [--json fields]
   gh pr view <n> [--comments] [--json fields]
+  gh pr comments <n> [--since <timestamp>] [--json fields]
   gh pr diff <n>
   gh pr comment <n> --body "..."
   gh pr checks <n>
@@ -446,6 +521,7 @@ export async function main(argv) {
         case 'create': return commandPrCreate(values);
         case 'list': return commandPrList(values);
         case 'view': return commandPrView(values, rest.slice(1));
+        case 'comments': return commandPrComments(values, rest.slice(1));
         case 'diff': return commandPrDiff(values, rest.slice(1));
         case 'comment': return commandPrComment(values, rest.slice(1));
         case 'checks': return commandPrChecks(values, rest.slice(1));

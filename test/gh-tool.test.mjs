@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { apiUrl, project, repoFromRemote, targetRepo, parse, pushWithToken } from '../scripts/gh.mjs';
+import { apiUrl, project, repoFromRemote, targetRepo, parse, pushWithToken, collectComments, commentsSince } from '../scripts/gh.mjs';
 
 function withRemote(url, fn) {
   const dir = mkdtempSync(path.join(tmpdir(), 'gh-test-'));
@@ -92,6 +92,34 @@ test('without --repo the API talks to the origin remote', () => {
   withRemote('https://github.com/RRiboulet/pi-termux-mobile.git', (dir) => {
     assert.deepEqual(targetRepo({}, dir), { owner: 'RRiboulet', repo: 'pi-termux-mobile' });
   });
+});
+
+test('a review is read from all three places GitHub keeps comments', async () => {
+  // A reviewer working on the diff leaves inline comments; a reviewer
+  // clicking "comment" leaves a conversation comment; a reviewer submitting a
+  // review leaves a review. Reading only the conversation misses most of it.
+  const fake = async (method, pathname) => {
+    if (pathname.includes('/issues/')) return [{ user: { login: 'a' }, created_at: '2026-10-21T10:00:00Z', body: 'chat' }];
+    if (pathname.includes('/pulls/') && pathname.endsWith('/comments')) return [{ user: { login: 'b' }, created_at: '2026-10-21T11:00:00Z', body: 'inline', path: 'runtime/server.mjs', line: 42 }];
+    return [{ user: { login: 'c' }, created_at: '2026-10-21T12:00:00Z', body: 'summary', state: 'CHANGES_REQUESTED' }];
+  };
+  const comments = await collectComments({ owner: 'o', repo: 'r', number: '1' }, 'token', { api: fake });
+  assert.deepEqual(comments.map((c) => c.kind), ['conversation', 'inline', 'review']);
+  assert.equal(comments[1].path, 'runtime/server.mjs');
+  assert.equal(comments[1].line, 42);
+  assert.equal(comments[2].state, 'CHANGES_REQUESTED');
+});
+
+test('comments can be filtered to the ones that are new', async () => {
+  const fake = async (method, pathname) => {
+    if (pathname.includes('/issues/')) return [{ user: { login: 'a' }, created_at: '2026-10-21T10:00:00Z', body: 'old' }];
+    if (pathname.includes('/pulls/') && pathname.endsWith('/comments')) return [{ user: { login: 'b' }, created_at: '2026-10-21T18:00:00Z', body: 'new' }];
+    return [];
+  };
+  const comments = await collectComments({ owner: 'o', repo: 'r', number: '1' }, 'token', { api: fake });
+  const fresh = commentsSince(comments, '2026-10-21T12:00:00Z');
+  assert.deepEqual(fresh.map((c) => c.body), ['new']);
+  assert.throws(() => commentsSince(comments, 'not a date'), /timestamp/);
 });
 
 test('the flags are parsed the way the help says', () => {
