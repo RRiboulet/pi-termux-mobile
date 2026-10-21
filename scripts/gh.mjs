@@ -88,18 +88,25 @@ export function repoFromRemote(remote = 'origin', cwd = process.cwd()) {
 
 // ── the token ───────────────────────────────────────────────────────────────
 
+export function tokenFilePath(env = process.env) {
+  return path.join(env.HOME || homedir(), '.config', 'gh', 'token');
+}
+
 export function readToken(explicit, { required = true } = {}) {
   if (explicit) return explicit.trim();
   const env = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (env && env.trim()) return env.trim();
-  const file = path.join(homedir(), '.config', 'gh', 'token');
+  const file = tokenFilePath();
   try {
     const token = readFileSync(file, 'utf8').trim();
     if (token) return token;
   } catch { /* no token file */ }
   if (!required) return undefined;
   throw new Error(
-    'no GitHub token. Set GH_TOKEN, or write one to ~/.config/gh/token (chmod 600). ' +
+    'no GitHub token. Looked at: $GH_TOKEN, $GITHUB_TOKEN, ' +
+    `${file} (which does not exist or is empty). ` +
+    'Create it with: umask 077; mkdir -p "$(dirname ' + file + ')"; ' +
+    `printf '%s' 'YOUR_TOKEN' > ${file}; chmod 600 ${file}. ` +
     'A fine-grained token with "pull requests: read & write" and "contents: read & write" is enough.',
   );
 }
@@ -379,8 +386,11 @@ async function commandPrCreate(values) {
 function commandAuthStatus(values) {
   try {
     const token = readToken(values.token);
+    const from = values.token ? '--token'
+      : (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) ? '$GH_TOKEN/$GITHUB_TOKEN'
+      : tokenFilePath();
+    console.log(`token: found in ${from} (${token.length} chars)`);
     const user = api('GET', '/user', { token });
-    console.log(`token: found (${token.slice(0, 4)}…, ${token.length} chars)`);
     user.then((u) => console.log(`user:  ${u.login}`)).catch((e) => console.log(`user:  could not read the token: ${e.message}`));
   } catch (e) {
     console.log(`token: none (${e.message})`);
