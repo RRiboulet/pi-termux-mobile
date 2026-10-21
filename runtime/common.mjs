@@ -1,6 +1,6 @@
-// common.mjs — shared pieces of server.mjs (phone bridge) and pi-serverd.mjs
-// (remote session daemon): credential store, harness setup, durable session
-// registry, sequenced event buffers, atomic files and the single-owner lock.
+// common.mjs — the pieces of the phone bridge: credential store, harness
+// setup, durable session registry, sequenced event buffers, atomic files and
+// the single-owner lock.
 import {
   closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync,
   unlinkSync, writeFileSync, writeSync,
@@ -16,6 +16,7 @@ import {
 } from '@earendil-works/pi-durable';
 import { CodingTools } from '@earendil-works/pi-durable/tools';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
+import { applyModelsConfig, loadModelsConfig } from './models-config.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -122,6 +123,9 @@ export function createCredentialStore(authPath) {
 export async function createModelCatalog(credentials) {
   const models = createModels({ credentials });
   for (const p of builtinProviders()) models.setProvider(p);
+  // models.json: the user's own models, layered over the bundled catalog.
+  const applied = applyModelsConfig(models, loadModelsConfig());
+  if (applied.length) console.log(`models.json: ${applied.join(', ')}`);
   if (process.env.PI_TEST_FAUX) await installTestFaux(models);
   return models;
 }
@@ -231,9 +235,6 @@ export const SessionRegistry = defineDoc({
   scope: 'session',
   initial: () => ({ sessions: {}, activeId: null }),
 });
-
-// pi-spaces shared space; refreshed automatically by pi-spaces bundle and the Android pre-build task.
-export { spaces as Spaces, startService as startSpaceService } from './pi-spaces.mjs';
 
 export async function openHarness({ dbPath, models, env, extensions = [] }, ctx) {
   const registry = createRegistry();

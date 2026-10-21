@@ -2,7 +2,7 @@ plugins {
     id 'com.android.application'
 }
 
-// Run on every build: the script rebuilds the sibling pi-spaces source and preserves unchanged assets.
+// Run on every build: the script packages the mobile runtime and preserves unchanged assets.
 def mobileRoot = rootProject.projectDir.parentFile
 tasks.register('prepareMobileRuntime', Exec) {
     workingDir mobileRoot

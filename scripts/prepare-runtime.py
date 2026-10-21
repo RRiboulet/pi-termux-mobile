@@ -1,30 +1,21 @@
 #!/usr/bin/env python3
-"""Refresh pi-spaces from source and package the mobile runtime before every Android build."""
+"""Package the mobile runtime before every Android build."""
 import gzip
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = Path(os.environ.get('PI_SPACES_SOURCE', str(ROOT.parent / 'pi-spaces'))).resolve()
 RUNTIME = ROOT / 'runtime'
 ASSETS = ROOT / 'android/app/src/main/assets'
-FILES = ['server.mjs', 'common.mjs', 'remote-env.mjs', 'env-server.mjs', 'pi-serverd.mjs',
-         'space-keystore.mjs', 'spaces-mobile.mjs', 'remote-client.mjs', 'remote-provision.mjs', 'remote-state.mjs', 'pi-spaces.mjs', 'package.json',
+FILES = ['server.mjs', 'common.mjs', 'models-config.mjs', 'package.json',
          'package-lock.json', 'public', 'node_modules']
-# space-examples is optional and gitignored: it is added below only when it is actually there.
 
-source_available = (SOURCE / 'scripts/bundle-mobile.mjs').is_file()
-if not source_available:
-    print(f'WARNING: pi-spaces source checkout missing or incompatible: {SOURCE}; '
-          'using existing mobile bundles without refreshing them. Set PI_SPACES_SOURCE to enable refresh.',
-          file=sys.stderr)
 if not (RUNTIME / 'node_modules/@earendil-works/pi-durable').is_dir():
     raise SystemExit('Mobile runtime dependencies missing; install the locked runtime dependencies first')
 if not (ASSETS / 'rootfs.bin').is_file():
@@ -47,17 +38,8 @@ if True:
         raise SystemExit(f'rootfs.bin was built for {built_for!r} but the app id is {current!r}: '
                          'run: node scripts/package-rootfs.ts')
 for name in FILES:
-    if name != 'pi-spaces.mjs' and not (RUNTIME / name).exists():
+    if not (RUNTIME / name).exists():
         raise SystemExit(f'Required runtime input missing: {name}')
-if source_available:
-    subprocess.run(['npm', 'run', 'bundle'], cwd=SOURCE, check=True,
-                   env={**os.environ, 'PI_SPACES_MOBILE_ROOT': str(ROOT)})
-if not (RUNTIME / 'pi-spaces.mjs').is_file():
-    raise SystemExit('Required mobile bundle missing: pi-spaces.mjs; prepare it from a pi-spaces source checkout first')
-if (RUNTIME / 'space-examples').is_dir():
-    FILES.append('space-examples')
-else:
-    print('WARNING: optional space-examples missing; packaging the runtime without CLI examples', file=sys.stderr)
 
 def entries(path):
     if path.name == '.bin':

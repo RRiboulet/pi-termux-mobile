@@ -1,16 +1,9 @@
 // Minimal HTTP+SSE bridge: web UI <-> pi-durable Harness (crash-safe, SQLite storage).
 // Env: HOME (set by app), PI_PORT (default 0=ephemeral, port written to
-// $HOME/.pi-mobile/port), PI_WORKDIR (agent cwd), PI_SHELL (bash path),
-// PI_REMOTES (JSON: {"name": {"url": "http://host:port", "token": "..."}}, merged
-// over $HOME/.pi-mobile/remotes.json) — a conversation whose cwd is
-// "remote:<name>:/path" runs its tools on that host.
+// $HOME/.pi-mobile/port), PI_WORKDIR (agent cwd), PI_SHELL (bash path).
 import http from 'node:http';
-// The federation bundle (pi-spaces.mjs, 718 KB) is imported LAZILY: it is pulled in only when a
-// /api/spaces route is actually called. The client has no page or sheet for spaces any more, so
-// parsing it on every phone start is pure cost.
 import { spawn } from 'node:child_process';
-import { WebSocketServer } from 'ws';
-import { createReadStream, existsSync, readdirSync, readFileSync, readlinkSync, statSync, unlinkSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -19,10 +12,6 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { watchEvents } from '@earendil-works/pi-durable';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
-import { RemoteExecutionEnv } from './remote-env.mjs';
-import { parseSshTarget, sshHostFingerprint } from './remote-client.mjs';
-import { createRemoteState } from './remote-state.mjs';
-import { copyAuthTo, probeRemote, remoteBash, runtimeHash, stopRemoteServer } from './remote-provision.mjs';
 import {
   acquireOwnerLock, agentOf, createCredentialStore, createModelCatalog, ensureModel, isBusy,
   openHarness, pickModel, readJson, requestIdOf, sessionStore, Subagent, whenBusyOf,
@@ -36,48 +25,18 @@ const WORKDIR = process.env.PI_WORKDIR || HOME_DIR;
 const AGENT_DIR = path.join(HOME_DIR, '.pi', 'agent');
 const AUTH_PATH = path.join(AGENT_DIR, 'auth.json');
 const STATE_DIR = path.join(HOME_DIR, '.pi-mobile');
-let mobileSpacesPromise = null;
-/** The spaces module, loaded on first use. */
-async function mobileSpaces() {
-  if (!mobileSpacesPromise) {
-    mobileSpacesPromise = import('./spaces-mobile.mjs').then(
-      (m) => new m.MobileSpaces(path.join(STATE_DIR, 'space-profile.json')),
-    );
-  }
-  return mobileSpacesPromise;
-}
 const PORT_FILE = path.join(STATE_DIR, 'port');
 const TOKEN_FILE = path.join(STATE_DIR, 'token');
 const LEGACY_SESSIONS_FILE = path.join(STATE_DIR, 'sessions.json');
 const DEVICE_ID_FILE = path.join(STATE_DIR, 'device-id');
-const CLIENTS_FILE = path.join(STATE_DIR, 'clients.json');
-const TRUST_FILE = path.join(STATE_DIR, 'trusted-hosts.json');
-async function trustStatus(target) {
-  parseSshTarget(target);
-  const fingerprint = await sshHostFingerprint(target, process.env.PREFIX || '');
-  if (!fingerprint) throw new Error('SSH host fingerprint not available: cannot transfer credentials');
-  return { fingerprint, trusted: readJson(TRUST_FILE, {})[target] === fingerprint };
-}
-async function assertTrusted(target) {
-  if (!(await trustStatus(target)).trusted) throw Object.assign(new Error('confirm the SSH host fingerprint before copying credentials'), { status: 403 });
-}
 const PUBLIC = path.join(ROOT, 'public');
-const REMOTES = {
-  ...readJson(path.join(STATE_DIR, 'remotes.json'), {}),
-  ...JSON.parse(process.env.PI_REMOTES || '{}'),
-};
 const MAX_BODY = 1024 * 1024;
-const PI_PKG = '@earendil-works/pi-coding-agent';
-const EARENDIL_PKGS = ['@earendil-works/pi-coding-agent','@earendil-works/pi-durable',
-  '@earendil-works/pi-ai','@earendil-works/pi-client','@earendil-works/pi-server','@earendil-works/chord'];
+const PI_PKG = '@earendil-works/pi-durable';
+// The packages this runtime actually runs. The pi CLI, the pi-server host and
+// the pi-client tunnel are gone from the app, so they are no longer updated.
+const EARENDIL_PKGS = ['@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord'];
 function piInstalledVersion() {
   try { return JSON.parse(readFileSync(path.join(ROOT,'node_modules',PI_PKG,'package.json'),'utf8')).version; } catch { return null; }
-}
-async function piLatestVersion() {
-  try {
-    const r = await fetch(`https://registry.npmjs.org/${PI_PKG}/latest`,{ signal: AbortSignal.timeout(8000) });
-    return (await r.json()).version ?? null;
-  } catch { return null; }
 }
 const piUpdate = { running: false, done: false, ok: false, version: null, error: null, log: [] };
 function startPiUpdate() {
@@ -129,12 +88,6 @@ const models = await createModelCatalog(credentialStore);
 
 function envFor({ cwd } = {}) {
   const dir = cwd ?? WORKDIR;
-  const m = /^remote:([^:]+):(.+)$/.exec(dir);
-  if (m) {
-    const remote = REMOTES[m[1]];
-    if (!remote) throw new Error(`unknown remote "${m[1]}" (configure ${path.join(STATE_DIR, 'remotes.json')})`);
-    return new RemoteExecutionEnv({ cwd: m[2], baseUrl: remote.url, token: remote.token });
-  }
   const prefix = process.env.PREFIX;
   const bash = prefix && existsSync(path.join(prefix, 'bin/bash'))
     ? path.join(prefix, 'bin/bash') : undefined;
@@ -310,28 +263,6 @@ function serveStatic(res, pathname) {
   stream.pipe(res);
 }
 
-// --- remote pi-server attach state ------------------------------------------------------
-// pi-client never reconnects on its own: a lost tunnel is rebuilt here with
-// backoff and the last session is attached again. Prompts carry a requestId,
-// so a retried prompt is never answered twice.
-
-const remoteState = createRemoteState({
-  prefix: process.env.PREFIX || '', stateDir: STATE_DIR, authFile: AUTH_PATH, assertTrusted,
-});
-
-// --- client host registry + ssh key helpers ----------------------------------------------
-
-const readClients = () => readJson(CLIENTS_FILE, []);
-const writeClients = (clients) => writeFileAtomic(CLIENTS_FILE, JSON.stringify(clients, null, 2));
-function sshKeyInfo() {
-  const pub = `${HOME_DIR}/.ssh/id_ed25519.pub`;
-  const priv = `${HOME_DIR}/.ssh/id_ed25519`;
-  if (existsSync(pub) && existsSync(priv)) {
-    try { return { exists: true, pubkey: readFileSync(pub, 'utf8').trim() }; } catch { return { exists: true, pubkey: null }; }
-  }
-  return { exists: false, pubkey: null };
-}
-
 // --- API -----------------------------------------------------------------------------
 
 /** The thinking levels a model accepts, always including "off". */
@@ -364,33 +295,18 @@ async function activeState() {
       cwd: agentOf(view).cwd ?? WORKDIR,
       sessionId: active ? String(active.id) : null,
       sessionName: meta?.name ?? 'Main',
-      remotes: Object.keys(REMOTES),
     };
   } finally { view?.dispose?.(); }
 }
 
 async function handleApi(req, res, url, p) {
   const body = req.method === 'POST' ? await readBody(req) : {};
-  if (p.startsWith('/api/spaces/') && ['GET', 'POST'].includes(req.method)) {
-    const method = p.slice('/api/spaces/'.length);
-    if (req.method === 'GET' && method !== 'status') throw Object.assign(new Error('use POST'), { status: 405 });
-    return json(res, 200, await (await mobileSpaces()).call(method, body));
-  }
   if (!active && !p.startsWith('/api/oauth') && p !== '/api/auth' && p !== '/api/providers') {
     throw Object.assign(new Error('harness not ready'), { status: 503 });
   }
 
-  if (p === '/api/pi-version' && req.method === 'GET') {
-    const installed = piInstalledVersion();
-    const latest = await piLatestVersion();
-    const semverGt = (a, b) => { if (!a || !b) return false; const p = (v) => v.split('.').map(Number); const [A,B] = [p(a),p(b)]; for (let i=0;i<3;i++) { if ((B[i]||0) > (A[i]||0)) return true; if ((B[i]||0) < (A[i]||0)) return false; } return false; };
-    return json(res, 200, { installed, latest, updateAvailable: semverGt(installed, latest) });
-  }
   if (p === '/api/pi-update' && req.method === 'POST') {
     return json(res, 200, { started: startPiUpdate() });
-  }
-  if (p === '/api/pi-update-status' && req.method === 'GET') {
-    return json(res, 200, piUpdate);
   }
   if (p === '/api/state') return json(res, 200, await activeState());
 
@@ -407,18 +323,6 @@ async function handleApi(req, res, url, p) {
     await activate(conversation);
     return json(res, 200, { ok: true, activeId: String(conversation.id) });
   }
-  if (p === '/api/sessions/fork' && req.method === 'POST') {
-    // fork the given (or active) session at its newest entry
-    const sourceId = str(body.id || active.id);
-    if (!(await sessions.get(sourceId))) return json(res, 404, { error: 'unknown session' });
-    const source = await harness.conversation(Number(sourceId), ctx);
-    const newest = (await source.entries({}, 1, undefined, ctx)).items[0];
-    if (!newest) return json(res, 400, { error: 'nothing to fork yet' });
-    const srcMeta = await sessions.get(sourceId);
-    const fork = await sessions.create({ name: `${srcMeta?.name || `Session ${sourceId}`} (fork)` }, { fork: { conv: source, entryId: newest.id } });
-    await activate(fork);
-    return json(res, 200, { ok: true, activeId: String(fork.id) });
-  }
   if (p === '/api/sessions/select' && req.method === 'POST') {
     const id = str(body.id);
     if (!(await sessions.get(id))) return json(res, 404, { error: 'unknown session' });
@@ -426,22 +330,6 @@ async function handleApi(req, res, url, p) {
     if (!conversation) return json(res, 404, { error: 'session unavailable' });
     await activate(conversation);
     return json(res, 200, { ok: true, activeId: String(conversation.id) });
-  }
-  if (p === '/api/sessions/rename' && req.method === 'POST') {
-    const id = str(body.id);
-    if (!(await sessions.get(id))) return json(res, 404, { error: 'unknown session' });
-    await sessions.update(id, { name: str(body.name, 100) || undefined });
-    return json(res, 200, { ok: true });
-  }
-  if (p === '/api/sessions/delete' && req.method === 'POST') {
-    const id = str(body.id);
-    if (!(await sessions.get(id))) return json(res, 404, { error: 'unknown session' });
-    if (id === String(active.id)) return json(res, 400, { error: 'select another session first' });
-    // stop its work first: a hidden session must not keep running tools
-    const conversation = await harness.conversation(Number(id), ctx);
-    if (conversation) await conversation.abort(ctx);
-    await sessions.remove(id); // transcript stays in SQLite
-    return json(res, 200, { ok: true });
   }
 
   // --- active conversation
@@ -469,12 +357,6 @@ async function handleApi(req, res, url, p) {
   }
   if (p === '/api/usage' && req.method === 'GET') {
     return json(res, 200, { session: (await activeState()).usage, total: await harness.usage(ctx) });
-  }
-  if (p === '/api/result' && req.method === 'POST') {
-    const sub = await harness.submission(Number(body.id), ctx);
-    if (!sub) return json(res, 404, { error: 'unknown submission' });
-    const settled = await sub.wait(ctx);
-    return json(res, 200, { status: settled.status });
   }
   if (p === '/api/models' && req.method === 'GET') {
     const avail = await models.getAvailable();
@@ -523,134 +405,6 @@ async function handleApi(req, res, url, p) {
     await active.configure({ model: { provider: str(body.provider), modelId: str(body.modelId) } }, ctx);
     const view = await active.viewState(ctx);
     try { return json(res, 200, { ok: true, applied: agentOf(view).model }); } finally { view.dispose?.(); }
-  }
-
-  // --- ssh clients
-  if (p === '/api/clients' && req.method === 'GET') return json(res, 200, { clients: readClients() });
-  if (p === '/api/clients' && req.method === 'POST') {
-    if (body.delete) {
-      writeClients(readClients().filter((c) => c.name !== str(body.delete)));
-      return json(res, 200, { ok: true });
-    }
-    if (!body.target) return json(res, 400, { error: 'target required' });
-    const target = str(body.target);
-    parseSshTarget(target); // throws on invalid / option-like targets
-    const name = str(body.name || target, 100);
-    const clients = readClients().filter((c) => c.name !== name);
-    clients.push({ name, target });
-    writeClients(clients);
-    return json(res, 200, { ok: true });
-  }
-  if (p === '/api/sshkey' && req.method === 'GET') return json(res, 200, sshKeyInfo());
-  if (p === '/api/sshkey' && req.method === 'POST') {
-    if (sshKeyInfo().exists) return json(res, 200, { ok: true, ...sshKeyInfo() });
-    const prefix = process.env.PREFIX || '';
-    const sshDir = `${HOME_DIR}/.ssh`;
-    await mkdir(sshDir, { recursive: true, mode: 0o700 });
-    const r = await new Promise((resolve) => {
-      const kg = spawn(`${prefix}/bin/ssh-keygen`, ['-t', 'ed25519', '-N', '', '-f', `${sshDir}/id_ed25519`, '-C', 'pi-mobile'], { env: process.env });
-      kg.on('exit', (c) => resolve(c));
-      kg.on('error', () => resolve(-1));
-    });
-    return json(res, r === 0 ? 200 : 500, { ok: r === 0, ...sshKeyInfo() });
-  }
-
-  // --- remote pi-server attach
-  if (p === '/api/remote/trust-host' && req.method === 'POST') {
-    const target = str(body.target);
-    const { fingerprint } = await trustStatus(target);
-    if (body.fingerprint !== fingerprint) return json(res, 409, { error: 'host fingerprint changed' });
-    writeFileAtomic(TRUST_FILE, JSON.stringify({ ...readJson(TRUST_FILE, {}), [target]: fingerprint }), 0o600);
-    return json(res, 200, { ok: true });
-  }
-  if (p === '/api/remote/auth-status' && req.method === 'POST') {
-    let info;
-    try { info = await probeRemote({ ssh: str(body.target), prefix: process.env.PREFIX || '' }); } catch (e) {
-      // key login rejected (key not installed on the host) vs. other failures
-      const loginFailed = /ssh login failed/.test(String(e?.message));
-      return json(res, 200, { ok: false, loginFailed, error: String(e?.message || e) });
-    }
-    const trust = await trustStatus(str(body.target));
-    return json(res, 200, { ok: true, needsAuth: info.auth !== '1' && existsSync(AUTH_PATH), ...trust });
-  }
-  if (p === '/api/remote/copy-auth' && req.method === 'POST') {
-    if (!existsSync(AUTH_PATH)) return json(res, 400, { error: 'no auth.json on this device' });
-    await assertTrusted(str(body.target));
-    const info = await probeRemote({ ssh: str(body.target), prefix: process.env.PREFIX || '' });
-    if (info.auth === '1') return json(res, 409, { error: 'auth.json already exists on host' });
-    await copyAuthTo({ ssh: str(body.target), prefix: process.env.PREFIX || '', authFile: AUTH_PATH });
-    return json(res, 200, { ok: true });
-  }
-  if (p === '/api/remote/connect' && req.method === 'POST') {
-    const target = str(body.target);
-    // Ask before anything sensitive happens on the host: copying auth.json, or restarting an outdated daemon.
-    const askAuth = body.copyAuth === undefined && existsSync(AUTH_PATH);
-    const askUpdate = body.allowUpdate === undefined;
-    if (askAuth || askUpdate) {
-      let info;
-      try { info = await probeRemote({ ssh: target, prefix: process.env.PREFIX || '' }); } catch (e) {
-        const msg = String(e?.message || e);
-        return json(res, 200, { ok: false, loginFailed: /ssh login failed/.test(msg), error: msg });
-      }
-      if (askAuth && info.auth !== '1') {
-        const trust = await trustStatus(target);
-        if (!trust.trusted) return json(res, 200, { ok: false, needsTrust: true, target, ...trust });
-        return json(res, 200, { ok: false, needsAuth: true, target });
-      }
-      if (askUpdate && info.running === '1' && info.ver !== runtimeHash()) {
-        return json(res, 200, { ok: false, needsUpdate: true, target, installed: info.ver || null, available: runtimeHash() });
-      }
-    }
-    const remote = await remoteState.connect(target, { copyAuth: body.copyAuth === true, allowUpdate: body.allowUpdate === true });
-    return json(res, 200, { ok: true, serverId: remote.serverId, hostKey: remote.hostKey, sessions: await remote.list() });
-  }
-  if (p === '/api/remote/status' && req.method === 'GET') {
-    return json(res, 200, { status: remoteState.status, error: remoteState.lastError, sessionId: remoteState.sessionId, log: remoteState.log, target: remoteState.remote?.target ?? null });
-  }
-  if (p === '/api/remote/disconnect' && req.method === 'POST') {
-    await remoteState.disconnect();
-    return json(res, 200, { ok: true });
-  }
-  if (p === '/api/remote/stop' && req.method === 'POST') {
-    const target = str(body.target);
-    if (!target) return json(res, 400, { error: 'target required' });
-    await remoteState.disconnect();
-    const stopped = await stopRemoteServer({ ssh: target, prefix: process.env.PREFIX || '' });
-    return json(res, 200, { ok: true, stopped });
-  }
-  if (p.startsWith('/api/remote/')) {
-    const remote = remoteState.require();
-    switch (`${req.method} ${p}`) {
-      case 'GET /api/remote/sessions': return json(res, 200, await remote.list());
-      case 'GET /api/remote/models': return json(res, 200, await remote.models());
-      case 'POST /api/remote/model':
-        if (!body.provider || !body.modelId) return json(res, 400, { error: 'provider+modelId required' });
-        return json(res, 200, await remote.request('configure', [{ model: { provider: str(body.provider), modelId: str(body.modelId) } }]));
-      case 'POST /api/remote/create': return json(res, 200, await remote.create({ name: str(body.name, 100) || undefined }));
-      case 'POST /api/remote/rename':
-        return json(res, 200, await remote.rename(str(body.id), str(body.name, 100)));
-      case 'POST /api/remote/delete':
-        if (str(body.id) === remoteState.sessionId) remoteState.sessionId = null;
-        return json(res, 200, await remote.delete(str(body.id)));
-      case 'POST /api/remote/attach':
-        await remote.attach(str(body.id));
-        remoteState.sessionId = str(body.id);
-        return json(res, 200, { ok: true, target: remote.client.attachment });
-      case 'POST /api/remote/prompt':
-        return json(res, 200, await remote.request('prompt', [{
-          message: String(body.message ?? ''), requestId: requestIdOf(body.requestId), whenBusy: whenBusyOf(body.whenBusy),
-        }]));
-      case 'POST /api/remote/abort': return json(res, 200, await remote.request('abort', []));
-      case 'POST /api/remote/compact': return json(res, 200, await remote.request('compact', [{}]));
-      case 'GET /api/remote/state': return json(res, 200, await remote.request('state', []));
-      case 'GET /api/remote/history': return json(res, 200, await remote.request('history', [{ limit: 200 }]));
-      case 'GET /api/remote/events': {
-        const after = Number(url.searchParams.get('after') ?? -1);
-        const epoch = url.searchParams.get('epoch') || undefined;
-        return json(res, 200, await remote.request('events', [{ after, epoch }]));
-      }
-      default: return json(res, 404, { error: 'not found' });
-    }
   }
 
   // --- accounts
@@ -746,108 +500,6 @@ const server = http.createServer(async (req, res) => {
   return serveStatic(res, p);
 });
 
-// --- interactive pi CLI over WebSocket + util-linux `script` pty -------------
-
-const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
-server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, 'http://localhost');
-  if (url.pathname !== '/pty' || !hostAllowed(req) || !authed(req)) { socket.destroy(); return; }
-  wss.handleUpgrade(req, socket, head, (ws) => startPty(ws, url));
-});
-
-const clampInt = (v, lo, hi, dflt) => {
-  const n = Math.trunc(Number(v));
-  return Number.isFinite(n) && n >= lo && n <= hi ? n : dflt;
-};
-
-// Remote command for "pi CLI (ssh)": install pi if absent, otherwise compare it
-// to npm's latest stable release and update only when newer. The update stays in
-// ~/.local (no root); if npm/the registry is unreachable the existing pi starts.
-const REMOTE_PI_SCRIPT = [
-  'PKG=@earendil-works/pi-coding-agent;',
-  'if ! command -v pi >/dev/null 2>&1; then',
-  ' if ! command -v npm >/dev/null 2>&1; then echo "pi is missing; npm (and Node.js >= 22.19.0) is required."; read -r _; exit 1; fi;',
-  ' echo "pi not found - installing latest $PKG into ~/.local ...";',
-  ' npm install -g --prefix "$HOME/.local" "$PKG@latest" || { echo "pi installation failed"; read -r _; exit 1; };',
-  'else',
-  ' if command -v npm >/dev/null 2>&1; then',
-  '  have=$(pi --version 2>/dev/null | head -n 1); latest=$(npm view "$PKG" version --fetch-timeout=10000 --fetch-retries=1 2>/dev/null | head -n 1);',
-  '  if [ -n "$latest" ] && node -e "const p=s=>String(s).match(/^([0-9]+)\\.([0-9]+)\\.([0-9]+)/)?.slice(1).map(Number); const [a,b]=process.argv.slice(1).map(p); let c=0; if(a&&b) for(let i=0;i<3;i++) if(a[i]!==b[i]) { c=b[i]-a[i]; break; } process.exit(c>0?0:1)" "$have" "$latest"; then',
-  '   echo "updating pi: $have -> $latest ..."; npm install -g --prefix "$HOME/.local" "$PKG@latest" || echo "pi update failed; starting $have";',
-  '  elif [ -z "$latest" ]; then echo "could not check for pi updates; starting $have"; fi;',
-  ' fi;',
-  'fi;',
-  'exec pi',
-].join(' ');
-// single-quoted for the local `sh -c`: the base64 payload has no quote characters
-const REMOTE_PI_CMD = `'${remoteBash(REMOTE_PI_SCRIPT)}'`;
-
-function startPty(ws, url) {
-  const cols = clampInt(url.searchParams.get('cols'), 10, 1000, 120);
-  const rows = clampInt(url.searchParams.get('rows'), 5, 500, 30);
-  const cli = path.join(ROOT, 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
-  const prefix = process.env.PREFIX || '';
-  const scriptBin = prefix && existsSync(`${prefix}/bin/script`) ? `${prefix}/bin/script` : 'script';
-  const sshParam = url.searchParams.get('ssh');
-  const sshCmd = url.searchParams.get('sshop'); // 'copyid' -> interactive ssh-copy-id
-  let inner;
-  if (sshParam) {
-    let target;
-    try { target = parseSshTarget(sshParam); } catch (e) { ws.close(1008, e.message); return; }
-    const portFlag = target.port ? `-p ${target.port}` : '';
-    if (sshCmd === 'copyid') {
-      // run ssh-copy-id inside the pty so password entry is interactive
-      inner = `stty cols ${cols} rows ${rows}; "${prefix}/bin/bash" "${prefix}/bin/ssh-copy-id" -i "$HOME/.ssh/id_ed25519" ${portFlag} -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -- "${target.host}"; rc=$?; echo; if [ "$rc" -eq 0 ]; then echo '[SSH_KEY_INSTALLED]'; else echo "[ssh-copy-id failed: $rc]"; fi; echo '[press Enter to continue]'; read -r _ 2>/dev/null`;
-    } else {
-      // remote pi session over ssh (keys via $HOME/.ssh on this device)
-      inner = `stty cols ${cols} rows ${rows}; exec "${prefix}/bin/ssh" -tt ${portFlag} -o "StrictHostKeyChecking=accept-new" -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -i "$HOME/.ssh/id_ed25519" -- "${target.host}" ${REMOTE_PI_CMD}`;
-    }
-  } else {
-    // -c runs under sh inside the pty: set size first, then replace with pi
-    inner = `stty cols ${cols} rows ${rows}; exec "${process.execPath}" "${cli}"`;
-  }
-  const child = spawn(scriptBin, ['-qfec', inner, '/dev/null'], {
-    env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) },
-    cwd: WORKDIR,
-  });
-  child.stdout.on('data', (d) => { if (ws.readyState === 1) ws.send(d); });
-  child.stderr.on('data', (d) => { if (ws.readyState === 1) ws.send(d); });
-  child.on('exit', () => { try { ws.close(1000, 'pty exited'); } catch {} });
-  child.on('error', (e) => { try { ws.send(`\r\n[pty error] ${e.message}\r\n`); } catch {} });
-
-  // discover the pty slave path so we can push resizes via stty -F
-  let ptsPath = null;
-  const findPts = setInterval(() => {
-    if (ptsPath || !child.pid) { clearInterval(findPts); return; }
-    try {
-      for (const fd of readdirSync(`/proc/${child.pid}/fd`)) {
-        const l = readlinkSync(`/proc/${child.pid}/fd/${fd}`);
-        if (l.startsWith('/dev/pts/')) { ptsPath = l; break; }
-      }
-      if (ptsPath) clearInterval(findPts);
-    } catch {}
-  }, 300);
-  setTimeout(() => clearInterval(findPts), 15000);
-
-  ws.on('message', (data) => {
-    // \x01-prefixed frames are JSON control messages, everything else is stdin
-    const s = data.toString();
-    if (s.charCodeAt(0) === 1) {
-      try {
-        const msg = JSON.parse(s.slice(1));
-        if (msg.resize && ptsPath) {
-          const c = clampInt(msg.resize.cols, 10, 1000, cols);
-          const r = clampInt(msg.resize.rows, 5, 500, rows);
-          spawn(`${prefix}/bin/stty`, ['-F', ptsPath, 'cols', String(c), 'rows', String(r)]);
-        }
-      } catch {}
-      return;
-    }
-    child.stdin.write(data);
-  });
-  ws.on('close', () => child.kill('SIGKILL'));
-}
-
 // --- start / stop ------------------------------------------------------------
 
 await mkdir(WORKDIR, { recursive: true });
@@ -874,7 +526,6 @@ async function shutdown(signal) {
   try { unlinkSync(PORT_FILE); } catch {}
   server.close();
   for (const client of sseClients) { try { await client.stream?.stop(); client.res.end(); } catch {} }
-  await remoteState.disconnect();
   try { await harness.close(ctx); } catch (e) { console.error('harness.close:', e?.message || e); }
   releaseLock();
   process.exit(0);

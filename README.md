@@ -1,16 +1,15 @@
 # pi-termux-mobile
 
 > **Experimental software:** This is a personal prototype under active
-> development. Remote sessions, the embedded Termux runtime, and Android
-> background-process handling may still change or fail on individual devices.
+> development. The embedded Termux runtime and Android background-process
+> handling may still change or fail on individual devices.
 >
 > **Version 0.0.5** — still quick & dirty, see the [changelog](#changelog).
 
 Minimal Android app that embeds Termux-built binaries (Node.js 26.4.0, bash,
-coreutils, git, ripgrep, fd, openssh, npm, util-linux `script`, …) plus a
-**pi-durable** harness (`@earendil-works/pi-durable` 1.0.2 + pi-ai/chord, with
-pi-coding-agent 1.0.2 bundled for the CLI + TUI) behind a tiny
-HTTP/SSE/WebSocket bridge (`runtime/server.mjs`). UI is a local WebView on
+coreutils, git, ripgrep, fd, npm, …) plus a **pi-durable** harness
+(`@earendil-works/pi-durable` 1.0.3 + pi-ai/chord) behind a tiny HTTP/SSE
+bridge (`runtime/server.mjs`). UI is a local WebView on
 `http://127.0.0.1:<port>` (ephemeral port → `files/home/.pi-mobile/port`,
 token → `…/token`).
 
@@ -18,7 +17,10 @@ The durable harness gives: SQLite-backed conversations
 (`files/home/.pi-mobile/harness.sqlite` — survive process death,
 `harness.resume()` continues interrupted runs), a `subagent` tool (child
 conversations owned by the calling task), model selection per conversation,
-and per-conversation execution environments — including remote hosts.
+and per-conversation execution environments.
+
+This app runs **only on the phone**: there is no remote-host, terminal or
+federation subsystem left. See [What was removed](#what-was-removed).
 
 ## This fork
 
@@ -42,224 +44,99 @@ runtime, the WebView is a passive view over a loopback bridge, and the client
 has **no build step** — so the file the agent edits on the phone is the file
 that runs.
 
-## Space RPC through pi-serverd
+## The app
 
-`pi-serverd.mjs` connects the space service to socket requests with
-`withSpaceService`; the existing `sessions` service remains available.
-For a standalone daemon, explicitly provision its private socket identity:
+One screen: the conversation, a status line and a composer. Everything else is
+a sheet that slides up from the **☰** menu or the model button in the top bar.
 
-```sh
-PI_SERVERD_SPACE_PRINCIPAL=local-operator PI_SERVERD_SPACE_ROLES=member \
-  node runtime/pi-serverd.mjs
+- **Model** — the model picker, with the thinking levels the chosen model
+  actually supports. Tap the model button in the top bar to open it.
+- **Thinking** — the reasoning level of the current model.
+- **Provider** — API keys and OAuth/subscription sign-in. Credentials are
+  stored as `~/.pi/agent/auth.json` in pi CLI format. Select an OAuth provider
+  under **OAuth / subscription**, then choose **sign in**; when a provider
+  offers several methods the app asks which one (browser login, device code).
+  Browser flows open in the Android browser and return through the app's
+  loopback callback; device flows show the verification URL and code in the
+  app. A finished credential is available to the model picker immediately.
+- **Sessions** — the local durable sessions: open one, or start a new one.
+- **Usage** — tokens and cost, this session and everything so far.
+
+Plus **New session**, **Reset this conversation**, **Compact context** and
+**Update pi**.
+
+### Your own models
+
+The app reads `~/.pi/agent/models.json`, the same file the pi CLI reads, and
+layers the models in it over the bundled catalog. A model the provider offers
+but the bundled catalog does not know is added this way:
+
+```json
+{
+  "providers": {
+    "opencode-go": {
+      "models": [
+        {
+          "id": "minimax-m3.1-flash-free",
+          "name": "MiniMax M3.1 Flash Free",
+          "api": "anthropic-messages",
+          "baseUrl": "https://opencode.ai/zen/go",
+          "reasoning": true,
+          "thinkingLevelMap": { "off": null, "minimal": "low", "max": "max" },
+          "input": ["text", "image"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 1000000,
+          "maxTokens": 512000
+        }
+      ]
+    }
+  }
+}
 ```
 
-Both variables are required together. Without them, space requests are denied;
-SSH/socket access does not assign a space role automatically. Federation mode
-uses `PI_SERVERD_FEDERATION_CONFIG` and its provisioned identity, key proofs,
-and grants. Client request fields cannot override either identity.
+A `models` entry adds or replaces one model by id; the provider's other models
+stay. `api` and `baseUrl` are filled in from the provider's own models when
+they are left out, exactly as the CLI does. A file that does not parse, or an
+entry that cannot describe a model, is ignored — it never costs the phone its
+models. The file is read when the bridge starts.
 
-## App pages
+## App screen
 
-- **Chat** (`/`) — durable pi conversation (prompt, abort, new session,
-  model dropdown). `pi mobile` header links back here from every page.
-- **Accounts** (`keys.html`) — API-key management plus OAuth/subscription
-  sign-in. Credentials are stored as `~/.pi/agent/auth.json` in pi CLI format.
-- **Sessions** (`sessions.html`) — local durable-session browser: create,
-  open, rename, fork (continue from a session's newest entry), or stop and
-  remove a session from the visible list.
-- **Clients** (`clients.html`) — remote SSH host registry + device keypair
-  (ed25519): generate, show pubkey, interactive `ssh-copy-id` in the
-  terminal page.
-- **Remote** (`remote.html`) — attach to durable sessions on other machines
-  via the pi-server protocol: choose a saved SSH host, select/create/remove a
-  session, and choose that remote session's model (see below).
-- **pi CLI** (`terminal.html`) — real pi TUI over WebSocket → `script` PTY
-  → `node cli.js`, with on-screen extra keys (esc/tab/ctrl/arrows/pgup/pgdn)
-  for menus and scrollback. `?ssh=user@host` runs `ssh -tt <host> pi`
-  instead — full remote pi TUI.
+<img src="docs/screens/chat.png" width="260" alt="Chat page">
 
-## App screens
+Local conversation running on the phone (durable: SQLite-backed, survives
+process death), with model dropdown, session name, token/cost counter and
+new / compact buttons.
 
-Screenshots from a phone (SSH key and host addresses blacked out).
+## What was removed
 
-| Chat | Remote (connected) |
+The multi-page client (Remote, pi CLI, Clients, Accounts, Sessions, Spaces)
+was replaced by the single-screen client in `42bc8cc6`. The server-side
+subsystems those pages used were kept for a while after the pages were gone;
+they are now removed as well:
+
+| Removed | Was |
 |---|---|
-| <img src="docs/screens/chat.png" width="260" alt="Chat page"> | <img src="docs/screens/remote.png" width="260" alt="Remote page connected to a host"> |
-| Local conversation running on the phone (durable: SQLite-backed, survives process death), with model dropdown, session name, token/cost counter and new / compact buttons. | Host selector with **connect/disconnect** and **stop server**, remote session dropdown (rename, new, remove, abort, compact) and a conversation that runs in `pi-serverd` on the host (also durable, stored there; the phone is only the client and re-attaches after a lost connection). |
+| `runtime/pi-serverd.mjs`, `runtime/remote-*.mjs`, `runtime/env-server.mjs` | attaching to durable sessions on other machines over SSH, and running tools on them |
+| `runtime/pi-spaces.mjs` (704 KB), `runtime/spaces-mobile.mjs`, `runtime/space-keystore.mjs` | the federation/spaces service |
+| the `/pty` WebSocket and the util-linux `script` PTY | the embedded pi TUI |
+| `/api/remote/*`, `/api/clients`, `/api/sshkey`, `/api/spaces/*` | the endpoints of those pages |
+| `/api/sessions/{rename,delete,fork}`, `/api/result`, `/api/pi-version`, `/api/pi-update-status` | endpoints the current client never calls |
+| `@earendil-works/pi-coding-agent`, `pi-client`, `pi-server`, `ws`, `xterm` (~46 MB of `node_modules`) | the CLI, the tunnel client, the host daemon, the PTY |
 
-| pi CLI (local) | pi CLI (ssh) |
-|---|---|
-| <img src="docs/screens/pi-cli.png" width="260" alt="pi CLI terminal"> | <img src="docs/screens/pi-cli-ssh.png" width="260" alt="pi CLI over ssh on a remote host"> |
-| Full interactive pi TUI in the built-in terminal, running on the phone, with an esc / ctrl / arrow key row. | The same full pi TUI, but running on the remote host over SSH (here: "wo bin ich?" answers `/home/lux`, and `ip` lists the host's addresses). Pick the host on the Clients page with its **▸_** button. |
-
-| Clients |
-|---|
-| <img src="docs/screens/clients.png" width="260" alt="Clients page"> |
-| SSH key of this device and the list of remote hosts, each with terminal (**▸_**, starts pi CLI ssh), key-install and remove buttons. |
-
-## Accounts: API keys and OAuth
-
-The **Accounts** page supports both API keys and provider OAuth/subscription
-logins. Select an OAuth provider under **OAuth / subscription**, then choose
-**sign in**. When a provider offers multiple methods, the app shows a dialog
-for example for **Browser login** or **Device code login**. Browser flows open
-in the Android browser and return through the app's loopback callback; device
-flows show the verification URL and code in the app. Completed credentials are
-stored in `~/.pi/agent/auth.json` and immediately become available to the
-model picker.
-
-## Remote control, two ways
-
-### 1. SSH pi TUI (immediate, full fidelity)
-
-`ssh`/`ssh-copy-id`/`ssh-keygen` ship in the rootfs. Workflow:
-Clients → *generate key* → *add client* (`user@host[:port]`) → `⇧key`
-(interactive ssh-copy-id, type remote password) → `▸_` connects. The menu
-item *pi CLI (ssh)* does a one-off connect without saving a host.
-
-### 2. pi-server protocol (multi-client attach to durable sessions)
-
-`runtime/pi-serverd.mjs` is a `pi-server` (`createUnixServer`) host app:
-durable Harness + own SQLite under `~/.pi-serverd/`, services
-`sessions.list/create/delete/attach/models` and
-`chat.prompt/abort/state/configure/history/events` (events via long-poll
-cursor — Chord subscriptions deliberately skipped).
-
-```bash
-# on the remote machine (Node >= 22.19.0, same runtime dir, uses ~/.pi/agent/auth.json)
-node pi-serverd.mjs        # socket: ~/.pi-serverd/server.sock
-```
-
-The phone bridge (`runtime/remote-client.mjs`) forwards the remote unix
-socket through the saved SSH client entry to a unix socket in the app-private
-directory (`ssh -N -L ~/.pi-mobile/tunnels/<id>.sock:~/.pi-serverd/server.sock`,
-OpenSSH 6.7+). A loopback TCP port would be reachable by every app on the
-phone, and pi-server does not authenticate peers; SSH is the only auth. It then
-attaches via `@earendil-works/pi-client`'s unix transport. A dropped tunnel is
-rebuilt with backoff and the session is re-attached; prompts carry a
-`requestId`, so a retried prompt is answered exactly once. `user@host:port` is converted to OpenSSH's `-p port`
-form. The Remote page connects and loads sessions as soon as a host is
-selected, creates one automatically when the host has none, opens the newest
-session first, restores its transcript, and displays a model picker using the
-remote host's available models. Remote uses non-interactive SSH key login, so
-run **⇧key** / `ssh-copy-id` for a host before using it here.
-On connect the app checks the host and sets it up if needed — see [Remote host setup](#remote-host-setup-automatic).
-Endpoints: `/api/remote/{connect,status,trust-host,auth-status,copy-auth,sessions,models,model,create,delete,attach,prompt,abort,compact,state,history,events,disconnect,stop}`.
-Events are long-polled with a sequence number and an epoch (`?after=<seq>&epoch=<id>`);
-several clients can read the same session, a lost response is fetched again,
-and a client that fell behind or saw a daemon restart gets `reset` and reloads
-the transcript.
-
-The session list is a pi-durable document (`app.sessions`) in
-`~/.pi-serverd/harness.sqlite`, written in the same commit that creates a
-conversation; an old `sessions.json` is imported once. Deleting a session first
-aborts its running work, then removes its registry entry, so it no longer
-appears or can be attached through Remote. Its transcript is kept in SQLite; it
-is not a destructive purge. Existing attachments reject further calls after deletion;
-mutating calls are serialized with deletion so new work cannot slip past its abort.
-The state directory is `0700` and the socket `0600`. `pi-client` runs
-on the phone as the protocol client, while the durable harness, model calls,
-and tools run in `pi-serverd` on the remote host. For the full interactive Pi
-TUI instead, use **Clients → ▸_** or **pi CLI (ssh)**; run it in `tmux` when an
-SSH disconnect must not end the TUI process.
-
-### 3. env-server (remote *tool execution*, different thing)
-
-A conversation whose cwd is `remote:<name>:/path` runs its tools on that
-host via `runtime/remote-env.mjs` (client) + `runtime/env-server.mjs`:
-
-```bash
-# on the remote machine — Node >= 22, no deps; binds 127.0.0.1 by default
-PI_REMOTE_TOKEN=<secret, >=16 chars> PI_REMOTE_PORT=7842 node env-server.mjs
-# reach it via ssh -L or a VPN address: PI_REMOTE_HOST=<tailscale-ip>
-
-# on the phone: files/home/.pi-mobile/remotes.json (or PI_REMOTES env)
-{"workstation": {"url": "http://127.0.0.1:7842", "token": "<secret>"}}
-```
-
-env-server is not `pi-serverd`: `pi-serverd` (section 1/2) runs the whole
-conversation on the host, while env-server only executes single tool calls for a
-conversation that stays on the phone. It is a small HTTP server (POST, JSON,
-bearer token compared in constant time) with two endpoints: `/exec` runs
-`bash -c <command>` (optional `cwd`, `env`, `timeout`, `stream`; output capped at
-8 MB when not streamed) and `/fs` performs file operations (`read`, `write`,
-`append`, `truncate`, `rename`, `info`, `list`, `exists`, `mkdir`, `remove`,
-`canonical`, `tempdir`, `tempfile`; contents as base64). It starts only with a
-token of at least 16 characters.
-
-Output is streamed (NDJSON); aborting a tool call kills the command's whole
-process group on the remote host. Never expose env-server on a LAN without a
-tunnel/VPN — it executes arbitrary commands.
-
-## Remote host setup (automatic)
-
-Connecting to a host from the **Remote** page, **Clients → ▸_** or **pi CLI (ssh)**
-prepares the host over SSH. Everything runs with the phone's key (non-interactive
-`ssh`), under the host user's account; no root is needed except for installing tmux.
-Each sensitive step asks first.
-
-| Step | When | Asks? |
-|---|---|---|
-| **SSH key** | host rejects the phone's ed25519 key | yes — runs `ssh-copy-id` in the terminal (password once), then returns and reconnects |
-| **SSH trust + auth.json** | host has no `~/.pi/agent/auth.json` | yes — verify and persist the SSH fingerprint first, then **red warning** before copying API keys / OAuth tokens (mode 600) |
-| **pi-serverd** (Remote page) | no daemon running | no — installs and starts it |
-| **pi-serverd update** | daemon running, files differ from the phone's | yes — the daemon restarts, running work is interrupted (durable sessions resume) |
-| **pi-serverd stop** | **stop server** button next to connect | yes — confirm dialog; aborts running work, disconnects this device, works without an active connection (durable sessions are kept; the next connect starts and, if needed, updates the daemon) |
-| **pi** (pi CLI ssh) | `pi` not found on the host | no — installs the latest release |
-| **pi update** (pi CLI ssh) | `pi` version < npm latest | no — updates to latest, falls back to existing on failure |
-
-**pi-serverd.** A new release is unpacked and dependency-checked in a private
-staging directory first. Only after that succeeds is the daemon stopped and the
-release directory swapped using same-filesystem renames; a failed swap (including
-failure between the renames) or restart restores and restarts the preceding release. The daemon PID is read from its own lock file (not a global `pkill`),
-and its Unix socket plus `sessions.list` protocol call are health-checked. The
-daemon runs in the tmux session `pi-serverd`; missing tmux is installed through
-apt / dnf / yum / pacman / apk / zypper / brew / Termux `pkg` when running as
-root or with `sudo -n`, otherwise it falls back to `nohup setsid` (log:
-`~/.pi-mobile-remote/runtime/serverd.log`). Progress is shown in Remote
-(`/api/remote/status` → `log`).
-
-**Stopping.** `POST /api/remote/stop {target}` drops the local connection, then
-stops the daemon over SSH with the same PID-from-lock logic (TERM, then KILL
-after 10 s) and removes the `pi-serverd` tmux session. It answers
-`{ok, stopped}`; `stopped:false` means no daemon was running.
-
-**Version check.** The installed state is a SHA-256 (16 hex chars) over
-`pi-serverd.mjs`, `common.mjs`, `pi-spaces.mjs`, `package.json`, `package-lock.json`
-and the optional generated `space-examples/` directory, stored in
-`~/.pi-mobile-remote/runtime/.version` (`.deps` holds the dependency hash). Any
-difference to the files on the phone means *outdated*; declining the update keeps
-the old daemon.
-
-**pi.** For the full TUI, `ssh -tt <host> pi` runs through a login shell. If `pi`
-is missing and npm exists, the latest `@earendil-works/pi-coding-agent` is
-installed with `npm install -g --prefix ~/.local` (no root; `~/.local/bin` is put
-in front of `PATH`) and started; the installation output is visible in the terminal.
-Before every SSH-TUI start, the installed version is compared to `npm view`
-(`@earendil-works/pi-coding-agent@latest`) and is updated only when the registry
-has a newer stable semantic version. If npm/the registry is unavailable or an
-update fails, the installed pi starts unchanged.
-
-**Node.** Node.js **>= 22.19.0** and npm must already exist on the host and are *not*
-installed automatically. This exact minimum comes from the bundled
-`pi-coding-agent` and `pi-durable` packages; Node 22.18.x is not supported. They are found in login shells and — because nvm, fnm,
-Volta, asdf and nodenv set `PATH` in `~/.bashrc` — through a prelude that sources
-`~/.nvm/nvm.sh` and adds the usual shim directories.
-
-**auth.json.** Without credentials the daemon has no models and prompts fail with
-*Internal server error*. Declining the copy is fine: add a key on the host (`pi`,
-`/login`) instead. Never copy it to hosts you do not fully trust.
+They are not lost: the `feature/remote-subsystem` branch and the
+`pre-prune-2026-10-21` tag still have them, and
+`git checkout feature/remote-subsystem -- runtime/remote-client.mjs` brings a
+file back.
 
 ## Layout
 
 - `android/` — Gradle project (app module, Java only, no NDK)
-- `runtime/` — `server.mjs` (durable bridge + `/pty` WS + remote attach),
-  `common.mjs` (shared harness setup, credential store with file lock, durable
-  session registry, sequenced event hub, single-owner lock),
-  `pi-serverd.mjs` (remote session daemon), `remote-client.mjs` (pi-client
-  + ssh tunnel), `remote-env.mjs`/`env-server.mjs` (tool exec),
-  `public/` (chat, keys, clients, remote, terminal pages + shared menu),
-  package.json for prod node_modules
+- `runtime/` — `server.mjs` (durable bridge: the HTTP/SSE API and the static
+  client), `common.mjs` (harness setup, credential store with file lock,
+  durable session registry, sequenced event hub, single-owner lock),
+  `models-config.mjs` (the reader for `~/.pi/agent/models.json`),
+  `public/` (the single-screen client), package.json for prod node_modules
 - `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
   index), `prepare-runtime.py` (packages `runtime.bin` + `payload.sha256`)
 - `tools/` — local toolchain (JDK 21, Android SDK, Gradle 8.10.2) — not committed
@@ -309,39 +186,13 @@ Toolchain notes:
   `RUNTIME_VERSION` in `RuntimeInstaller.java` covers installer behavior changes. An upgrade replaces `usr/` and `runtime/` entirely
   (archives are streamed into tar); `home/` and `work/` are kept.
 
-## Remote regression tests
-
-```bash
-cd runtime
-npm ci --ignore-scripts
-npm test
-```
-
-These offline tests need Node >=22.19.0, bash and tar; no SSH host, API keys or
-model calls are needed. They cover rename routing, deleted-session attachments,
-prompt deduplication, release rollback/restart, SSH/protocol/RPC deadlines and
-connection cancellation races. Metadata and protocol connection attempts time out
-after 15 seconds; RPC calls after 35 seconds (including 25-second event polls).
-Disconnect cancels pending connection and recovery operations.
-
 ## Repackaging assets
 
-Every Android build runs `scripts/prepare-runtime.py` before `preBuild`. It rebuilds pi-spaces from the
-sibling checkout, synchronizes `runtime/pi-spaces.mjs` and compiled `runtime/space-examples/*.mjs`, then
-packages `runtime.bin` and generates `payload.sha256` for the runtime/rootfs pair. Changed payloads are
-re-extracted on the device without a manual version bump. Unchanged files keep their timestamps.
+Every Android build runs `scripts/prepare-runtime.py` before `preBuild`. It packages `runtime.bin`
+and generates `payload.sha256` for the runtime/rootfs pair. Changed payloads are re-extracted on the
+device without a manual version bump. Unchanged files keep their timestamps.
 
 Build prerequisites: Python 3, installed mobile runtime dependencies and the prepared rootfs asset.
-Refreshing from source additionally needs Node/npm and the pi-spaces development dependencies.
-Set `PI_SPACES_SOURCE` for a source checkout elsewhere. If the source is missing or incompatible, the
-Android build warns and uses the existing mobile bundles. The checked-in `pi-spaces.mjs` is required;
-generated `space-examples/` CLI programs are optional, so a fresh checkout can run tests and provision
-a remote host without the sibling source tree. Available examples are still packaged, hashed and
-uploaded. Errors while building an available source checkout are reported as build failures.
-Running `npm run bundle` in pi-spaces also synchronizes this checkout automatically; an alternate mobile
-checkout can be selected with `PI_SPACES_MOBILE_ROOT`. Generated example modules are CLI programs,
-not additional mobile buttons or Federation services. Remote provisioning includes them in its release hash
-and transfers them along with the library; existing update confirmation rules still apply.
 
 ```bash
 # 1. the Termux userland the app runs -> assets/rootfs.bin (a few minutes, ~81 MB)
@@ -404,7 +255,7 @@ service starts `node runtime/server.mjs`. The service runs exactly one bridge:
 reopening the app attaches to the running one instead of restarting it, a
 crashed bridge is restarted with backoff, and stopping sends SIGTERM so the
 harness closes cleanly. `server.mjs` holds `~/.pi-mobile/server.lock`
-(pi-durable allows one storage owner) and stops an orphaned predecessor. Open the app → **Accounts** page to
+(pi-durable allows one storage owner) and stops an orphaned predecessor. Open the app → **☰** → **Provider** to
 store a provider key or sign in through OAuth, then prompt. Local conversation state lives in
 `files/home/.pi-mobile/harness.sqlite` and survives process death. The session
 registry and the active session are a pi-durable document in the same
@@ -426,12 +277,20 @@ Caveats on device:
   package id by `scripts/package-rootfs.ts`, so `npm` and the other scripts
   find their interpreter. The Android *package* names inside Termux's own
   tools (`am`, `pkg`, `termux-*`) still say `com.termux`; they are dead here.
-- `stty -F /dev/pts/N` is used to push terminal resizes into the `script`
-  PTY (control frames are `\x01`-prefixed JSON on the WS).
 
 See ANALYSE.md for the full evaluation and upstream facts.
 
 ## Changelog
+
+### Unreleased — pruned to a phone-only app
+
+The multi-page client was replaced by the single-screen one in `42bc8cc6`;
+the server-side subsystems behind the removed pages are gone now too. See
+[What was removed](#what-was-removed). The remote/SSH subsystem is parked on
+the `feature/remote-subsystem` branch, not lost.
+
+Added: `~/.pi/agent/models.json` is read by the bridge, so a model the
+bundled catalog does not know can be added without touching the app.
 
 ### 0.0.5 — 2026-10-05
 
