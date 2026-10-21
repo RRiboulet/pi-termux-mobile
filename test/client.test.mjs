@@ -104,14 +104,18 @@ test('a confirmed message stops looking pending', async () => {
   app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
   await app.settle();
 
-  // The optimistic bubble is dimmed until the committed entry arrives...
-  app.send({ type: 'message_start', message: { role: 'user', content: 'hello' } });
+  // Send one, so the optimistic bubble really exists: an earlier version of this
+  // test never sent anything and so passed without testing anything.
+  const ta = app.document.querySelector('textarea');
+  ta.value = 'hello';
+  await app.document.querySelector('form').dispatchEvent(new window.Event('submit', { cancelable: true, bubbles: true }));
   await app.settle();
+  assert.match(app.html(), /msg user pending/, 'the optimistic message is not shown as pending');
+
+  // ...and the committed entry clears the flag.
   app.send({ type: 'message_end', entry: { id: 9, model: [{ role: 'user', content: 'hello' }] } });
   await app.settle();
-
-  const pending = app.html().match(/class="msg user pending"/);
-  assert.equal(pending, null, 'the message is still marked pending after it was confirmed');
+  assert.doesNotMatch(app.html(), /msg user pending/, 'the message is still marked pending after it was confirmed');
 });
 
 test('the composer keeps its draft when the agent starts and stops', async () => {
@@ -128,7 +132,7 @@ test('the composer keeps its draft when the agent starts and stops', async () =>
   assert.equal(after.value, 'half a thought', 'the draft was lost across a busy toggle');
 });
 
-test('a failed tool call is shown open', async () => {
+test('a failed tool call is shown, and marked failed', async () => {
   const app = await mount();
   app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
   await app.settle();
@@ -136,12 +140,10 @@ test('a failed tool call is shown open', async () => {
   await app.settle();
   app.send({ type: 'tool_execution_end', toolCallId: 'c1', entry: { id: 3, model: [{ role: 'toolResult', isError: true, toolName: 'read' }] } });
   await app.settle();
-  // `open` must be a real boolean: a string like '' is falsy in the DOM property, so the output never opens.
   const details = app.document.querySelector('details');
   assert.ok(details, 'the tool call is not in the transcript');
-  // In HTML a boolean attribute is true when it is PRESENT, whatever its value. linkedom does not
-  // reflect the `open` DOM property either, so read the attribute.
-  assert.notEqual(details.getAttribute('open'), null, 'a failed tool call is not shown open');
+  assert.match(details.getAttribute('class') ?? '', /err/, 'a failed tool call is not marked failed');
+  assert.match(app.text(), /failed/, 'the failure is not in the summary');
 });
 
 test('an OAuth device code is shown, not [object Object]', async () => {
@@ -179,21 +181,33 @@ test('prose after a code fence is prose, not code', async () => {
   assert.match(body.textContent, /And here is prose after the fence\./);
 });
 
-test('a tool call appears where it happened, not in a block at the bottom', async () => {
+test('a tool call sits under the turn that called it', async () => {
   const app = await mount();
   app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
   await app.settle();
-  app.send({ type: 'message_end', entry: { id: 20, model: [{ role: 'assistant', content: [{ type: 'text', text: 'first' }] }] } });
+
+  // An assistant turn that CALLS a tool: the tool chip belongs to that turn, not
+  // in a block of its own at the bottom of the transcript.
+  app.send({
+    type: 'message_end',
+    entry: {
+      id: 20,
+      model: [{ role: 'assistant', content: [
+        { type: 'text', text: 'let me look' },
+        { type: 'toolCall', id: 'c9', name: 'read', arguments: { path: 'x' } },
+      ] }],
+    },
+  });
   await app.settle();
   app.send({ type: 'tool_execution_start', toolCallId: 'c9', toolName: 'read', args: { path: 'x' } });
   await app.settle();
-  app.send({ type: 'message_end', entry: { id: 21, model: [{ role: 'assistant', content: [{ type: 'text', text: 'second' }] }] } });
-  await app.settle();
-  const order = [...app.document.querySelectorAll('.log > *')].map((n) => (n.textContent ?? '').trim().slice(0, 12));
-  assert.ok(order.length >= 3, 'the transcript is shorter than expected');
-  assert.match(order[0], /first/);
-  assert.match(order[1], /read/, 'the tool call is not between the two answers');
-  assert.match(order[2], /second/);
+
+  const rows = [...app.document.querySelectorAll('.log > *')];
+  assert.ok(rows.length >= 1, 'the transcript is empty');
+  // The tool is inside the assistant turn's own row, not a separate block.
+  const withTool = rows.find((r) => (r.textContent ?? '').includes('read'));
+  assert.ok(withTool, 'the tool call is not in the transcript');
+  assert.match(withTool.textContent, /let me look/, 'the tool chip is not under the turn that called it');
 });
 
 test('the menu shows the thinking level and the provider count without opening their sheets', async () => {

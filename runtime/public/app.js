@@ -36,11 +36,27 @@ async function get(path) {
   return r.json();
 }
 
-async function post(path, body) {
-  const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
-  const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
-  if (!r.ok) throw new Error(j.error || `http ${r.status}`);
-  return j;
+/**
+ * POST, with the retry: a phone loses the bridge for a moment all the time,
+ * and the body carries a requestId, so a retried prompt is answered once and
+ * only once.
+ */
+async function post(path, body, { retries = 3 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
+      const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
+      if (r.status === 503 && j.reconnecting && attempt < retries) {
+        await new Promise((res) => setTimeout(res, 1500));
+        continue;
+      }
+      if (!r.ok) throw new Error(j.error || `http ${r.status}`);
+      return j;
+    } catch (e) {
+      if (attempt >= retries) throw e;
+      await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+    }
+  }
 }
 
 const requestId = () => (crypto.randomUUID
@@ -250,7 +266,9 @@ const state = {
   error: null,
   busy: false,
   model: null,
-  usage: null,
+  usage: null,          // the session usage, as /api/state reports it
+  usageTotal: null,     // the whole-harness total, from /api/usage
+  usageSession: null,   // the session slice of /api/usage
   inbox: [],
   sessionName: 'Main',
   entries: [],          // { id, kind: 'user'|'assistant'|'sys', text, thinking, tools, tone }
@@ -274,9 +292,20 @@ const state = {
 };
 
 const set = (patch) => Object.assign(state, patch);
+// A full-tree diff per SSE frame is a full-tree diff per text delta while the
+// agent streams, over a transcript that only grows. Coalesce into one frame.
+let redrawQueued = false;
 const redraw = () => {
-  render(html`<${App} />`, document.getElementById('app'));
-  stickToBottom();
+  if (redrawQueued) return;
+  redrawQueued = true;
+  const paint = () => {
+    redrawQueued = false;
+    rememberScroll();
+    render(html`<${App} />`, document.getElementById('app'));
+    stickToBottom();
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(paint);
+  else setTimeout(paint, 16);
 };
 
 // ── the transcript ───────────────────────────────────────────────────────
@@ -292,8 +321,13 @@ function pushEntry(entry) {
     if (m.role === 'user') {
       const body = textOf(m);
       const i = state.pending.findIndex((p) => p.text === body);
-      if (i >= 0) state.pending.splice(i, 1);
-      else if (body) state.entries.push({ kind: 'user', text: body });
+      if (i >= 0) {
+        // Clear the flag on the RENDERED entry too: removing the slot from the
+        // pending list left the message at half opacity for the rest of the run.
+        const optimistic = state.entries.find((e) => e.kind === 'user' && e.pending && e.text === body);
+        if (optimistic) optimistic.pending = false;
+        state.pending.splice(i, 1);
+      } else if (body) state.entries.push({ kind: 'user', text: body });
     } else if (m.role === 'assistant') {
       const body = textOf(m);
       const thoughts = thinkingOf(m);
@@ -370,6 +404,21 @@ function renderSnapshot(snapshot) {
 
 // ── events ───────────────────────────────────────────────────────────────
 function handle(ev) {
+  // The server wraps the attach-time view in its OWN frame, and only later
+  // batches arrive as pi-durable events. Without this the transcript is empty
+  // on every load, every reconnect and every session switch.
+  if (ev.type === 'bridge_snapshot') {
+    renderSnapshot(ev.snapshot);
+    if (ev.sessionName) set({ sessionName: ev.sessionName });
+    redraw();
+    return;
+  }
+  if (ev.type === 'bridge_error') {
+    sys(`error: ${ev.error}`);
+    redraw();
+    return;
+  }
+  if (ev.type === 'bridge_connected') return;
   switch (ev.type) {
     case 'snapshot': renderSnapshot(ev); break;
     case 'run_start': set({ busy: true }); break;
@@ -468,15 +517,25 @@ async function refreshState() {
     set({
       model: s.model ?? null,
       thinkingLevel: s.thinkingLevel ?? 'off',
+      // The menu shows the thinking level, so it has to be here and not fetched
+      // by the sheet that displays it.
+      thinking: { ...state.thinking, level: s.thinkingLevel ?? state.thinking.level ?? 'off' },
       busy: Boolean(s.busy),
       usage: s.usage ?? null,
-      inbox: s.inbox ?? [],
+      // The inbox arrives as the pi.inbox DOCUMENT, whose shape is {items:[...]}.
+      inbox: s.inbox?.items ?? (Array.isArray(s.inbox) ? s.inbox : []),
       sessionName: s.sessionName ?? 'Main',
       error: null,
     });
   } catch (e) {
     set({ error: String(e.message || e) });
   }
+  // The provider count is a menu hint, so it is fetched at boot rather than when
+  // the provider sheet happens to be opened.
+  try {
+    const p = await get('/api/providers');
+    set({ providers: p.providers ?? [] });
+  } catch { /* the menu hint is not worth an error */ }
   redraw();
 }
 
@@ -484,8 +543,9 @@ async function refreshState() {
 async function send(text) {
   const body = text.trim();
   if (!body) return;
-  state.entries.push({ kind: 'user', text: body, pending: true });
-  state.pending.push({ text: body });
+  const optimistic = { kind: 'user', text: body, pending: true };
+  state.entries.push(optimistic);
+  state.pending.push({ text: body, entry: optimistic });
   set({ live: null });
   redraw();
   try {
@@ -496,9 +556,14 @@ async function send(text) {
     });
   } catch (e) {
     const i = state.pending.findIndex((p) => p.text === body);
-    if (i >= 0) state.pending.splice(i, 1);
-    const last = state.entries[state.entries.length - 1];
-    if (last && last.pending) { last.pending = false; last.tone = 'bad'; }
+    if (i >= 0) {
+      // The optimistic ENTRY, not the last entry: between the push and the POST
+      // resolving, an arriving message can be the last one, and then the wrong
+      // bubble turns red.
+      state.pending[i].entry.pending = false;
+      state.pending[i].entry.tone = 'bad';
+      state.pending.splice(i, 1);
+    }
     sys(`error: ${e.message || e}`, 'bad');
     redraw();
   }
@@ -509,6 +574,13 @@ async function stop() {
 }
 
 async function openSheet(which) {
+  // A sheet is an overlay, not a navigation, so without this the Android back
+  // button exits the app with a sheet open. Pushing a history entry lets the
+  // WebView's own back handling fire popstate, which closes it.
+  if (state.sheet === null && typeof history.pushState === 'function') {
+    try { history.pushState({ sheet: which }, ''); } catch { /* a file:// page may refuse */ }
+  }
+  if (state.sheet !== 'oauth' && state.oauth) state.oauth = null;
   set({ sheet: which, notice: null });
   try {
     if (which === 'model') {
@@ -525,7 +597,10 @@ async function openSheet(which) {
       const r = await get('/api/sessions');
       set({ sessions: r.sessions ?? r ?? [] });
     } else if (which === 'usage') {
-      set({ usage: await get('/api/usage') });
+      // /api/usage returns {session, total}; /api/state returns the session
+      // usage directly. They are different shapes, so they get different fields.
+      const u = await get('/api/usage');
+      set({ usageTotal: u.total ?? null, usageSession: u.session ?? null });
     }
   } catch (e) {
     set({ notice: String(e.message || e) });
@@ -536,9 +611,11 @@ async function openSheet(which) {
 async function saveKey(key) {
   if (!state.addKeyFor) return;
   try {
-    await post('/api/auth', { provider: state.addKeyFor, key });
-    set({ addKeyFor: null, sheet: 'provider', notice: `${state.addKeyFor} key saved` });
+    const provider = state.addKeyFor;
+    await post('/api/auth', { provider, key });
     await openSheet('provider');
+    // After the sheet opened: openSheet resets the notice, so setting it before was pointless.
+    set({ addKeyFor: null, notice: `${provider} key saved` });
   } catch (e) {
     set({ notice: String(e.message || e) });
     redraw();
@@ -548,8 +625,8 @@ async function saveKey(key) {
 async function deleteKey(provider) {
   try {
     await post('/api/auth', { provider, delete: true });
-    set({ notice: `${provider} key removed` });
     await openSheet('provider');
+    set({ notice: `${provider} key removed` });
   } catch (e) {
     set({ notice: String(e.message || e) });
     redraw();
@@ -583,7 +660,10 @@ async function pollOauth() {
   if (oauthTimer) clearTimeout(oauthTimer);
   oauthTimer = setTimeout(async () => {
     const o = state.oauth;
-    if (!o || o.done) return;
+    // Stop when the sheet is closed: the server keeps the login alive for ten
+    // minutes, and there is no reason to keep asking about it once the user
+    // has walked away.
+    if (!o || o.done || state.sheet !== 'oauth') { if (state.sheet !== 'oauth') state.oauth = null; return; }
     try {
       const r = await get(`/api/oauth/status?id=${encodeURIComponent(o.id)}`);
       const next = { ...o, prompt: r.prompt ?? null, done: Boolean(r.done), error: r.error ?? null,
@@ -736,14 +816,13 @@ function Composer() {
       ta.style.height = 'auto';
       await send(value);
     }}>
-      ${busy ? html`
-        <div class="modes">
-          <span class="label">send as</span>
-          <div class="seg">
-            <button type="button" aria-pressed=${state.mode === 'steer'} onClick=${() => { set({ mode: 'steer' }); redraw(); }}>Steer</button>
-            <button type="button" aria-pressed=${state.mode === 'followUp'} onClick=${() => { set({ mode: 'followUp' }); redraw(); }}>Queue</button>
-          </div>
-        </div>` : null}
+      <div class="modes" hidden=${!busy}>
+        <span class="label">send as</span>
+        <div class="seg">
+          <button type="button" aria-pressed=${state.mode === 'steer'} onClick=${() => { set({ mode: 'steer' }); redraw(); }}>Steer</button>
+          <button type="button" aria-pressed=${state.mode === 'followUp'} onClick=${() => { set({ mode: 'followUp' }); redraw(); }}>Queue</button>
+        </div>
+      </div>
       <div class="field">
         <textarea name="message" rows="1" placeholder=${busy ? 'Steer the running work…' : 'Message pi…'}
           onInput=${(e) => {
@@ -757,8 +836,26 @@ function Composer() {
     </form>`;
 }
 
+/** An OAuth event is an object ({type, url}, {type, userCode}, ...), not a string. */
+function eventText(e) {
+  if (e == null) return '';
+  if (typeof e === 'string') return e;
+  if (e.type === 'auth_url') return e.url ?? '';
+  if (e.type === 'device_code') return `code: ${e.userCode ?? e.code ?? ''}`;
+  if (e.type === 'message') return e.message ?? '';
+  return e.message ?? e.text ?? JSON.stringify(e);
+}
+
+function closeSheet() {
+  if (state.sheet !== null && typeof history.back === 'function') {
+    try { history.back(); return; } catch { /* fall through */ }
+  }
+  set({ sheet: null });
+  redraw();
+}
+
 function Scrim() {
-  return html`<div class="scrim" onClick=${() => { set({ sheet: null }); redraw(); }}></div>`;
+  return html`<div class="scrim" onClick=${closeSheet}></div>`;
 }
 
 function MenuSheet() {
@@ -782,8 +879,11 @@ function MenuSheet() {
             <span class="grow">${it.label}</span>
             <small>${it.hint}</small>
           </button>`)}
-        <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
+        <button class="row" onClick=${async () => { await post('/api/sessions/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">New session</span>
+        </button>
+        <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
+          <span class="grow">Reset this conversation</span>
         </button>
         <button class="row" onClick=${async () => { await post('/api/compact').catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">Compact context</span>
@@ -866,7 +966,7 @@ function AddKeySheet() {
       </header>
       <div class="body">
         <div class="row" style="display:block">
-          <input class="keyin" type="password" placeholder="API key" autocomplete="off" spellcheck="false"
+          <input class="keyin" type="password" placeholder="API key" autocomplete="off" spellcheck=${false}
             onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); const v = e.target.value; saveKey(v); } }} />
           <button class="savekey" onClick=${(e) => saveKey(e.target.closest('.row').querySelector('input').value)}>Save</button>
         </div>
@@ -888,12 +988,21 @@ function OauthSheet() {
       <div class="body">
         ${o.error ? html`<div class="empty" style="color:var(--bad)">${o.error}</div>` : null}
         ${o.done ? html`<div class="empty">Signed in. You can close this.</div>` : null}
-        ${(o.events ?? []).map((e, i) => html`<div class="row" key=${'e' + i}><span class="grow">${String(e)}</span></div>`)}
+        ${(o.events ?? []).map((e, i) => html`<div class="row" key=${'e' + i}><span class="grow">${eventText(e)}</span></div>`)}
+        ${(o.events ?? []).filter((e) => e && e.type === 'auth_url').map((e, i) => html`
+          <div class="row" key=${'au' + i}>
+            <span class="grow">Open the sign-in page</span>
+            <button class="row" onClick=${() => { location.assign(e.url); }}>Open</button>
+          </div>`)}
+        ${(o.events ?? []).filter((e) => e && e.type === 'device_code').map((e, i) => html`
+          <div class="row" key=${'dc' + i}>
+            <span class="grow">${e.userCode ?? e.code ?? ''}<br /><small>${e.verificationUri ?? e.verification_uri ?? ''}</small></span>
+          </div>`)}
         ${o.prompt ? html`
           <div class="row" style="display:block">
             <div style="margin-bottom:8px">${o.prompt.message || o.prompt.type}</div>
             ${o.prompt.options?.length
-              ? o.prompt.options.map((opt) => html`<button class="row" key=${opt} onClick=${() => answerOauth(opt)}><span class="grow">${opt}</span></button>`)
+              ? o.prompt.options.map((opt) => html`<button class="row" key=${opt.id ?? opt.label ?? String(opt)} onClick=${() => answerOauth(opt.id ?? opt.label ?? opt)}><span class="grow">${opt.label ?? opt.name ?? String(opt)}</span></button>`)
               : html`<input class="keyin" type="text" placeholder=${o.prompt.placeholder || 'value'} autocomplete="off"
                   onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); answerOauth(e.target.value); } }} />`}
           </div>` : null}
@@ -935,13 +1044,24 @@ function Sheet() {
         })
       : html`<div class="empty">No sessions yet.</div>`;
   } else {
-    const usage = state.usage ?? {};
-    const rows = Object.entries(usage.models ?? {});
-    body = rows.length
-      ? rows.map(([m, u]) => html`<div class="row" key=${m}>
-          <span class="grow">${m}</span>
-          <span>${(u.totalTokens ?? 0).toLocaleString()} tok${u.cost?.total ? ` · $${u.cost.total.toFixed(3)}` : ''}</span>
-        </div>`)
+    // /api/usage returns {session, total}; the session usage has the same shape
+    // as /api/state's.
+    const session = state.usageSession ?? state.usage ?? {};
+    const rows = Object.entries(session.models ?? {});
+    const total = state.usageTotal;
+    body = rows.length || total
+      ? [
+          ...rows.map(([m, u]) => html`<div class="row" key=${m}>
+            <span class="grow">${m}</span>
+            <span>${(u.totalTokens ?? 0).toLocaleString()} tok${u.cost?.total ? ` · $${u.cost.total.toFixed(3)}` : ''}</span>
+          </div>`),
+          total
+            ? html`<div class="row" key=${'total'}>
+                <span class="grow">Everything</span>
+                <span>${(total.totalTokens ?? 0).toLocaleString()} tok${total.cost?.total ? ` · $${total.cost.total.toFixed(3)}` : ''}</span>
+              </div>`
+            : null,
+        ]
       : html`<div class="empty">No usage yet.</div>`;
   }
   return html`
@@ -996,11 +1116,19 @@ function modelShort(model) {
 }
 
 // ── keep the transcript pinned to the bottom while it grows ──────────────
+// Whether the view was at the bottom BEFORE the DOM changed. Measuring afterwards
+// means one tall frame (a snapshot, a long answer) puts the distance over the
+// threshold and the view stops following -- permanently.
+let wasAtBottom = true;
 function stickToBottom() {
   const log = document.getElementById('log');
   if (!log) return;
-  const near = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
-  if (near) log.scrollTop = log.scrollHeight;
+  if (wasAtBottom) log.scrollTop = log.scrollHeight;
+}
+function rememberScroll() {
+  const log = document.getElementById('log');
+  if (!log) return;
+  wasAtBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
 }
 
 // ── boot ─────────────────────────────────────────────────────────────────
