@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { apiUrl, project, repoFromRemote, parse, pushWithToken } from '../scripts/gh.mjs';
+import { apiUrl, project, repoFromRemote, targetRepo, parse, pushWithToken } from '../scripts/gh.mjs';
 
 function withRemote(url, fn) {
   const dir = mkdtempSync(path.join(tmpdir(), 'gh-test-'));
@@ -79,6 +79,19 @@ test('a GET cannot carry a body, so its fields are query parameters', () => {
   assert.equal(values.field[0], 'state=open');
   const url = apiUrl('/repos/o/r/pulls', { state: 'open' });
   assert.ok(url.includes('state=open'), url);
+});
+
+test('--repo points the API at another repository, for a fork', () => {
+  // A fork opens its pull requests against the project it came from: the head
+  // lives on the fork, the base is upstream.
+  assert.deepEqual(targetRepo({ repo: 'jeamy/pi-termux-mobile' }), { owner: 'jeamy', repo: 'pi-termux-mobile' });
+  assert.throws(() => targetRepo({ repo: 'not-a-repo-spec' }), /owner\/name/);
+});
+
+test('without --repo the API talks to the origin remote', () => {
+  withRemote('https://github.com/RRiboulet/pi-termux-mobile.git', (dir) => {
+    assert.deepEqual(targetRepo({}, dir), { owner: 'RRiboulet', repo: 'pi-termux-mobile' });
+  });
 });
 
 test('the flags are parsed the way the help says', () => {

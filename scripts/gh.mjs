@@ -242,7 +242,7 @@ async function commandApi(values, positionals) {
 }
 
 async function commandRepo(values) {
-  const { owner, repo } = repoFromRemote();
+  const { owner, repo } = targetRepo(values);
   const token = readToken(values.token, { required: false });
   const result = await api('GET', `/repos/${owner}/${repo}`, { token });
   if (values.json) { print(project(result, values.json)); return; }
@@ -255,7 +255,7 @@ async function commandRepo(values) {
 }
 
 async function commandPrList(values) {
-  const { owner, repo } = repoFromRemote();
+  const { owner, repo } = targetRepo(values);
   const token = readToken(values.token, { required: false });
   const state = values.state ?? 'open';
   const result = await api('GET', `/repos/${owner}/${repo}/pulls`, {
@@ -283,7 +283,7 @@ async function commandPrList(values) {
 }
 
 async function commandPrView(values, positionals) {
-  const { owner, repo } = repoFromRemote();
+  const { owner, repo } = targetRepo(values);
   const token = readToken(values.token, { required: false });
   const number = positionals[0];
   if (!number) throw new Error('usage: gh pr view <number>');
@@ -308,7 +308,7 @@ async function commandPrView(values, positionals) {
 }
 
 async function commandPrDiff(values, positionals) {
-  const { owner, repo } = repoFromRemote();
+  const { owner, repo } = targetRepo(values);
   const token = readToken(values.token, { required: false });
   const number = positionals[0];
   if (!number) throw new Error('usage: gh pr diff <number>');
@@ -325,7 +325,7 @@ async function commandPrDiff(values, positionals) {
 }
 
 async function commandPrComment(values, positionals) {
-  const { owner, repo } = repoFromRemote();
+  const { owner, repo } = targetRepo(values);
   const token = readToken(values.token);
   const number = positionals[0];
   const body = values.body ?? (values['body-file'] ? readFileSync(values['body-file'], 'utf8') : undefined);
@@ -347,26 +347,29 @@ async function commandPrChecks(values, positionals) {
 }
 
 async function commandPrCreate(values) {
-  const { owner, repo } = repoFromRemote();
+  const target = targetRepo(values);
+  const origin = repoFromRemote('origin');
   const base = values.base ?? 'master';
-  const head = values.head ?? currentBranch();
+  const branch = values.head ?? currentBranch();
+  // A pull request into another repository needs "forkowner:branch" as the head.
+  const head = target.owner === origin.owner ? branch : `${origin.owner}:${branch}`;
   const body = values.body ?? (values['body-file'] ? readFileSync(values['body-file'], 'utf8') : '');
   const payload = { title: values.title ?? 'Untitled', head, base, body, draft: Boolean(values.draft) };
 
   if (values['dry-run']) {
-    console.log(JSON.stringify({ endpoint: `/repos/${owner}/${repo}/pulls`, method: 'POST', payload }, null, 2));
+    console.log(JSON.stringify({ endpoint: `/repos/${target.owner}/${target.repo}/pulls`, method: 'POST', payload }, null, 2));
     return;
   }
 
   const token = readToken(values.token);
   if (values.push) {
-    if (!branchOnRemote('origin', head)) {
-      console.error(`pushing ${head} to origin ...`);
-      pushWithToken('origin', head, token);
+    if (!branchOnRemote('origin', branch)) {
+      console.error(`pushing ${branch} to origin ...`);
+      pushWithToken('origin', branch, token);
     }
   }
 
-  const pr = await api('POST', `/repos/${owner}/${repo}/pulls`, { token, body: payload });
+  const pr = await api('POST', `/repos/${target.owner}/${target.repo}/pulls`, { token, body: payload });
   for (const label of values.label ?? []) {
     await api('POST', `/repos/${owner}/${repo}/issues/${pr.number}/labels`, { token, body: { labels: [label] } }).catch(() => {});
   }
@@ -400,6 +403,21 @@ function usage() {
 
 Token: GH_TOKEN, GITHUB_TOKEN, or ~/.config/gh/token (0600).
 The repository is taken from the "origin" git remote.`);
+}
+
+/**
+ * The repository the API talks to.
+ * Without --repo it is the "origin" remote, which is the fork itself. With
+ * --repo owner/name it is another repository -- the upstream, say -- which is
+ * how a fork opens a pull request against the project it came from.
+ */
+export function targetRepo(values, cwd = process.cwd()) {
+  if (values.repo) {
+    const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(values.repo);
+    if (!match) throw new Error(`--repo expects owner/name, got "${values.repo}"`);
+    return { owner: match[1], repo: match[2] };
+  }
+  return repoFromRemote('origin', cwd);
 }
 
 export async function main(argv) {

@@ -17,6 +17,7 @@ scripts/gh pr diff 12
 scripts/gh pr comment 12 --body "one line about what is wrong"
 scripts/gh pr checks 12
 scripts/gh api GET /repos/RRiboulet/pi-termux-mobile/pulls --field state=open
+scripts/gh pr create --repo jeamy/pi-termux-mobile --title "..." --base master --push
 scripts/gh repo view
 scripts/gh auth status
 ```
@@ -26,6 +27,9 @@ To type `gh` instead of `scripts/gh`:
 ```sh
 mkdir -p ~/bin && ln -s "$PWD/scripts/gh" ~/bin/gh
 ```
+
+A pull request into another repository -- the upstream, say -- is opened with
+`--repo owner/name`. The head then names the fork: `RRiboulet:branch`.
 
 ## Authentication
 
