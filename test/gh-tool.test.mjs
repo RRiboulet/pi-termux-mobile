@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { apiUrl, project, repoFromRemote, parse } from '../scripts/gh.mjs';
+import { apiUrl, project, repoFromRemote, parse, pushWithToken } from '../scripts/gh.mjs';
 
 function withRemote(url, fn) {
   const dir = mkdtempSync(path.join(tmpdir(), 'gh-test-'));
@@ -108,6 +108,23 @@ test('the push helper leaves no token on disk', () => {
     assert.ok(!readFileSync(helper, 'utf8').includes('secret-token-value'), 'the token was not written into the file');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a push through the helper puts the branch on the remote', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'gh-push-'));
+  try {
+    const bare = path.join(root, 'remote.git');
+    const clone = path.join(root, 'clone');
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+    execFileSync('git', ['-C', clone, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x']);
+    execFileSync('git', ['-C', clone, 'remote', 'add', 'origin', bare]);
+    pushWithToken('origin', 'main', 'a-token', { cwd: clone });
+    const heads = execFileSync('git', ['--git-dir', bare, 'branch', '--format=%(refname:short)'], { encoding: 'utf8' });
+    assert.match(heads, /main/, heads);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

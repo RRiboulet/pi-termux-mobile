@@ -150,7 +150,7 @@ export async function api(method, pathname, { token, body, query, headers = {} }
  * The helper reads $GH_TOKEN, so the token is not in argv, not in the remote
  * URL, and not in .git/config.
  */
-export function pushWithToken(remote, branch, token) {
+export function pushWithToken(remote, branch, token, { cwd = process.cwd() } = {}) {
   const dir = mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gh-askpass-'));
   const helper = path.join(dir, 'askpass.sh');
   writeFileSync(helper, '#!/bin/sh\ncase "$1" in\n  *sername*) echo x-access-token ;;\n  *assword*) printf "%s\\n" "$GH_TOKEN" ;;\nesac\n', { mode: 0o700 });
@@ -158,7 +158,7 @@ export function pushWithToken(remote, branch, token) {
   const env = { ...process.env, GH_TOKEN: token, GIT_ASKPASS: helper, GIT_TERMINAL_PROMPT: '0' };
   try {
     const result = spawnSync('git', ['-c', 'credential.helper=', 'push', remote, `HEAD:${branch}`], {
-      env, stdio: 'inherit',
+      env, stdio: 'inherit', cwd,
     });
     if (result.status !== 0) throw new Error(`git push failed (${result.status})`);
   } finally {
