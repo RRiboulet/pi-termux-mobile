@@ -311,3 +311,25 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 .sheet .row[aria-pressed="true"] { color: var(--accent); }
 .sheet .empty { padding: 22px 16px; color: var(--muted); font-size: 14px; text-align: center; }
 .grab { width: 34px; height: 4px; border-radius: 2px; background: var(--line); margin: 7px auto 0; }
+
+/* ── a key, typed in ─────────────────────────────────────────────────── */
+.keyin {
+  width: 100%;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 11px 12px;
+  font-size: 16px;                 /* under 16px iOS zooms the page on focus */
+  outline: none;
+}
+.keyin:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.savekey {
+  margin-top: 10px;
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--r);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 15px; font-weight: 600;
+}
+.savekey:active { background: var(--accent-dim); }

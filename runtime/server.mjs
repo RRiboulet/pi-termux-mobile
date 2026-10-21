@@ -14,6 +14,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { watchEvents } from '@earendil-works/pi-durable';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { RemoteExecutionEnv } from './remote-env.mjs';
@@ -317,12 +318,30 @@ function sshKeyInfo() {
 
 // --- API -----------------------------------------------------------------------------
 
+/** The thinking levels a model accepts, always including "off". */
+function thinkingLevelsOf(model) {
+  if (!model) return ['off'];
+  try {
+    const levels = getSupportedThinkingLevels(model);
+    return levels?.length ? levels : ['off'];
+  } catch {
+    return ['off'];
+  }
+}
+
+/** The model object behind a { provider, modelId } reference, if it is known. */
+function modelByRef(ref) {
+  if (!ref?.provider || !ref?.modelId) return undefined;
+  try { return models.getModel(ref.provider, ref.modelId); } catch { return undefined; }
+}
+
 async function activeState() {
   const view = active ? await active.viewState(ctx) : null;
   try {
     const meta = active ? await sessions.get(active.id) : null;
     return {
       model: agentOf(view).model ?? null,
+      thinkingLevel: agentOf(view).thinkingLevel ?? 'off',
       busy: isBusy(view),
       inbox: view?.value?.docs?.['pi.inbox'] ?? null,
       usage: view?.value?.docs?.['pi.usage'] ?? null,
@@ -443,7 +462,43 @@ async function handleApi(req, res, url, p) {
   }
   if (p === '/api/models' && req.method === 'GET') {
     const avail = await models.getAvailable();
-    return json(res, 200, { models: avail.map((m) => ({ provider: m.provider, modelId: m.id })) });
+    return json(res, 200, {
+      models: avail.map((m) => ({
+        provider: m.provider,
+        modelId: m.id,
+        name: m.name ?? m.id,
+        thinkingLevels: thinkingLevelsOf(m),
+      })),
+    });
+  }
+  // The thinking level, and the levels the current model actually supports:
+  // a model that takes no reasoning effort offers none, and one that does
+  // offers a subset.
+  if (p === '/api/thinking' && req.method === 'GET') {
+    const view = active ? await active.viewState(ctx) : null;
+    try {
+      const agent = agentOf(view);
+      const model = modelByRef(agent.model);
+      return json(res, 200, {
+        level: agent.thinkingLevel ?? 'off',
+        supported: model ? thinkingLevelsOf(model) : ['off'],
+      });
+    } finally { view?.dispose?.(); }
+  }
+  if (p === '/api/thinking' && req.method === 'POST') {
+    const level = str(body.level);
+    const view = active ? await active.viewState(ctx) : null;
+    try {
+      const model = modelByRef(agentOf(view).model);
+      const supported = model ? thinkingLevelsOf(model) : ['off'];
+      // Refuse a level the model cannot take, rather than storing it and
+      // letting the provider reject it at the next call.
+      if (!supported.includes(level)) {
+        return json(res, 400, { error: `this model takes ${supported.join(', ')}` });
+      }
+      await active.configure({ thinkingLevel: level }, ctx);
+      return json(res, 200, { ok: true, level });
+    } finally { view?.dispose?.(); }
   }
   if (p === '/api/model' && req.method === 'POST') {
     if (!body.provider || !body.modelId) return json(res, 400, { error: 'provider+modelId required' });
@@ -623,11 +678,17 @@ async function handleApi(req, res, url, p) {
   }
   if (p === '/api/providers' && req.method === 'GET') {
     return json(res, 200, {
+      // The keys that are already set.
       providers: Object.entries(credentialStore.readAll()).map(([provider, c]) => ({
         provider,
         type: c?.type ?? 'api_key',
         keyHint: c?.key ? `…${String(c.key).slice(-4)}` : null,
       })),
+      // Every provider that would take an API key, so the client can offer a
+      // picker instead of making the user type a provider id.
+      catalog: models.getProviders()
+        .filter((provider) => Boolean(provider.auth?.apiKey))
+        .map((provider) => ({ id: provider.id, name: provider.name })),
     });
   }
   return json(res, 404, { error: 'not found' });

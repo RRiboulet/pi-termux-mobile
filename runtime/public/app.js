@@ -107,9 +107,17 @@ const state = {
   live: null,           // the assistant message being streamed
   tools: new Map(),     // callId -> { name, brief, out, status, child }
   mode: 'followUp',     // 'followUp' | 'steer'
-  sheet: null,          // null | 'model' | 'sessions' | 'usage'
+  sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
+                        //      | 'addkey' | 'oauth' | 'sessions' | 'usage'
   models: [],
   sessions: [],
+  providers: [],        // the keys that are set
+  catalog: [],          // every provider that takes an API key
+  oauthProviders: [],
+  thinking: { level: 'off', supported: ['off'] },
+  addKeyFor: null,      // the provider id being keyed
+  oauth: null,          // { id, prompt, done, error, events }
+  notice: null,         // a one-line message in the sheet
 };
 
 const set = (patch) => Object.assign(state, patch);
@@ -275,6 +283,7 @@ async function refreshState() {
     const s = await get('/api/state');
     set({
       model: s.model ?? null,
+      thinkingLevel: s.thinkingLevel ?? 'off',
       busy: Boolean(s.busy),
       usage: s.usage ?? null,
       inbox: s.inbox ?? [],
@@ -316,18 +325,116 @@ async function stop() {
 }
 
 async function openSheet(which) {
-  set({ sheet: which });
-  if (which === 'model') {
-    try { set({ models: await get('/api/models') }); } catch { set({ models: [] }); }
-  } else if (which === 'sessions') {
-    try { set({ sessions: await get('/api/sessions') }); } catch { set({ sessions: [] }); }
+  set({ sheet: which, notice: null });
+  try {
+    if (which === 'model') {
+      const r = await get('/api/models');
+      set({ models: r.models ?? [] });
+    } else if (which === 'thinking') {
+      set({ thinking: await get('/api/thinking') });
+    } else if (which === 'provider') {
+      const r = await get('/api/providers');
+      set({ providers: r.providers ?? [], catalog: r.catalog ?? [] });
+      const o = await get('/api/oauth/providers');
+      set({ oauthProviders: o.providers ?? [] });
+    } else if (which === 'sessions') {
+      const r = await get('/api/sessions');
+      set({ sessions: r.sessions ?? r ?? [] });
+    } else if (which === 'usage') {
+      set({ usage: await get('/api/usage') });
+    }
+  } catch (e) {
+    set({ notice: String(e.message || e) });
   }
   redraw();
 }
 
+async function saveKey(key) {
+  if (!state.addKeyFor) return;
+  try {
+    await post('/api/auth', { provider: state.addKeyFor, key });
+    set({ addKeyFor: null, sheet: 'provider', notice: `${state.addKeyFor} key saved` });
+    await openSheet('provider');
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+    redraw();
+  }
+}
+
+async function deleteKey(provider) {
+  try {
+    await post('/api/auth', { provider, delete: true });
+    set({ notice: `${provider} key removed` });
+    await openSheet('provider');
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+    redraw();
+  }
+}
+
+async function setThinking(level) {
+  try {
+    await post('/api/thinking', { level });
+    set({ thinking: { ...state.thinking, level }, sheet: 'menu' });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  redraw();
+}
+
+// OAuth: start a login, then answer whatever the provider asks for.
+async function startOauth(provider) {
+  try {
+    const r = await post('/api/oauth/start', { provider });
+    set({ oauth: { id: r.id, prompt: null, done: false, error: null, events: [] }, sheet: 'oauth' });
+    pollOauth();
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+    redraw();
+  }
+}
+
+let oauthTimer = null;
+async function pollOauth() {
+  if (oauthTimer) clearTimeout(oauthTimer);
+  oauthTimer = setTimeout(async () => {
+    const o = state.oauth;
+    if (!o || o.done) return;
+    try {
+      const r = await get(`/api/oauth/status?id=${encodeURIComponent(o.id)}`);
+      const next = { ...o, prompt: r.prompt ?? null, done: Boolean(r.done), error: r.error ?? null,
+                     events: [...(o.events ?? []), ...(r.events ?? [])] };
+      set({ oauth: next });
+      redraw();
+      if (!next.done && !next.error) pollOauth();
+    } catch (e) {
+      set({ oauth: { ...o, error: String(e.message || e) } });
+      redraw();
+    }
+  }, 1200);
+}
+
+async function answerOauth(value) {
+  const o = state.oauth;
+  if (!o?.prompt) return;
+  try {
+    await post('/api/oauth/respond', { id: o.id, promptId: o.prompt.id, value });
+    set({ oauth: { ...o, prompt: null } });
+    pollOauth();
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+    redraw();
+  }
+}
+
 async function chooseModel(m) {
-  try { await post('/api/model', { model: m }); set({ model: m }); } catch { /* keep the old one */ }
-  set({ sheet: null });
+  try {
+    await post('/api/model', { provider: m.provider, modelId: m.modelId });
+    set({ model: { provider: m.provider, modelId: m.modelId } });
+    set({ sheet: 'menu' });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
   redraw();
 }
 
@@ -424,23 +531,172 @@ function Composer() {
     </form>`;
 }
 
+function Scrim() {
+  return html`<div class="scrim" onClick=${() => { set({ sheet: null }); redraw(); }}></div>`;
+}
+
+function MenuSheet() {
+  const level = state.thinking?.level ?? 'off';
+  const items = [
+    { label: 'Model', hint: modelLabel(state.model), go: () => openSheet('model') },
+    { label: 'Thinking', hint: level === 'off' ? 'off' : level[0].toUpperCase() + level.slice(1), go: () => openSheet('thinking') },
+    { label: 'Provider', hint: state.providers?.length ? `${state.providers.length} key${state.providers.length > 1 ? 's' : ''}` : 'not set', go: () => openSheet('provider') },
+    { label: 'Sessions', hint: state.sessionName, go: () => openSheet('sessions') },
+    { label: 'Usage', hint: usageShort(state.usage), go: () => openSheet('usage') },
+  ];
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header><h2>pi</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        ${items.map((it) => html`
+          <button class="row" key=${it.label} onClick=${it.go}>
+            <span class="grow">${it.label}</span>
+            <small>${it.hint}</small>
+          </button>`)}
+        <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
+          <span class="grow">New session</span>
+        </button>
+        <button class="row" onClick=${async () => { await post('/api/compact').catch(() => {}); set({ sheet: null }); redraw(); }}>
+          <span class="grow">Compact context</span>
+        </button>
+        <button class="row" onClick=${async () => {
+          try { const r = await post('/api/pi-update'); set({ notice: r.message || 'updating' }); }
+          catch (e) { set({ notice: String(e.message || e) }); }
+          redraw();
+        }}>
+          <span class="grow">Update pi</span>
+        </button>
+      </div>
+    </div>`;
+}
+
+function ThinkingSheet() {
+  const supported = state.thinking?.supported ?? ['off'];
+  const level = state.thinking?.level ?? 'off';
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <button class="icon" onClick=${() => openSheet('menu')} aria-label="Back">‹</button>
+        <h2>Thinking</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        ${supported.length <= 1 && supported[0] === 'off'
+          ? html`<div class="empty">${state.model ? 'This model does not take a thinking level.' : 'Pick a model first.'}</div>`
+          : supported.map((l) => html`
+              <button class="row" key=${l} aria-pressed=${level === l} onClick=${() => setThinking(l)}>
+                <span class="grow">${l === 'off' ? 'Off' : l[0].toUpperCase() + l.slice(1)}</span>
+              </button>`)}
+      </div>
+    </div>`;
+}
+
+function ProviderSheet() {
+  const configured = state.providers ?? [];
+  const oauth = state.oauthProviders ?? [];
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <button class="icon" onClick=${() => openSheet('menu')} aria-label="Back">‹</button>
+        <h2>Provider</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
+        ${configured.length
+          ? configured.map((p) => html`
+              <button class="row" key=${p.provider} onClick=${() => deleteKey(p.provider)}>
+                <span class="grow">${p.provider}</span>
+                <small>${p.keyHint || p.type} · tap to remove</small>
+              </button>`)
+          : html`<div class="empty">No provider keys yet.</div>`}
+        ${oauth.length ? html`<div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Sign in</span></div>` : null}
+        ${oauth.map((p) => html`
+          <button class="row" key=${'oauth-' + p.id} onClick=${() => startOauth(p.id)}>
+            <span class="grow">${p.label || p.name || p.id}</span>
+          </button>`)}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Add an API key</span></div>
+        ${(state.catalog ?? []).map((p) => html`
+          <button class="row" key=${'api-' + p.id} onClick=${() => { set({ addKeyFor: p.id, sheet: 'addkey' }); redraw(); }}>
+            <span class="grow">${p.name || p.id}</span>
+          </button>`)}
+      </div>
+    </div>`;
+}
+
+function AddKeySheet() {
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <button class="icon" onClick=${() => openSheet('provider')} aria-label="Back">‹</button>
+        <h2>${state.addKeyFor} key</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        <div class="row" style="display:block">
+          <input class="keyin" type="password" placeholder="API key" autocomplete="off" spellcheck="false"
+            onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); const v = e.target.value; saveKey(v); } }} />
+          <button class="savekey" onClick=${(e) => saveKey(e.target.closest('.row').querySelector('input').value)}>Save</button>
+        </div>
+        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
+      </div>
+    </div>`;
+}
+
+function OauthSheet() {
+  const o = state.oauth ?? {};
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <button class="icon" onClick=${() => { set({ sheet: 'provider' }); redraw(); }} aria-label="Back">‹</button>
+        <h2>Sign in</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        ${o.error ? html`<div class="empty" style="color:var(--bad)">${o.error}</div>` : null}
+        ${o.done ? html`<div class="empty">Signed in. You can close this.</div>` : null}
+        ${(o.events ?? []).map((e, i) => html`<div class="row" key=${'e' + i}><span class="grow">${String(e)}</span></div>`)}
+        ${o.prompt ? html`
+          <div class="row" style="display:block">
+            <div style="margin-bottom:8px">${o.prompt.message || o.prompt.type}</div>
+            ${o.prompt.options?.length
+              ? o.prompt.options.map((opt) => html`<button class="row" key=${opt} onClick=${() => answerOauth(opt)}><span class="grow">${opt}</span></button>`)
+              : html`<input class="keyin" type="text" placeholder=${o.prompt.placeholder || 'value'} autocomplete="off"
+                  onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); answerOauth(e.target.value); } }} />`}
+          </div>` : null}
+      </div>
+    </div>`;
+}
+
 function Sheet() {
   const which = state.sheet;
   if (!which) return null;
+  if (which === 'menu') return html`<${Scrim} /><${MenuSheet} />`;
+  if (which === 'thinking') return html`<${Scrim} /><${ThinkingSheet} />`;
+  if (which === 'provider') return html`<${Scrim} /><${ProviderSheet} />`;
+  if (which === 'addkey') return html`<${Scrim} /><${AddKeySheet} />`;
+  if (which === 'oauth') return html`<${Scrim} /><${OauthSheet} />`;
   const title = which === 'model' ? 'Model' : which === 'sessions' ? 'Sessions' : 'Usage';
   let body;
   if (which === 'model') {
     const models = state.models?.models ?? state.models ?? [];
+    const current = state.model?.modelId;
     body = models.length
       ? models.map((m) => {
-          const id = m.id ?? m.model ?? m;
-          const name = m.name ?? m.label ?? id;
-          return html`<button class="row" key=${id} aria-pressed=${state.model === id} onClick=${() => chooseModel(id)}>
-            <span class="grow">${name}</span>
-            ${m.provider ? html`<small>${m.provider}</small>` : null}
+          const id = m.modelId ?? m.id ?? m;
+          return html`<button class="row" key=${id} aria-pressed=${current === id} onClick=${() => chooseModel({ provider: m.provider, modelId: id })}>
+            <span class="grow">${m.name ?? id}</span>
+            <small>${m.provider}${m.thinkingLevels?.length > 1 ? ` · thinks: ${m.thinkingLevels.join(', ')}` : ''}</small>
           </button>`;
         })
-      : html`<div class="empty">No models yet — add a provider key in the app.</div>`;
+      : html`<div class="empty">No models yet — add a provider key in the menu.</div>`;
   } else if (which === 'sessions') {
     const sessions = state.sessions?.sessions ?? state.sessions ?? [];
     body = sessions.length
@@ -463,7 +719,6 @@ function Sheet() {
       : html`<div class="empty">No usage yet.</div>`;
   }
   return html`
-    <div class="scrim" onClick=${() => { set({ sheet: null }); redraw(); }}></div>
     <div class="sheet">
       <div class="grab"></div>
       <header>
@@ -482,8 +737,7 @@ function App() {
           <b>pi</b>
           <span class="who">${state.sessionName}</span>
         </div>
-        <button class="icon" aria-label="Sessions" onClick=${() => openSheet('sessions')}>☰</button>
-        <button class="icon" aria-label="Usage" onClick=${() => openSheet('usage')}>◔</button>
+        <button class="icon" aria-label="Menu" onClick=${() => openSheet('menu')}>☰</button>
         <button class="icon" aria-label="Model" onClick=${() => openSheet('model')}>${modelShort(state.model)}</button>
       </div>
       <${StatusStrip} />
@@ -491,6 +745,22 @@ function App() {
     <${Transcript} />
     <${Composer} />
     <${Sheet} />`;
+}
+
+function modelLabel(model) {
+  if (!model) return 'not set';
+  return model.modelId ?? model.id ?? String(model);
+}
+
+function usageShort(usage) {
+  let tokens = 0;
+  let cost = 0;
+  for (const u of Object.values(usage?.models ?? {})) {
+    tokens += u.totalTokens || 0;
+    cost += u.cost?.total || 0;
+  }
+  if (!tokens) return '–';
+  return `${tokens.toLocaleString()} tok${cost ? ` · $${cost.toFixed(3)}` : ''}`;
 }
 
 function modelShort(model) {
