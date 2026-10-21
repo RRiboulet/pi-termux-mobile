@@ -364,6 +364,13 @@ id, so `home/` (the provider keys, the sessions) does not come across. The id
 is not free to change afterwards either — the Termux binaries carry it
 compiled in, and `scripts/package-rootfs.ts` has to rewrite it.
 
+`scripts/device-smoke.sh` installs the debug APK on the attached device and
+checks the three things only a real phone can show: that the bridge comes up
+and answers on loopback, that the supervisor restarts the node process when
+it is killed, and that the store survives `am force-stop`. It needs a
+debuggable build (`assembleDebug`), because it reads the app's own files with
+`run-as`.
+
 First launch extracts ~170 MB to app-private storage, then a foreground
 service starts `node runtime/server.mjs`. The service runs exactly one bridge:
 reopening the app attaches to the running one instead of restarting it, a
