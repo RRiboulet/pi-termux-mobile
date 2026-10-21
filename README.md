@@ -257,6 +257,11 @@ JAVA_HOME=<path-to>/tools/jdk21 ./gradlew assembleDebug
 `gradlew` runs `scripts/prepare-runtime.py` before `preBuild`, so
 `runtime.bin` and `payload.sha256` are rebuilt on every build.
 
+An incremental build can leave the APK ~25 MB larger than its contents
+(106 MB of assets in a 131 MB file) because the previous archive is not
+rewritten from scratch. Delete `android/app/build` before measuring or
+shipping an APK.
+
 Toolchain notes:
 
 - JDK 21 (Temurin) — Gradle/AGP 8.7.3 does not support the system JDK 25.
