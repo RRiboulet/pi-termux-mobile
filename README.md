@@ -364,6 +364,12 @@ id, so `home/` (the provider keys, the sessions) does not come across. The id
 is not free to change afterwards either — the Termux binaries carry it
 compiled in, and `scripts/package-rootfs.ts` has to rewrite it.
 
+**Verified on a real phone** — a Samsung Galaxy S21 Ultra on Android 15:
+the runtime extracts, `node` execs out of the app-private prefix, the durable
+harness starts, `node:sqlite` opens the store, and the service brings the
+bridge back after a restart. What was checked, and what is still unproven, is
+in [docs/device-verification.md](docs/device-verification.md).
+
 `scripts/device-smoke.sh` installs the debug APK on the attached device and
 checks the three things only a real phone can show: that the bridge comes up
 and answers on loopback, that the supervisor restarts the node process when
