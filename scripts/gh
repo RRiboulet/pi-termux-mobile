@@ -1,0 +1,13 @@
+#!/bin/sh
+# gh — a small GitHub CLI for this fork (scripts/gh.mjs).
+#
+#   scripts/gh pr create --title "..." --body "..." --push
+#
+# The token comes from GH_TOKEN, GITHUB_TOKEN or ~/.config/gh/token.
+# Put this on your PATH to type "gh" instead of "scripts/gh":
+#
+#   ln -s "$PWD/scripts/gh" ~/bin/gh
+#
+set -e
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$here/gh.mjs" "$@"
