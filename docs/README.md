@@ -15,6 +15,7 @@ why the app looks the way it does.
 | [plan-revision.md](plan-revision.md) | **Start here.** What changed in the plan when the app moved to this lineage, section by section, and the new critical path. |
 | [device-verification.md](device-verification.md) | What was actually run on a Galaxy S21 Ultra (Android 15): the runtime, the SQLite file, the loopback bridge, the service. |
 | [gh-tool.md](gh-tool.md) | `scripts/gh`, the small GitHub CLI the agents use: a pull request, a review, a comment, a diff — over the REST API, with a token that goes to one origin and nowhere else. |
+| [updating-the-runtime.md](updating-the-runtime.md) | How to change what runs on the phone without building an APK: what a `git pull` covers, what it cannot, the next install's payload stamp, and the debug-key trap. |
 | [install-gate.md](install-gate.md) | The install gate: the agent proposes an extension, the user is shown the file, its hash and its diff, and taps Install. What it does, and what it is not. |
 | [reviews/pr12-client-test-isolation-review.md](reviews/pr12-client-test-isolation-review.md) | The review of the client paint fix: an adversarial and a design pass that agreed the fix was right and the test-harness half of it was not. |
 | [reviews/ui-review.md](reviews/ui-review.md) | The client review, in three passes, and the defects it found. |
