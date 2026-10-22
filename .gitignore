@@ -23,6 +23,10 @@ Thumbs.db
 *.log
 *.tmp
 
+# Scratch directories an agent works in. tmp/ holds checkouts and probes that
+# are never part of the tree.
+/tmp/
+
 # Host-side checks for the web client. Not shipped: runtime/package.json is.
 node_modules/
 package-lock.json

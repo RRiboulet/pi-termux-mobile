@@ -13,7 +13,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / 'runtime'
 ASSETS = ROOT / 'android/app/src/main/assets'
-FILES = ['server.mjs', 'common.mjs', 'models-config.mjs', 'package.json',
+FILES = ['server.mjs', 'common.mjs', 'models-config.mjs', 'node-bin.mjs', 'package.json',
          'package-lock.json', 'public', 'node_modules']
 
 if not (RUNTIME / 'node_modules/@earendil-works/pi-durable').is_dir():

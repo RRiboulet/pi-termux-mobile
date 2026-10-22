@@ -138,9 +138,13 @@ file back.
   client), `common.mjs` (harness setup, credential store with file lock,
   durable session registry, single-owner lock),
   `models-config.mjs` (the reader for `~/.pi/agent/models.json`),
+  `node-bin.mjs` (the node binary to spawn: on Android `process.execPath` is
+  the dynamic linker, not node),
   `public/` (the single-screen client), package.json for prod node_modules
 - `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
-  index), `prepare-runtime.py` (packages `runtime.bin` + `payload.sha256`)
+  index), `prepare-runtime.py` (packages `runtime.bin` + `payload.sha256`),
+  `run-tests.mjs` (runs the test files, on the phone as well as on a host),
+  `gh`/`gh.mjs` (the small GitHub CLI)
 - `tools/` — local toolchain (JDK 21, Android SDK, Gradle 8.10.2) — not committed
 
 ## Build
@@ -187,6 +191,34 @@ Toolchain notes:
 - Asset fingerprints automatically trigger re-extraction when the runtime or rootfs changes.
   `RUNTIME_VERSION` in `RuntimeInstaller.java` covers installer behavior changes. An upgrade replaces `usr/` and `runtime/` entirely
   (archives are streamed into tar); `home/` and `work/` are kept.
+
+## Tests
+
+```bash
+npm test                       # every test/*.test.mjs
+node scripts/run-tests.mjs client   # only the files whose name matches
+node test/node-bin.test.mjs     # one file, on its own
+```
+
+The tests run **on the phone**, which is the point of them: the file the
+agent edits on the phone is the file that runs, so the checks that guard it
+have to run there too.
+
+`scripts/run-tests.mjs` exists because `node --test` cannot run here. Node's
+own runner spawns one child process per test file using `process.execPath`,
+and on Android `process.execPath` is the **dynamic linker**, not node:
+termux-exec re-execs every process through the linker, so `/proc/self/exe` is
+the linker and Node reports that as `process.execPath`. The run dies before
+the first test:
+
+```
+error: expected absolute path: "--test-concurrency=0"
+```
+
+(that message is the linker complaining about the flag it was handed). The
+runner spawns the files itself, with the node binary resolved by
+`runtime/node-bin.mjs`: `process.argv0`, which is the program that was asked
+to run in every launch mode, and which is never the linker.
 
 ## Repackaging assets
 
@@ -293,6 +325,15 @@ the `feature/remote-subsystem` branch, not lost.
 
 Added: `~/.pi/agent/models.json` is read by the bridge, so a model the
 bundled catalog does not know can be added without touching the app.
+
+Fixed: the node binary to spawn. `process.execPath` is the dynamic linker on
+Android — termux-exec re-execs every process through it, and `PiService` has
+the same fallback for the app-home exec ban — and the linker cannot run a
+JavaScript file. Spawning it failed with `has bad ELF magic`, which broke
+**Update pi** on the phone, and broke `node --test` everywhere on the phone,
+so the test suite could not be run where the code runs.
+`runtime/node-bin.mjs` resolves the binary from `process.argv0` instead, and
+`scripts/run-tests.mjs` runs the test files itself. See [Tests](#tests).
 
 ### 0.0.5 — 2026-10-05
 
