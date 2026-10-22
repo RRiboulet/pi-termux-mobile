@@ -30,3 +30,8 @@ Thumbs.db
 # Host-side checks for the web client. Not shipped: runtime/package.json is.
 node_modules/
 package-lock.json
+
+# Pi project-local package checkouts (declared in .pi/settings.json)
+.pi/git/
+.pi/npm/
+.pi/todos/
