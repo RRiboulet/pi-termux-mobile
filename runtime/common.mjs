@@ -1,6 +1,5 @@
 // common.mjs — the pieces of the phone bridge: credential store, harness
-// setup, durable session registry, sequenced event buffers, atomic files and
-// the single-owner lock.
+// setup, durable session registry, atomic files and the single-owner lock.
 import {
   closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync,
   unlinkSync, writeFileSync, writeSync,
