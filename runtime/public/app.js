@@ -14,6 +14,11 @@ import htm from './vendor/htm.js';
 // createElement that htm.bind wants.
 const html = htm.bind(h);
 
+// ── the document this client booted into ─────────────────────────────────
+// Bound once at boot, like `location.search` below: the paint path must reach
+// the DOM this instance was loaded into, whatever `document` means by then.
+const doc = document;
+
 // ── token ────────────────────────────────────────────────────────────────
 // The Activity loads /?token=...; keep it in localStorage and take it out of
 // the address bar, so it is not left in a screenshot or a history entry.
@@ -315,7 +320,7 @@ const redraw = () => {
   const paint = () => {
     redrawQueued = false;
     rememberScroll();
-    render(html`<${App} />`, document.getElementById('app'));
+    render(html`<${App} />`, doc.getElementById('app'));
     stickToBottom();
   };
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(paint);
@@ -1283,12 +1288,12 @@ function modelShort(model) {
 // threshold and the view stops following -- permanently.
 let wasAtBottom = true;
 function stickToBottom() {
-  const log = document.getElementById('log');
+  const log = doc.getElementById('log');
   if (!log) return;
   if (wasAtBottom) log.scrollTop = log.scrollHeight;
 }
 function rememberScroll() {
-  const log = document.getElementById('log');
+  const log = doc.getElementById('log');
   if (!log) return;
   wasAtBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
 }
@@ -1298,7 +1303,7 @@ function rememberScroll() {
 // its container rather than replacing it, so the placeholder would survive
 // every render as a stray line below the composer. Drop it once, before the
 // first render; subsequent redraws diff against the tree Preact owns.
-document.getElementById('app').replaceChildren();
+doc.getElementById('app').replaceChildren();
 subscribe();
 refreshState();
 refreshExtensions();
