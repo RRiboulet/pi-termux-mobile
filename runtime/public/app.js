@@ -304,7 +304,6 @@ const state = {
   pending: [],          // optimistic user messages awaiting their entry
   live: null,           // the assistant message being streamed: { text, think[] }
   tools: new Map(),     // callId -> { name, brief, out, status, child, live }
-  mode: 'followUp',     // 'followUp' | 'steer'
   sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
                         //      | 'addkey' | 'oauth' | 'sessions' | 'usage' | 'extensions'
   models: [],
@@ -586,7 +585,11 @@ async function send(text) {
     await post('/api/prompt', {
       message: body,
       requestId: requestId(),
-      whenBusy: state.mode === 'steer' ? 'steer' : undefined,
+      // Always steer. A message sent while the agent is working joins that
+      // work at the end of the current tool round, instead of waiting for the
+      // run to answer and starting a new one. There is no "send it later"
+      // switch; the stop button is how a run that went the wrong way ends.
+      whenBusy: 'steer',
     });
   } catch (e) {
     const i = state.pending.findIndex((p) => p.text === body);
@@ -904,13 +907,6 @@ function Composer() {
       ta.style.height = 'auto';
       await send(value);
     }}>
-      <div class="modes" hidden=${!busy}>
-        <span class="label">send as</span>
-        <div class="seg">
-          <button type="button" aria-pressed=${state.mode === 'steer'} onClick=${() => { set({ mode: 'steer' }); redraw(); }}>Steer</button>
-          <button type="button" aria-pressed=${state.mode === 'followUp'} onClick=${() => { set({ mode: 'followUp' }); redraw(); }}>Queue</button>
-        </div>
-      </div>
       <div class="field">
         <textarea name="message" rows="1" placeholder=${busy ? 'Steer the running work…' : 'Message pi…'}
           onInput=${(e) => {

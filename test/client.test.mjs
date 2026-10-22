@@ -148,7 +148,7 @@ test('the composer keeps its draft when the agent starts and stops', async () =>
   const app = await mount();
   const ta = app.document.querySelector('textarea');
   ta.value = 'half a thought';
-  // The "send as" row appears and disappears as the agent's state changes. If the form's children
+  // The stop button appears and disappears as the agent's state changes. If the form's children
   // change shape, the textarea is recreated and the draft is lost.
   app.send({ type: 'run_start' });
   await app.settle();
@@ -156,6 +156,31 @@ test('the composer keeps its draft when the agent starts and stops', async () =>
   await app.settle();
   const after = app.document.querySelector('textarea');
   assert.equal(after.value, 'half a thought', 'the draft was lost across a busy toggle');
+});
+
+test('a message sent while busy steers the running work', async () => {
+  // There is no send-as selector: a busy message always steers. A `whenBusy` of undefined would be
+  // admitted as a followUp by pi-durable, and the message would sit in the inbox until the run
+  // answered instead of joining it at the end of the tool round.
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
+  await app.settle();
+  app.send({ type: 'run_start' });
+  await app.settle();
+
+  const ta = app.document.querySelector('textarea');
+  ta.value = 'use the devcontainer instead';
+  await app.document.querySelector('form').dispatchEvent(new window.Event('submit', { cancelable: true, bubbles: true }));
+  await app.settle();
+
+  const prompt = app.fetches.find(([url]) => String(url).includes('/api/prompt'));
+  assert.ok(prompt, 'no /api/prompt was sent');
+  assert.equal(JSON.parse(prompt[1].body).whenBusy, 'steer',
+    'a busy message must steer the running work, not queue behind it');
+
+  const labels = Array.from(app.document.querySelectorAll('button')).map((b) => b.textContent.trim());
+  assert.ok(!labels.includes('Steer') && !labels.includes('Queue'),
+    `the send-as buttons are still rendered: ${labels.join(', ')}`);
 });
 
 test('a failed tool call is shown, and marked failed', async () => {
