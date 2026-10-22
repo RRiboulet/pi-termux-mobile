@@ -395,14 +395,22 @@ function sys(text, tone) {
 
 function startTool(callId, name, args, live = true) {
   if (callId !== undefined && state.tools.has(callId)) {
-    // A tool first seen in committed history can still turn out to be running.
-    if (live) state.tools.get(callId).live = true;
+    // A tool first seen in committed history can still turn out to be running:
+    // the history records the call before the harness starts it. Only a queued
+    // call is promoted -- a finished one stays finished, however late it is
+    // mentioned.
+    const t = state.tools.get(callId);
+    if (live && t.status === 'queued') t.status = 'run';
     return;
   }
   const brief = args
     ? (args.command || args.path || args.pattern || args.task || JSON.stringify(args).slice(0, 80))
     : '';
-  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: 'run', live });
+  // A call recorded in history has been made, not necessarily started: the
+  // harness starts tools after the message is committed, and it may run them
+  // one at a time. Calling that "running…" claimed a tool was working while it
+  // was still waiting its turn.
+  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: live ? 'run' : 'queued' });
 }
 
 function renderSnapshot(snapshot) {
@@ -827,11 +835,12 @@ function StatusStrip() {
 function Tool({ t }) {
   const running = t.status === 'run';
   const failed = t.status === 'err';
+  const queued = t.status === 'queued';
   const out = String(t.out ?? '');
   const brief = t.child !== undefined ? `subagent #${t.child}` : t.brief;
-  const meta = running ? 'running…' : failed ? 'failed' : out ? `${out.length.toLocaleString()} chars` : 'done';
+  const meta = running ? 'running…' : queued ? 'queued' : failed ? 'failed' : out ? `${out.length.toLocaleString()} chars` : 'done';
   return html`
-    <details class=${`thoughts tool${running ? ' live' : ''}${failed ? ' err' : ''}`}>
+    <details class=${`thoughts tool${running ? ' live' : ''}${queued ? ' queued' : ''}${failed ? ' err' : ''}`}>
       <summary>
         <span class="caret">▶</span>
         <span class="name">${t.name}</span>
@@ -841,7 +850,7 @@ function Tool({ t }) {
       <div class="think-body">
         ${out
           ? html`<pre>${out}</pre>`
-          : html`<div class="tool-empty">${running ? 'Running…' : 'No output'}</div>`}
+          : html`<div class="tool-empty">${running ? 'Running…' : queued ? 'Waiting to run…' : 'No output'}</div>`}
       </div>
     </details>`;
 }

@@ -439,6 +439,44 @@ test('a turn keeps the order the message wrote its blocks in', async () => {
     'the turn did not keep the order its blocks were written in');
 });
 
+test('a call the harness has not started yet is queued, not running', async () => {
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
+  await app.settle();
+  app.send({ type: 'run_start' });
+  await app.settle();
+
+  // The harness commits the message -- both calls in it -- before it starts
+  // either tool, and it runs them one at a time. Both were called "running…"
+  // the moment they were committed, and the status strip named the first one
+  // as the work in progress while the read had not begun.
+  app.send({
+    type: 'message_end',
+    entry: { id: 30, model: [{ role: 'assistant', content: [
+      { type: 'toolCall', id: 'p1', name: 'read', arguments: { path: 'x' } },
+      { type: 'toolCall', id: 'p2', name: 'bash', arguments: { command: 'ls' } },
+    ] }] },
+  });
+  await app.settle();
+
+  const metas = () => [...app.document.querySelectorAll('.msg.assistant details.tool .meta')].map((m) => m.textContent.trim());
+  const strip = () => app.document.querySelector('.strip').textContent.replace(/\s+/g, ' ').trim();
+  assert.deepEqual(metas(), ['queued', 'queued'], 'a call that has not started claims to be running');
+  assert.doesNotMatch(strip(), /read/, 'the strip named a tool that had not started');
+
+  app.send({ type: 'tool_execution_start', toolCallId: 'p1', toolName: 'read', args: { path: 'x' } });
+  await app.settle();
+  assert.deepEqual(metas(), ['running…', 'queued'], 'starting one call changed the other');
+  assert.match(strip(), /working · read/, 'the strip does not show the tool that is running');
+
+  app.send({
+    type: 'tool_execution_end', toolCallId: 'p1', toolName: 'read',
+    entry: { id: 31, model: [{ role: 'toolResult', toolCallId: 'p1', content: [{ type: 'text', text: 'ok' }] }] },
+  });
+  await app.settle();
+  assert.deepEqual(metas(), ['2 chars', 'queued'], 'the finished call or the waiting one is wrong');
+});
+
 test('the menu shows the thinking level and the provider count without opening their sheets', async () => {
   const app = await mount({
     state: { model: { provider: 'anthropic', modelId: 'claude' }, thinkingLevel: 'high', busy: false, sessionName: 'Main' },
