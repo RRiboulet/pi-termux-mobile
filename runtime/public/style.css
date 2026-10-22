@@ -306,22 +306,6 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--line-soft);
 }
-.modes {
-  display: flex; gap: 6px; align-items: center;
-  margin-bottom: 8px;
-}
-.modes .label { font-size: 12px; color: var(--faint); margin-right: 2px; }
-.seg {
-  display: flex; background: var(--raised);
-  border: 1px solid var(--line-soft); border-radius: 999px; padding: 2px;
-}
-.seg button {
-  padding: 5px 12px; border-radius: 999px;
-  font-size: 13px; color: var(--muted);
-}
-.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
-.seg button:disabled { opacity: .4; }
-
 .field {
   display: flex; align-items: flex-end; gap: 8px;
   background: var(--surface);
