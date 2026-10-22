@@ -161,8 +161,8 @@ to be used.
 ### §3 UI/UX — **the plan's screen set, against a client that now exists**
 
 The new client (see `docs/reviews/ui-review.md`) implements **S1** (the
-transcript, with thinking blocks), **S2** (the composer, with Steer / Queue /
-Stop), **S3** (the status line) and **S7** (usage). **S4** (the task panel),
+transcript, with thinking blocks), **S2** (the composer, with Steer / Stop),
+**S3** (the status line) and **S7** (usage). **S4** (the task panel),
 **S5** (the subagent view), **S6** (the recovery sheet) and **S8** (the git
 viewer) are **not** in it.
 
