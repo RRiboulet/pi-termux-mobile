@@ -40,22 +40,35 @@ async function get(path) {
  * POST, with the retry: a phone loses the bridge for a moment all the time,
  * and the body carries a requestId, so a retried prompt is answered once and
  * only once.
+ *
+ * A 4xx is not retried: it is an answer, not a lost bridge. The install gate
+ * answers 409 when the file changed since the user saw it, and retrying that
+ * would run the proposal's code again for nothing.
  */
 async function post(path, body, { retries = 3 } = {}) {
   for (let attempt = 0; ; attempt++) {
+    let r;
     try {
-      const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
-      const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
-      if (r.status === 503 && j.reconnecting && attempt < retries) {
-        await new Promise((res) => setTimeout(res, 1500));
-        continue;
-      }
-      if (!r.ok) throw new Error(j.error || `http ${r.status}`);
-      return j;
+      r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
     } catch (e) {
+      // The bridge is gone. That is worth another try.
       if (attempt >= retries) throw e;
       await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+      continue;
     }
+    const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
+    if (r.status === 503 && j.reconnecting && attempt < retries) {
+      await new Promise((res) => setTimeout(res, 1500));
+      continue;
+    }
+    if (!r.ok) {
+      if (r.status >= 500 && attempt < retries) {
+        await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+        continue;
+      }
+      throw new Error(j.error || `http ${r.status}`);
+    }
+    return j;
   }
 }
 
@@ -279,9 +292,10 @@ const state = {
   tools: new Map(),     // callId -> { name, brief, out, status, child, live }
   mode: 'followUp',     // 'followUp' | 'steer'
   sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
-                        //      | 'addkey' | 'oauth' | 'sessions' | 'usage'
+                        //      | 'addkey' | 'oauth' | 'sessions' | 'usage' | 'extensions'
   models: [],
   sessions: [],
+  extensions: { installed: [], proposals: [], problems: [] },  // the install gate's state
   providers: [],        // the keys that are set
   catalog: [],          // every provider that takes an API key
   oauthProviders: [],
@@ -416,6 +430,12 @@ function handle(ev) {
   if (ev.type === 'bridge_error') {
     sys(`error: ${ev.error}`);
     redraw();
+    return;
+  }
+  if (ev.type === 'bridge_extensions') {
+    // The proposals changed: the agent proposed something, or the user
+    // installed or refused it.
+    refreshExtensions().then(() => redraw());
     return;
   }
   if (ev.type === 'bridge_connected') return;
@@ -601,6 +621,8 @@ async function openSheet(which) {
       // usage directly. They are different shapes, so they get different fields.
       const u = await get('/api/usage');
       set({ usageTotal: u.total ?? null, usageSession: u.session ?? null });
+    } else if (which === 'extensions') {
+      await refreshExtensions();
     }
   } catch (e) {
     set({ notice: String(e.message || e) });
@@ -705,6 +727,58 @@ async function chooseModel(m) {
 async function chooseSession(id) {
   try { await post('/api/sessions/select', { id }); await refreshState(); } catch { /* keep the old one */ }
   set({ sheet: null });
+  redraw();
+}
+
+// ── the install gate ─────────────────────────────────────────────────────
+// The agent writes an extension and proposes it. The file, its hash and its
+// diff are shown here, and nothing runs until the user taps Install. The
+// hash that is sent is the one that was shown: if the file changed in the
+// meantime, the server refuses it.
+
+async function refreshExtensions() {
+  try {
+    const r = await get('/api/extensions');
+    set({ extensions: { installed: r.installed ?? [], proposals: r.proposals ?? [], problems: r.problems ?? [] } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const pendingProposals = () => (state.extensions?.proposals ?? [])
+  .filter((p) => p.state === 'pending' || p.state === 'changed');
+
+async function installExtension(p) {
+  try {
+    await post('/api/extensions/install', { key: p.key, hash: p.hash });
+    set({ notice: `${p.key} installed` });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  await refreshExtensions();
+  redraw();
+}
+
+async function rejectExtension(p) {
+  try {
+    await post('/api/extensions/reject', { key: p.key, hash: p.hash });
+    set({ notice: `${p.key} refused` });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  await refreshExtensions();
+  redraw();
+}
+
+async function uninstallExtension(p) {
+  try {
+    await post('/api/extensions/uninstall', { key: p.key });
+    set({ notice: `${p.key} removed` });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  await refreshExtensions();
   redraw();
 }
 
@@ -860,12 +934,14 @@ function Scrim() {
 
 function MenuSheet() {
   const level = state.thinking?.level ?? 'off';
+  const pending = pendingProposals().length;
   const items = [
     { label: 'Model', hint: modelLabel(state.model), go: () => openSheet('model') },
     { label: 'Thinking', hint: level === 'off' ? 'off' : level[0].toUpperCase() + level.slice(1), go: () => openSheet('thinking') },
     { label: 'Provider', hint: state.providers?.length ? `${state.providers.length} key${state.providers.length > 1 ? 's' : ''}` : 'not set', go: () => openSheet('provider') },
     { label: 'Sessions', hint: state.sessionName, go: () => openSheet('sessions') },
     { label: 'Usage', hint: usageShort(state.usage), go: () => openSheet('usage') },
+    { label: 'Extensions', hint: pending ? `${pending} to review` : (state.extensions?.installed?.length ? `${state.extensions.installed.length} installed` : 'none'), go: () => openSheet('extensions') },
   ];
   return html`
     <div class="sheet">
@@ -1010,6 +1086,91 @@ function OauthSheet() {
     </div>`;
 }
 
+// The diff the user approves: what the file would become, line by line.
+function DiffBlock({ text }) {
+  const lines = String(text ?? '').split('\n');
+  if (!lines.length) return null;
+  return html`
+    <pre class="diff">${lines.map((l, i) => html`
+      <div key=${i} class=${l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : l.startsWith('@@') ? 'hunk' : 'ctx'}>${l || ' '}</div>`)}</pre>`;
+}
+
+function ExtensionsSheet() {
+  const installed = state.extensions?.installed ?? [];
+  const proposals = state.extensions?.proposals ?? [];
+  const problems = state.extensions?.problems ?? [];
+  const waiting = proposals.filter((p) => p.state === 'pending' || p.state === 'changed' || p.state === 'failed');
+  const refused = proposals.filter((p) => p.state === 'rejected');
+  const label = (p) => ({
+    pending: 'new extension',
+    changed: 'changed since it was installed',
+    failed: 'does not install',
+    installed: 'installed',
+    rejected: 'refused',
+  })[p.state] ?? p.state;
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <button class="icon" onClick=${() => openSheet('menu')} aria-label="Back">‹</button>
+        <h2>Extensions</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
+        ${problems.length ? html`
+          <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Problems</span></div>
+          ${problems.map((p) => html`
+            <div class="row" key=${'p-' + p.key}>
+              <span class="grow">${p.key}<br /><small style="color:var(--bad)">${p.error}</small></span>
+            </div>`)}` : null}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Waiting for you</span></div>
+        ${waiting.length ? waiting.map((p) => html`
+          <div class="proposal" key=${p.key}>
+            <div class="row">
+              <span class="grow">${p.key}</span>
+              <small>sha256 ${String(p.hash ?? '').slice(0, 12)}</small>
+            </div>
+            <div class="row">
+              <span class="grow" style="color:var(--muted);font-size:12.5px">
+                ${label(p)} · ${(p.bytes ?? 0).toLocaleString()} bytes
+              </span>
+            </div>
+            ${p.error ? html`<div class="row"><span class="grow" style="color:var(--bad);font-size:12.5px">${p.error}</span></div>` : null}
+            <${DiffBlock} text=${p.diff} />
+            <details class="whole">
+              <summary>the whole file</summary>
+              <pre class="diff">${p.content ?? ''}</pre>
+            </details>
+            <div class="actions">
+              <button class="act primary" onClick=${() => installExtension(p)}>Install</button>
+              <button class="act" onClick=${() => rejectExtension(p)}>Refuse</button>
+            </div>
+          </div>`) : html`<div class="empty">Nothing to review.</div>`}
+        ${refused.length ? html`
+          <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Refused</span></div>
+          ${refused.map((p) => html`
+            <div class="row" key=${'r-' + p.key}>
+              <span class="grow">${p.key}</span>
+              <small>sha256 ${String(p.hash ?? '').slice(0, 12)}</small>
+            </div>`)}` : null}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Installed</span></div>
+        ${installed.length ? installed.map((e) => html`
+          <div class="row" key=${'i-' + e.key}>
+            <span class="grow">${e.name ?? e.key}<br /><small>${e.key} · sha256 ${String(e.hash ?? '').slice(0, 12)}</small></span>
+            <button class="act" onClick=${() => uninstallExtension(e)}>Remove</button>
+          </div>`) : html`<div class="empty">No extensions installed.</div>`}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">What this is</span></div>
+        <div class="row" style="display:block;color:var(--muted);font-size:12.5px">
+          An extension the agent wrote runs inside the bridge process, with the
+          bridge's permissions. The file, its hash and this diff are what you
+          approve; the hash is what the bridge checks, so a file that changed
+          since is refused.
+        </div>
+      </div>
+    </div>`;
+}
+
 function Sheet() {
   const which = state.sheet;
   if (!which) return null;
@@ -1018,6 +1179,7 @@ function Sheet() {
   if (which === 'provider') return html`<${Scrim} /><${ProviderSheet} />`;
   if (which === 'addkey') return html`<${Scrim} /><${AddKeySheet} />`;
   if (which === 'oauth') return html`<${Scrim} /><${OauthSheet} />`;
+  if (which === 'extensions') return html`<${Scrim} /><${ExtensionsSheet} />`;
   const title = which === 'model' ? 'Model' : which === 'sessions' ? 'Sessions' : 'Usage';
   let body;
   if (which === 'model') {
@@ -1139,4 +1301,5 @@ function rememberScroll() {
 document.getElementById('app').replaceChildren();
 subscribe();
 refreshState();
+refreshExtensions();
 redraw();

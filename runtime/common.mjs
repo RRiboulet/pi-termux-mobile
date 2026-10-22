@@ -139,7 +139,9 @@ export async function createModelCatalog(credentials) {
 }
 
 // Test hook only (PI_TEST_FAUX=1): a scripted model, no network. Echoes the
-// last user message; "!bash <cmd>" / "!sub <task>" request a tool call first.
+// last user message; "!bash <cmd>" / "!sub <task>" / "!tool <name> <json>"
+// request a tool call first. "!tool" is how the phone's own checks reach a
+// tool that is not built in — an extension the install gate installed, say.
 async function installTestFaux(models) {
   const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import('@earendil-works/pi-ai/providers/faux');
   const faux = fauxProvider();
@@ -151,9 +153,18 @@ async function installTestFaux(models) {
     const last = context.messages[context.messages.length - 1];
     if (last?.role === 'toolResult') return fauxAssistantMessage(`tool said: ${textOf(last).slice(0, 200)}`);
     const text = textOf([...context.messages].reverse().find((m) => m.role === 'user'));
-    const cmd = /^!(bash|sub) (.+)$/s.exec(text);
+    const cmd = /^!(bash|sub|tool) (.+)$/s.exec(text);
     if (cmd?.[1] === 'bash') return fauxAssistantMessage(fauxToolCall('bash', { command: cmd[2] }), { stopReason: 'toolUse' });
     if (cmd?.[1] === 'sub') return fauxAssistantMessage(fauxToolCall('subagent', { task: cmd[2] }), { stopReason: 'toolUse' });
+    if (cmd?.[1] === 'tool') {
+      const space = cmd[2].indexOf(' ');
+      const name = space < 0 ? cmd[2] : cmd[2].slice(0, space);
+      let args = {};
+      if (space >= 0) {
+        try { args = JSON.parse(cmd[2].slice(space + 1) || '{}'); } catch { args = {}; }
+      }
+      return fauxAssistantMessage(fauxToolCall(name, args), { stopReason: 'toolUse' });
+    }
     return fauxAssistantMessage(`echo: ${text}`);
   };
   faux.setResponses([respond]);
@@ -250,8 +261,15 @@ export async function openHarness({ dbPath, models, env, extensions = [] }, ctx)
   for (const ext of extensions) registry.install(ext);
   const storage = await openNodeSqliteStorage(dbPath);
   const harness = await Harness.open(storage, { models, registry, env, settings: HARNESS_SETTINGS }, ctx);
-  return harness;
+  // The registry comes back with the harness: pi-durable reads it when it
+  // resolves an agent, so an extension installed later is in the next turn's
+  // tool list. That is what makes the install gate a hot install.
+  return { harness, registry };
 }
+
+// --- the install gate --------------------------------------------------------------
+// The gate's own tool lives in gate.mjs, with the gate it belongs to: it is 25
+// lines and does nothing but ask the gate where a proposal stands.
 
 // documents are strict JSON: no undefined values
 const defined = (obj) => Object.fromEntries(Object.entries(obj ?? {}).filter(([, v]) => v !== undefined));

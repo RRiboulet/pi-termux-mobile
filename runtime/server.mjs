@@ -17,6 +17,7 @@ import {
   openHarness, pickModel, readJson, requestIdOf, sessionStore, Subagent, whenBusyOf,
   writeFileAtomic,
 } from './common.mjs';
+import { gateExtension, InstallGate } from './gate.mjs';
 import { nodeBinaryOrNode } from './node-bin.mjs';
 
 const ctx = BACKGROUND_CONTEXT;
@@ -136,7 +137,27 @@ function startOAuthLogin(providerId) {
 
 // --- harness + durable session registry ---------------------------------------------
 
-const harness = await openHarness({ dbPath: path.join(STATE_DIR, 'harness.sqlite'), models, env: envFor, extensions: [Subagent] }, ctx);
+const { harness, registry } = await openHarness({ dbPath: path.join(STATE_DIR, 'harness.sqlite'), models, env: envFor, extensions: [Subagent] }, ctx);
+
+// The install gate. The agent writes an extension into the workspace and
+// proposes it; the user is shown the file, its hash and its diff, and taps
+// Install. Only then does it run — inside this process, which is what the
+// plan means by "an agent-written extension is kernel code".
+const gate = new InstallGate({
+  dir: path.join(WORKDIR, 'extensions'),
+  stateFile: path.join(STATE_DIR, 'extensions.json'),
+  registry,
+  // A proposal, an install, a refusal: the client is told, so the sheet is
+  // never stale and the menu can say that something is waiting.
+  onChange: () => notifyExtensions(),
+});
+await mkdir(gate.dir, { recursive: true });
+registry.install(gateExtension(gate));
+// Whatever was installed before the bridge restarted goes back in. A file that
+// changed since it was approved does not: the user approved a hash.
+for (const restored of await gate.restore()) {
+  if (!restored.ok) console.error(`extension ${restored.key} was not restored: ${restored.error}`);
+}
 const sessions = sessionStore(harness, ctx);
 let active = null; // the conversation the chat page shows
 
@@ -181,6 +202,11 @@ const sseClients = new Set();
 
 function sseWrite(client, event) {
   try { client.res.write(`data: ${JSON.stringify(event)}\n\n`); } catch {}
+}
+
+/** Tell the clients that the proposals changed, so the sheet can update. */
+function notifyExtensions() {
+  for (const client of sseClients) sseWrite(client, { type: 'bridge_extensions' });
 }
 
 async function attachSse(client) {
@@ -333,6 +359,31 @@ async function handleApi(req, res, url, p) {
     if (!conversation) return json(res, 404, { error: 'session unavailable' });
     await activate(conversation);
     return json(res, 200, { ok: true, activeId: String(conversation.id) });
+  }
+
+  // --- the install gate
+  if (p === '/api/extensions' && req.method === 'GET') {
+    return json(res, 200, {
+      installed: gate.installed(),
+      proposals: gate.proposals(),
+      // The proposals that could not be installed, and why: the sheet must not
+      // say "installed" for something the kernel does not have.
+      problems: gate.problems(),
+    });
+  }
+  if (p === '/api/extensions/install' && req.method === 'POST') {
+    // The hash is the one the user was shown. A file that changed since is
+    // refused: the user approved a file, not a name.
+    const result = await gate.install(str(body.key), str(body.hash) || undefined);
+    return json(res, 200, { ok: true, ...result });
+  }
+  if (p === '/api/extensions/reject' && req.method === 'POST') {
+    const result = gate.reject(str(body.key), str(body.hash) || undefined);
+    return json(res, 200, { ok: true, ...result });
+  }
+  if (p === '/api/extensions/uninstall' && req.method === 'POST') {
+    const result = gate.uninstall(str(body.key));
+    return json(res, 200, { ok: true, ...result });
   }
 
   // --- active conversation
