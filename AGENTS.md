@@ -108,6 +108,7 @@ leaves it ~25 MB larger than its contents.
 ```bash
 npm test                          # every test/*.test.mjs
 node scripts/run-tests.mjs client # only the files whose name matches
+bash scripts/gate-smoke.sh        # the install gate, against a live bridge
 ```
 
 They run **on the phone**, which is the point: the file the agent edits on
@@ -143,11 +144,12 @@ node/bash subprocesses as phantom processes.
 The plan's own §3, in [`docs/plan-revision.md`](docs/plan-revision.md),
 lists six items. The first is to install the merged build and use the agent.
 The second is the **install gate** — an extension the agent writes is a
-proposal the user approves, not code that runs silently (in review). The
-third is the `seq` watermark and an explicit overflow → resnapshot in the
-server; the fourth is the task panel and the recovery sheet, which need
-routes the server does not have; the fifth is whether the Activity keeps its
-`configChanges`; the sixth is the extension ledger.
+proposal the user approves, not code that runs silently — which has landed
+(`runtime/gate.mjs`, and `docs/install-gate.md` for what it does and what it
+is not). The third is the `seq` watermark and an explicit overflow →
+resnapshot in the server; the fourth is the task panel and the recovery
+sheet, which need routes the server does not have; the fifth is whether the
+Activity keeps its `configChanges`; the sixth is the extension ledger.
 
 What is *not* worth doing any more is in the same document: the proot
 packaging, the 16 KB alignment assertion, the `DT_NEEDED` rename, the
@@ -162,9 +164,10 @@ is work for a runtime this app does not use.
   state), `RuntimeInstaller` (extraction, versions, fingerprints).
 - `runtime/` — `server.mjs` (the bridge), `common.mjs` (harness setup, the
   credential store, the session registry, the single-owner lock),
-  `public/` (the client).
+  `gate.mjs` (the install gate), `public/` (the client).
 - `scripts/` — `package-rootfs.ts`, `prepare-runtime.py`, `run-tests.mjs`,
-  `gh` (a small GitHub CLI for the phone), and the device scripts.
+  `gate-smoke.sh`, `gh` (a small GitHub CLI for the phone), and the device
+  scripts.
 - `docs/` — the plan, its revision, the device verification, the reviews.
 - `test/` — the host-side checks, and the ones that run on the phone too.
 
