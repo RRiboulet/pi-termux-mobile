@@ -1298,7 +1298,7 @@ function usageShort(usage) {
 
 function modelShort(model) {
   if (!model) return '–';
-  const s = typeof model === 'string' ? model : (model.id ?? model.model ?? '');
+  const s = typeof model === "string" ? model : (model.modelId ?? model.id ?? model.model ?? "");
   return String(s).split('/').pop().slice(0, 12) || '–';
 }
 
