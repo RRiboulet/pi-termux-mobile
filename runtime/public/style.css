@@ -156,6 +156,11 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 }
 .msg.assistant .body p { margin: 0 0 .6em; }
 .msg.assistant .body p:last-child { margin-bottom: 0; }
+/* A turn is a sequence: the text, the call it makes, the text after it. The gap
+   belongs to whichever block follows, so a call written between two sentences
+   reads as a step in an argument rather than a chip stuck to the prose. */
+.msg.assistant > .body + .thoughts.tool,
+.msg.assistant > .thoughts.tool + .body { margin-top: 8px; }
 .msg.assistant .body code {
   font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   background: var(--raised); border: 1px solid var(--line-soft);

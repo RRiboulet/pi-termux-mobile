@@ -347,21 +347,32 @@ function pushEntry(entry) {
         state.pending.splice(i, 1);
       } else if (body) state.entries.push({ kind: 'user', text: body });
     } else if (m.role === 'assistant') {
-      const body = textOf(m);
       const thoughts = thinkingOf(m);
-      const calls = [];
+      // The blocks in the order the message wrote them: a sentence, the call it
+      // makes, the sentence after it. Collecting the calls into a list of their
+      // own and rendering that list above the text put a running tool above the
+      // line that introduced it, and made anything said after a call read
+      // backwards. The order the model wrote is the only order that is not a
+      // guess.
+      const blocks = [];
       for (const c of Array.isArray(m.content) ? m.content : []) {
-        if (c?.type !== 'toolCall') continue;
-        // `false`: a tool call recorded in history is not a live one.
-        startTool(c.id, c.name, c.arguments, false);
-        if (c.id !== undefined && !state.attachedTools.has(c.id)) {
+        if (c?.type === 'toolCall') {
+          // `false`: a tool call recorded in history is not a live one.
+          startTool(c.id, c.name, c.arguments, false);
+          if (c.id === undefined || state.attachedTools.has(c.id)) continue;
           state.attachedTools.add(c.id);
-          calls.push(c.id);
+          blocks.push({ type: 'tool', id: c.id });
+        } else if (c?.type === 'text' && typeof c.text === 'string' && c.text) {
+          const last = blocks[blocks.length - 1];
+          // Adjacent text blocks are one run of prose, not two: rendering them
+          // apart would put a margin between two halves of one sentence.
+          if (last?.type === 'text') last.text += `\n${c.text}`;
+          else blocks.push({ type: 'text', text: c.text });
         }
       }
       // A turn that only called a tool still deserves a row in the transcript.
-      if (body || thoughts || calls.length) {
-        state.entries.push({ kind: 'assistant', text: body, thinking: thoughts, tools: calls });
+      if (blocks.length || thoughts) {
+        state.entries.push({ kind: 'assistant', blocks, thinking: thoughts });
       }
       if (m.stopReason === 'aborted') sys('(interrupted)');
       if (m.stopReason === 'error' && m.errorMessage) sys(`error: ${m.errorMessage}`, 'bad');
@@ -859,11 +870,13 @@ function Message({ m }) {
   }
   return html`<div class="msg assistant">
     ${m.thinking ? html`<${Thoughts} text=${m.thinking} />` : null}
-    ${(m.tools ?? []).map((id) => {
-      const t = state.tools.get(id);
-      return t ? html`<${Tool} key=${`tool-${id}`} t=${t} />` : null;
+    ${(m.blocks ?? []).map((b, i) => {
+      if (b.type === 'tool') {
+        const t = state.tools.get(b.id);
+        return t ? html`<${Tool} key=${`b${i}-${b.id}`} t=${t} />` : null;
+      }
+      return html`<div class="body md" key=${`b${i}`}>${markdown(b.text)}</div>`;
     })}
-    ${m.text ? html`<div class="body md">${markdown(m.text)}</div>` : null}
   </div>`;
 }
 

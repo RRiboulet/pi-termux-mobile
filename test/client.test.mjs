@@ -405,6 +405,40 @@ test('a tool call sits under the turn that called it', async () => {
   assert.match(withTool.textContent, /let me look/, 'the tool chip is not under the turn that called it');
 });
 
+test('a turn keeps the order the message wrote its blocks in', async () => {
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
+  await app.settle();
+
+  // What the model actually sends: the sentence, the call it makes, then the
+  // sentence after it. This is not a contrived order -- one session on this
+  // phone had 33 messages shaped [thinking, text, toolCall]. Rendering every
+  // tool above the text put the running tool above the line that introduced
+  // it, and a turn that says something after the call read backwards.
+  app.send({
+    type: 'message_end',
+    entry: {
+      id: 21,
+      model: [{ role: 'assistant', content: [
+        { type: 'text', text: 'before the call' },
+        { type: 'toolCall', id: 'c21', name: 'bash', arguments: { command: 'ls' } },
+        { type: 'text', text: 'after the call' },
+      ] }],
+    },
+  });
+  await app.settle();
+  app.send({ type: 'tool_execution_start', toolCallId: 'c21', toolName: 'bash', args: { command: 'ls' } });
+  await app.settle();
+
+  const turn = app.document.querySelector('.msg.assistant');
+  assert.ok(turn, 'the assistant turn is not in the transcript');
+  const order = [...turn.children].map((el) => (el.matches('details.tool') ? 'tool'
+    : String(el.className).includes('body') ? 'text'
+    : el.tagName.toLowerCase()));
+  assert.deepEqual(order, ['text', 'tool', 'text'],
+    'the turn did not keep the order its blocks were written in');
+});
+
 test('the menu shows the thinking level and the provider count without opening their sheets', async () => {
   const app = await mount({
     state: { model: { provider: 'anthropic', modelId: 'claude' }, thinkingLevel: 'high', busy: false, sessionName: 'Main' },
