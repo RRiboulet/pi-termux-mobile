@@ -139,7 +139,9 @@ export async function createModelCatalog(credentials) {
 }
 
 // Test hook only (PI_TEST_FAUX=1): a scripted model, no network. Echoes the
-// last user message; "!bash <cmd>" / "!sub <task>" request a tool call first.
+// last user message; "!bash <cmd>" / "!sub <task>" / "!tool <name> <json>"
+// request a tool call first. "!tool" is how the phone's own checks reach a
+// tool that is not built in — an extension the install gate installed, say.
 async function installTestFaux(models) {
   const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import('@earendil-works/pi-ai/providers/faux');
   const faux = fauxProvider();
@@ -151,9 +153,18 @@ async function installTestFaux(models) {
     const last = context.messages[context.messages.length - 1];
     if (last?.role === 'toolResult') return fauxAssistantMessage(`tool said: ${textOf(last).slice(0, 200)}`);
     const text = textOf([...context.messages].reverse().find((m) => m.role === 'user'));
-    const cmd = /^!(bash|sub) (.+)$/s.exec(text);
+    const cmd = /^!(bash|sub|tool) (.+)$/s.exec(text);
     if (cmd?.[1] === 'bash') return fauxAssistantMessage(fauxToolCall('bash', { command: cmd[2] }), { stopReason: 'toolUse' });
     if (cmd?.[1] === 'sub') return fauxAssistantMessage(fauxToolCall('subagent', { task: cmd[2] }), { stopReason: 'toolUse' });
+    if (cmd?.[1] === 'tool') {
+      const space = cmd[2].indexOf(' ');
+      const name = space < 0 ? cmd[2] : cmd[2].slice(0, space);
+      let args = {};
+      if (space >= 0) {
+        try { args = JSON.parse(cmd[2].slice(space + 1) || '{}'); } catch { args = {}; }
+      }
+      return fauxAssistantMessage(fauxToolCall(name, args), { stopReason: 'toolUse' });
+    }
     return fauxAssistantMessage(`echo: ${text}`);
   };
   faux.setResponses([respond]);
@@ -250,7 +261,45 @@ export async function openHarness({ dbPath, models, env, extensions = [] }, ctx)
   for (const ext of extensions) registry.install(ext);
   const storage = await openNodeSqliteStorage(dbPath);
   const harness = await Harness.open(storage, { models, registry, env, settings: HARNESS_SETTINGS }, ctx);
-  return harness;
+  // The registry comes back with the harness: pi-durable reads it when it
+  // resolves an agent, so an extension installed later is in the next turn's
+  // tool list. That is what makes the install gate a hot install.
+  return { harness, registry };
+}
+
+// --- the install gate's own tool -----------------------------------------------------
+
+/**
+ * The tool the agent uses to propose an extension.
+ *
+ * The gate itself is server-owned: the agent can ask, and it is told where the
+ * proposal stands, but it cannot install anything. The user taps Install.
+ */
+export function gateExtension(gate) {
+  return defineExtension({
+    name: 'install-gate',
+    tools: [
+      defineTool({
+        name: 'extension_propose',
+        description: [
+          'Propose an extension file for the user to install.',
+          '',
+          `Write the extension to ${gate.dir}/ and call this tool with its file name.`,
+          'The user is shown the file, its sha256 and its diff, and has to approve it',
+          'before it runs. The extension is kernel code: it runs inside the bridge',
+          'process, with the bridge\'s permissions. It cannot be installed any other way.',
+        ].join('\n'),
+        parameters: Type.Object({
+          file: Type.String({ description: 'The file name, inside the extensions directory.' }),
+        }),
+        replay: 'safe', // it only records a proposal; a rerun records the same one
+        execute: async (args) => {
+          const said = gate.propose(String(args.file ?? ''));
+          return { content: [{ type: 'text', text: said.message }] };
+        },
+      }),
+    ],
+  });
 }
 
 // documents are strict JSON: no undefined values

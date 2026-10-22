@@ -17,7 +17,7 @@ import { parseHTML } from 'linkedom';
 const PUBLIC = new URL('../runtime/public/', import.meta.url);
 
 /** Mount the client in a fresh DOM and return the handles the test needs. */
-async function mount({ state = {}, models = [], providers = [], oauthProviders = [], usage = {} } = {}) {
+async function mount({ state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {} } = {}) {
   const { window } = parseHTML('<!doctype html><html><body><div id="app"></div></body></html>');
   const { document } = window;
 
@@ -49,6 +49,7 @@ async function mount({ state = {}, models = [], providers = [], oauthProviders =
       : u.includes('/api/oauth/status') ? { done: true, events: [], prompt: null }
       : u.includes('/api/oauth/start') ? { id: 'login-1' }
       : u.includes('/api/usage') ? usage
+      : u.includes('/api/extensions') ? extensions
       : {};
     return { ok: true, status: 200, json: async () => body };
   };
@@ -221,4 +222,74 @@ test('the menu shows the thinking level and the provider count without opening t
   await app.settle();
   assert.match(app.text(), /High/, 'the menu does not show the thinking level it was told about');
   assert.match(app.text(), /1 key/, 'the menu does not show the provider count');
+});
+
+test('the menu says when an extension is waiting for the user', async () => {
+  const app = await mount({
+    extensions: { installed: [], proposals: [{ key: 'demo.mjs', hash: 'a'.repeat(64), state: 'pending', bytes: 10, diff: '' }] },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.match(app.text(), /1 to review/, 'the menu does not say that a proposal is waiting');
+});
+
+test('the extensions sheet shows the file, the hash and the diff', async () => {
+  const app = await mount({
+    extensions: {
+      installed: [],
+      proposals: [{
+        key: 'demo.mjs', hash: 'a'.repeat(64), state: 'pending', bytes: 42,
+        diff: '@@ -1,0 +1,2 @@\n+export default {\n+  name: "demo"',
+      }],
+    },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const item = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Extensions'));
+  item.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const text = app.text();
+  assert.match(text, /demo\.mjs/, 'the proposal is not named');
+  assert.match(text, /aaaaaaaaaaaa/, 'the hash is not shown');
+  assert.match(text, /\+export default/, 'the diff is not shown');
+});
+
+test('installing sends the hash the user was shown', async () => {
+  const hash = 'b'.repeat(64);
+  const app = await mount({
+    extensions: { installed: [], proposals: [{ key: 'demo.mjs', hash, state: 'pending', bytes: 42, diff: '' }] },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const item = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Extensions'));
+  item.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const install = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Install');
+  assert.ok(install, 'there is no Install button');
+  install.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const call = app.fetches.find(([url]) => url.includes('/api/extensions/install'));
+  assert.ok(call, 'the install was not posted');
+  const body = JSON.parse(call[1].body);
+  assert.equal(body.key, 'demo.mjs');
+  // The hash the user saw is the hash that is sent: the server refuses a file
+  // that changed since.
+  assert.equal(body.hash, hash);
+});
+
+test('a proposal that arrives is fetched, not waited for', async () => {
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
+  await app.settle();
+  const before = app.fetches.filter(([url]) => url.includes('/api/extensions')).length;
+  app.send({ type: 'bridge_extensions' });
+  await app.settle();
+  const after = app.fetches.filter(([url]) => url.includes('/api/extensions')).length;
+  assert.ok(after > before, 'the client did not ask for the proposals again');
 });

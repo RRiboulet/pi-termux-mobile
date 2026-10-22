@@ -388,6 +388,45 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 .sheet .empty { padding: 22px 16px; color: var(--muted); font-size: 14px; text-align: center; }
 .grab { width: 34px; height: 4px; border-radius: 2px; background: var(--line); margin: 7px auto 0; }
 
+/* ── the install gate ─────────────────────────────────────────────────── */
+/* A proposal the user has to approve: the file, its hash, and the diff. */
+.proposal {
+  margin: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.proposal .row { border-bottom: 1px solid var(--line-soft); }
+.diff {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-soft);
+  border-top: 1px solid var(--line-soft);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+  overflow-x: auto;
+  max-height: 40vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.diff .add { color: var(--ok); }
+.diff .del { color: var(--bad); }
+.diff .hunk { color: var(--accent); }
+.diff .ctx { color: var(--muted); }
+.actions { display: flex; gap: 8px; padding: 10px; }
+.act {
+  flex: 1 1 auto;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 14px;
+}
+.act:active { background: var(--line-soft); }
+.act.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
 /* ── a key, typed in ─────────────────────────────────────────────────── */
 .keyin {
   width: 100%;

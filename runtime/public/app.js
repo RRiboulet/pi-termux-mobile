@@ -279,9 +279,10 @@ const state = {
   tools: new Map(),     // callId -> { name, brief, out, status, child, live }
   mode: 'followUp',     // 'followUp' | 'steer'
   sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
-                        //      | 'addkey' | 'oauth' | 'sessions' | 'usage'
+                        //      | 'addkey' | 'oauth' | 'sessions' | 'usage' | 'extensions'
   models: [],
   sessions: [],
+  extensions: { installed: [], proposals: [] },  // the install gate's state
   providers: [],        // the keys that are set
   catalog: [],          // every provider that takes an API key
   oauthProviders: [],
@@ -416,6 +417,12 @@ function handle(ev) {
   if (ev.type === 'bridge_error') {
     sys(`error: ${ev.error}`);
     redraw();
+    return;
+  }
+  if (ev.type === 'bridge_extensions') {
+    // The proposals changed: the agent proposed something, or the user
+    // installed or refused it.
+    refreshExtensions().then(() => redraw());
     return;
   }
   if (ev.type === 'bridge_connected') return;
@@ -601,6 +608,8 @@ async function openSheet(which) {
       // usage directly. They are different shapes, so they get different fields.
       const u = await get('/api/usage');
       set({ usageTotal: u.total ?? null, usageSession: u.session ?? null });
+    } else if (which === 'extensions') {
+      await refreshExtensions();
     }
   } catch (e) {
     set({ notice: String(e.message || e) });
@@ -705,6 +714,58 @@ async function chooseModel(m) {
 async function chooseSession(id) {
   try { await post('/api/sessions/select', { id }); await refreshState(); } catch { /* keep the old one */ }
   set({ sheet: null });
+  redraw();
+}
+
+// ── the install gate ─────────────────────────────────────────────────────
+// The agent writes an extension and proposes it. The file, its hash and its
+// diff are shown here, and nothing runs until the user taps Install. The
+// hash that is sent is the one that was shown: if the file changed in the
+// meantime, the server refuses it.
+
+async function refreshExtensions() {
+  try {
+    const r = await get('/api/extensions');
+    set({ extensions: { installed: r.installed ?? [], proposals: r.proposals ?? [] } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const pendingProposals = () => (state.extensions?.proposals ?? [])
+  .filter((p) => p.state === 'pending' || p.state === 'changed');
+
+async function installExtension(p) {
+  try {
+    await post('/api/extensions/install', { key: p.key, hash: p.hash });
+    set({ notice: `${p.key} installed` });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  await refreshExtensions();
+  redraw();
+}
+
+async function rejectExtension(p) {
+  try {
+    await post('/api/extensions/reject', { key: p.key, hash: p.hash });
+    set({ notice: `${p.key} refused` });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  await refreshExtensions();
+  redraw();
+}
+
+async function uninstallExtension(p) {
+  try {
+    await post('/api/extensions/uninstall', { key: p.key });
+    set({ notice: `${p.key} removed` });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  await refreshExtensions();
   redraw();
 }
 
@@ -860,12 +921,14 @@ function Scrim() {
 
 function MenuSheet() {
   const level = state.thinking?.level ?? 'off';
+  const pending = pendingProposals().length;
   const items = [
     { label: 'Model', hint: modelLabel(state.model), go: () => openSheet('model') },
     { label: 'Thinking', hint: level === 'off' ? 'off' : level[0].toUpperCase() + level.slice(1), go: () => openSheet('thinking') },
     { label: 'Provider', hint: state.providers?.length ? `${state.providers.length} key${state.providers.length > 1 ? 's' : ''}` : 'not set', go: () => openSheet('provider') },
     { label: 'Sessions', hint: state.sessionName, go: () => openSheet('sessions') },
     { label: 'Usage', hint: usageShort(state.usage), go: () => openSheet('usage') },
+    { label: 'Extensions', hint: pending ? `${pending} to review` : (state.extensions?.installed?.length ? `${state.extensions.installed.length} installed` : 'none'), go: () => openSheet('extensions') },
   ];
   return html`
     <div class="sheet">
@@ -1010,6 +1073,72 @@ function OauthSheet() {
     </div>`;
 }
 
+// The diff the user approves: what the file would become, line by line.
+function DiffBlock({ text }) {
+  const lines = String(text ?? '').split('\n');
+  if (!lines.length) return null;
+  return html`
+    <pre class="diff">${lines.map((l, i) => html`
+      <div key=${i} class=${l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : l.startsWith('@@') ? 'hunk' : 'ctx'}>${l || ' '}</div>`)}</pre>`;
+}
+
+function ExtensionsSheet() {
+  const installed = state.extensions?.installed ?? [];
+  const proposals = state.extensions?.proposals ?? [];
+  const pending = proposals.filter((p) => p.state === 'pending' || p.state === 'changed');
+  const settled = proposals.filter((p) => p.state !== 'pending' && p.state !== 'changed');
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <button class="icon" onClick=${() => openSheet('menu')} aria-label="Back">‹</button>
+        <h2>Extensions</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Waiting for you</span></div>
+        ${pending.length ? pending.map((p) => html`
+          <div class="proposal" key=${p.key}>
+            <div class="row">
+              <span class="grow">${p.key}</span>
+              <small>sha256 ${String(p.hash ?? '').slice(0, 12)}</small>
+            </div>
+            <div class="row">
+              <span class="grow" style="color:var(--muted);font-size:12.5px">
+                ${p.state === 'changed' ? 'changed since it was installed' : 'new extension'} · ${(p.bytes ?? 0).toLocaleString()} bytes
+              </span>
+            </div>
+            <${DiffBlock} text=${p.diff} />
+            <div class="actions">
+              <button class="act primary" onClick=${() => installExtension(p)}>Install</button>
+              <button class="act" onClick=${() => rejectExtension(p)}>Refuse</button>
+            </div>
+          </div>`) : html`<div class="empty">Nothing to review.</div>`}
+        ${settled.length ? html`
+          <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Settled</span></div>
+          ${settled.map((p) => html`
+            <div class="row" key=${'s-' + p.key}>
+              <span class="grow">${p.key}</span>
+              <small>${p.state === 'installed' ? 'installed' : p.state === 'rejected' ? 'refused' : p.state}</small>
+            </div>`)}` : null}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Installed</span></div>
+        ${installed.length ? installed.map((e) => html`
+          <div class="row" key=${'i-' + e.key}>
+            <span class="grow">${e.name ?? e.key}<br /><small>${e.key} · sha256 ${String(e.hash ?? '').slice(0, 12)}</small></span>
+            <button class="act" onClick=${() => uninstallExtension(e)}>Remove</button>
+          </div>`) : html`<div class="empty">No extensions installed.</div>`}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">What this is</span></div>
+        <div class="row" style="display:block;color:var(--muted);font-size:12.5px">
+          An extension the agent wrote runs inside the bridge process, with the
+          bridge's permissions. The file, its hash and this diff are what you
+          approve; the hash is what the bridge checks, so a file that changed
+          since is refused.
+        </div>
+      </div>
+    </div>`;
+}
+
 function Sheet() {
   const which = state.sheet;
   if (!which) return null;
@@ -1018,6 +1147,7 @@ function Sheet() {
   if (which === 'provider') return html`<${Scrim} /><${ProviderSheet} />`;
   if (which === 'addkey') return html`<${Scrim} /><${AddKeySheet} />`;
   if (which === 'oauth') return html`<${Scrim} /><${OauthSheet} />`;
+  if (which === 'extensions') return html`<${Scrim} /><${ExtensionsSheet} />`;
   const title = which === 'model' ? 'Model' : which === 'sessions' ? 'Sessions' : 'Usage';
   let body;
   if (which === 'model') {
@@ -1139,4 +1269,5 @@ function rememberScroll() {
 document.getElementById('app').replaceChildren();
 subscribe();
 refreshState();
+refreshExtensions();
 redraw();
