@@ -477,6 +477,44 @@ test('a call the harness has not started yet is queued, not running', async () =
   assert.deepEqual(metas(), ['2 chars', 'queued'], 'the finished call or the waiting one is wrong');
 });
 
+test('a snapshot keeps a call that has not started queued', async () => {
+  const app = await mount();
+  const frame = (tools) => ({
+    type: 'bridge_snapshot',
+    sessionName: 'Main',
+    snapshot: {
+      entries: [{ id: 40, kind: 'pi.assistant', model: [{ role: 'assistant', content: [
+        { type: 'toolCall', id: 'p1', name: 'read', arguments: { path: 'x' } },
+        { type: 'toolCall', id: 'p2', name: 'bash', arguments: { command: 'ls' } },
+      ] }] }],
+      tools,
+      run: { inputs: [] },
+    },
+  });
+
+  // A reload, a reconnect and a session switch all arrive as this frame, and
+  // its `tools` is the whole current round in call order -- not the running
+  // set. The per-slot status is the only thing that says which call has begun.
+  app.send(frame([
+    { callId: 'p1', name: 'read', status: 'pending' },
+    { callId: 'p2', name: 'bash', status: 'pending' },
+  ]));
+  await app.settle();
+
+  const metas = () => [...app.document.querySelectorAll('.msg.assistant details.tool .meta')].map((m) => m.textContent.trim());
+  const strip = () => app.document.querySelector('.strip').textContent.replace(/\s+/g, ' ').trim();
+  assert.deepEqual(metas(), ['queued', 'queued'], 'a snapshot promoted an unstarted call to running');
+  assert.doesNotMatch(strip(), /read|bash/, 'the strip named a tool that had not started');
+
+  app.send(frame([
+    { callId: 'p1', name: 'read', status: 'running' },
+    { callId: 'p2', name: 'bash', status: 'pending' },
+  ]));
+  await app.settle();
+  assert.deepEqual(metas(), ['running…', 'queued'], 'the snapshot did not use each slot\'s own status');
+  assert.match(strip(), /working · read/, 'the strip does not name the tool that is running');
+});
+
 test('the menu shows the thinking level and the provider count without opening their sheets', async () => {
   const app = await mount({
     state: { model: { provider: 'anthropic', modelId: 'claude' }, thinkingLevel: 'high', busy: false, sessionName: 'Main' },

@@ -289,12 +289,12 @@ const state = {
   usageSession: null,   // the session slice of /api/usage
   inbox: [],
   sessionName: 'Main',
-  entries: [],          // { id, kind: 'user'|'assistant'|'sys', text, thinking, tools, tone }
+  entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
   seen: new Set(),
   attachedTools: new Set(), // tool calls already placed in the transcript
   pending: [],          // optimistic user messages awaiting their entry
   live: null,           // the assistant message being streamed: { text, think[] }
-  tools: new Map(),     // callId -> { name, brief, out, status, child, live }
+  tools: new Map(),     // callId -> { name, brief, out, status: 'run'|'queued'|'done'|'err', child }
   sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
                         //      | 'addkey' | 'oauth' | 'sessions' | 'usage' | 'extensions'
   models: [],
@@ -427,7 +427,9 @@ function renderSnapshot(snapshot) {
 
   for (const t of snapshot?.tools ?? []) {
     if (!t?.callId || t.status === 'done') continue;
-    startTool(t.callId, t.name);
+    // The slot's own status is the only truth here: `pending` is a call the
+    // sequential round has not started, not one that is running.
+    startTool(t.callId, t.name, undefined, t.status === 'running');
     const slot = state.tools.get(t.callId);
     if (slot && t.output) slot.out = t.output;
     if (slot && t.details?.conversationId !== undefined) slot.child = t.details.conversationId;
