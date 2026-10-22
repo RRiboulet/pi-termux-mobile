@@ -1,0 +1,25 @@
+services:
+  devcontainer:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ..:/workspace:cached
+      # Explicit name: without it Compose derives the volume name from the
+      # project directory, so renaming or moving the repo would silently point
+      # pi at an empty volume and appear to lose every past session -- and the
+      # Android SDK with it, which is a 1.5 GB download.
+      #
+      # The name is the same one the sibling setup repository uses, on purpose:
+      # the two containers share the agent directory, the gh token and the
+      # Android SDK, so the toolchain is downloaded once and the app's working
+      # checkout is the same one the setup repository's agent works in.
+      - pi-config:/home/vscode/.pi
+    command: sleep infinity
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    user: vscode
+
+volumes:
+  pi-config:
+    name: pi-agent-config
