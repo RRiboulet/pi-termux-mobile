@@ -16,6 +16,7 @@ why the app looks the way it does.
 | [device-verification.md](device-verification.md) | What was actually run on a Galaxy S21 Ultra (Android 15): the runtime, the SQLite file, the loopback bridge, the service. |
 | [gh-tool.md](gh-tool.md) | `scripts/gh`, the small GitHub CLI the agents use: a pull request, a review, a comment, a diff — over the REST API, with a token that goes to one origin and nowhere else. |
 | [install-gate.md](install-gate.md) | The install gate: the agent proposes an extension, the user is shown the file, its hash and its diff, and taps Install. What it does, and what it is not. |
+| [reviews/pr12-client-test-isolation-review.md](reviews/pr12-client-test-isolation-review.md) | The review of the client paint fix: an adversarial and a design pass that agreed the fix was right and the test-harness half of it was not. |
 | [reviews/ui-review.md](reviews/ui-review.md) | The client review, in three passes, and the defects it found. |
 | [reviews/S0.1-review.md](reviews/S0.1-review.md) | The review of the *spike* — the proot route that was measured and then not taken. Kept as the audit trail for the decision. |
 
