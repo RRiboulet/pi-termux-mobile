@@ -46,6 +46,27 @@ runtime, the WebView is a passive view over a loopback bridge, and the client
 has **no build step** — so the file the agent edits on the phone is the file
 that runs.
 
+## The agent setup is a shared package
+
+The pi extensions and skills are **not vendored here**. They come from the
+shared package declared in [`.pi/settings.json`](.pi/settings.json):
+
+```json
+{
+  "packages": ["git:github.com/RRiboulet/my-agent-setup@v1.8.0"]
+}
+```
+
+The same way `RRiboulet/analytics-agent` does it. `pi` clones the package
+into `.pi/git/` (gitignored) and loads it for this project, so working on the
+app from a checkout gives the same tools — subagent, todos, the review
+triage, the skills — as working on the setup itself, and there is one home
+for that code rather than two. Because project packages need project trust,
+pi loads them only after the project is trusted.
+
+Bump the pin when a release of the shared setup comes out, the way
+`analytics-agent` did.
+
 ## The app
 
 One screen: the conversation, a status line and a composer. Everything else is
