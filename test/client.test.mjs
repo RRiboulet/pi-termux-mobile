@@ -16,8 +16,33 @@ import { parseHTML } from 'linkedom';
 
 const PUBLIC = new URL('../runtime/public/', import.meta.url);
 
+// The client schedules work of its own: the OAuth poll re-asks the bridge
+// 1200ms after a login starts. A timer that outlives the test that set it
+// fires during the *next* test and calls the next test's mock, which is not
+// what either test meant. So every timer is tracked, and the ones a finished
+// test left behind are dropped when the next test starts.
+//
+// node:test keeps its own timers (node:timers, not the global), so tracking
+// the global does not affect a test's timeout.
+const pendingTimers = new Set();
+const setTimeoutReal = globalThis.setTimeout;
+const clearTimeoutReal = globalThis.clearTimeout;
+globalThis.setTimeout = (fn, ms, ...rest) => {
+  const id = setTimeoutReal(fn, ms, ...rest);
+  pendingTimers.add(id);
+  return id;
+};
+globalThis.clearTimeout = (id) => {
+  pendingTimers.delete(id);
+  clearTimeoutReal(id);
+};
+
 /** Mount the client in a fresh DOM and return the handles the test needs. */
 async function mount({ state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {} } = {}) {
+  // Drop what the previous test left running, before this test's client exists.
+  for (const id of pendingTimers) clearTimeoutReal(id);
+  pendingTimers.clear();
+
   const { window } = parseHTML('<!doctype html><html><body><div id="app"></div></body></html>');
   const { document } = window;
 
@@ -359,4 +384,30 @@ test('a proposal that arrives is fetched, not waited for', async () => {
   await app.settle();
   const after = app.fetches.filter(([url]) => url.includes('/api/extensions')).length;
   assert.ok(after > before, 'the client did not ask for the proposals again');
+});
+
+test('a client paints into the document it booted into, and into no other', async () => {
+  // The client reads the global `document` when it paints. While it did that,
+  // a client instance that outlived its page -- one with a pending OAuth
+  // poll, say -- painted into whatever document was global at the time. That
+  // is how one test's client ended up painting its sheet over the next
+  // test's, and the Extensions sheet, Install button and all, went missing
+  // for no reason anyone could see.
+  const app = await mount();
+  const mine = app.document;
+  app.send({ type: 'bridge_snapshot', sessionName: 'Mine', snapshot: { entries: [], run: null } });
+  await app.settle();
+  assert.match(mine.getElementById('app').textContent, /Mine/, 'the first snapshot did not render');
+
+  // Another document becomes the global one.
+  const other = parseHTML('<!doctype html><html><body><div id="app"></div></body></html>').document;
+  globalThis.document = other;
+  try {
+    app.send({ type: 'bridge_snapshot', sessionName: 'Other', snapshot: { entries: [], run: null } });
+    await app.settle();
+    assert.match(mine.getElementById('app').textContent, /Other/, 'the client did not paint into its own document');
+    assert.equal(other.getElementById('app').textContent, '', 'the client painted into a document it did not boot into');
+  } finally {
+    globalThis.document = mine;
+  }
 });

@@ -14,6 +14,20 @@ import htm from './vendor/htm.js';
 // createElement that htm.bind wants.
 const html = htm.bind(h);
 
+// ── the document this client booted into ─────────────────────────────────
+// Captured once, at module scope, and used for every DOM lookup.
+//
+// The client is one document with one #app, so this changes nothing about
+// what the user sees. What it changes is *whose* DOM a client instance
+// paints into. The global `document` is read when the paint happens, so an
+// instance that outlived its page -- one with a pending OAuth poll, say --
+// would paint into whatever document happens to be global at that moment,
+// and take the view out from under whoever owns it.
+//
+// Binding the document at boot gives an instance its own tree: it paints
+// into the DOM it booted with, and into no other.
+const doc = document;
+
 // ── token ────────────────────────────────────────────────────────────────
 // The Activity loads /?token=...; keep it in localStorage and take it out of
 // the address bar, so it is not left in a screenshot or a history entry.
@@ -315,7 +329,7 @@ const redraw = () => {
   const paint = () => {
     redrawQueued = false;
     rememberScroll();
-    render(html`<${App} />`, document.getElementById('app'));
+    render(html`<${App} />`, doc.getElementById('app'));
     stickToBottom();
   };
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(paint);
@@ -1283,12 +1297,12 @@ function modelShort(model) {
 // threshold and the view stops following -- permanently.
 let wasAtBottom = true;
 function stickToBottom() {
-  const log = document.getElementById('log');
+  const log = doc.getElementById('log');
   if (!log) return;
   if (wasAtBottom) log.scrollTop = log.scrollHeight;
 }
 function rememberScroll() {
-  const log = document.getElementById('log');
+  const log = doc.getElementById('log');
   if (!log) return;
   wasAtBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
 }
@@ -1298,7 +1312,7 @@ function rememberScroll() {
 // its container rather than replacing it, so the placeholder would survive
 // every render as a stray line below the composer. Drop it once, before the
 // first render; subsequent redraws diff against the tree Preact owns.
-document.getElementById('app').replaceChildren();
+doc.getElementById('app').replaceChildren();
 subscribe();
 refreshState();
 refreshExtensions();
