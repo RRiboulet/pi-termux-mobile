@@ -17,6 +17,7 @@ import {
   openHarness, pickModel, readJson, requestIdOf, sessionStore, Subagent, whenBusyOf,
   writeFileAtomic,
 } from './common.mjs';
+import { nodeBinaryOrNode } from './node-bin.mjs';
 
 const ctx = BACKGROUND_CONTEXT;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +46,9 @@ function startPiUpdate() {
   const prefix = process.env.PREFIX || '';
   // Run npm via node to avoid Termux shebang incompatibility on Android.
   // Try: node <npm-cli.js>, fallback to direct npm binary.
-  const nodeBin = process.execPath;
+  // Not process.execPath: on Android that is the dynamic linker, and the
+  // linker cannot run npm-cli.js. See runtime/node-bin.mjs.
+  const nodeBin = nodeBinaryOrNode();
   const npmCli = prefix ? `${prefix}/lib/node_modules/npm/bin/npm-cli.js` : null;
   let spawnArgs;
   if (npmCli && existsSync(npmCli)) {

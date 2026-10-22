@@ -16,6 +16,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { nodeBinaryOrNode } from '../runtime/node-bin.mjs';
 
 const tool = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'scripts', 'gh.mjs');
 const { pushWithToken } = await import('../scripts/gh.mjs');
@@ -65,7 +66,7 @@ const execFileAsync = promisify(execFile);
  * synchronous child would block the event loop that has to answer it.
  */
 async function run(args, { env = {}, cwd = process.cwd() } = {}) {
-  const { stdout, stderr } = await execFileAsync(process.execPath, [tool, ...args], {
+  const { stdout, stderr } = await execFileAsync(nodeBinaryOrNode(), [tool, ...args], {
     encoding: 'utf8',
     cwd,
     env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
@@ -76,7 +77,7 @@ async function run(args, { env = {}, cwd = process.cwd() } = {}) {
 /** Run the tool, expecting it to fail, and return the error. */
 async function runFails(args, { env = {}, cwd = process.cwd() } = {}) {
   try {
-    await execFileAsync(process.execPath, [tool, ...args], {
+    await execFileAsync(nodeBinaryOrNode(), [tool, ...args], {
       encoding: 'utf8',
       cwd,
       env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
@@ -124,13 +125,21 @@ test('the token goes to the API and to nowhere else', async () => {
 });
 
 test('a request without a token carries no Authorization header', async () => {
-  await withApi({ 'GET /repos/RRiboulet/pi-termux-mobile/pulls/1': { body: { number: 1, title: 'x', head: { ref: 'a' }, base: { ref: 'b' } } } },
-    async ({ requests, base }) => {
-      await run(['pr', 'diff', '1'], { env: { GITHUB_API_URL: base } });
-      // "Bearer undefined" is a 401 from GitHub: a public repository needs no
-      // token, and the header must not be there at all.
-      assert.equal(requests[0].headers.authorization, undefined);
-    });
+  // The tool reads a token from ~/.config/gh/token as well as from the
+  // environment, so "no token" has to mean a HOME that has none: the phone
+  // this suite runs on has a real token in it.
+  const home = mkdtempSync(path.join(tmpdir(), 'gh-home-'));
+  try {
+    await withApi({ 'GET /repos/RRiboulet/pi-termux-mobile/pulls/1': { body: { number: 1, title: 'x', head: { ref: 'a' }, base: { ref: 'b' } } } },
+      async ({ requests, base }) => {
+        await run(['pr', 'diff', '1'], { env: { GITHUB_API_URL: base, HOME: home } });
+        // "Bearer undefined" is a 401 from GitHub: a public repository needs no
+        // token, and the header must not be there at all.
+        assert.equal(requests[0].headers.authorization, undefined);
+      });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('a token that is not a token is refused, and is not printed', async () => {
