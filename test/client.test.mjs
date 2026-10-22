@@ -17,12 +17,25 @@ import { parseHTML } from 'linkedom';
 const PUBLIC = new URL('../runtime/public/', import.meta.url);
 
 /** Mount the client in a fresh DOM and return the handles the test needs. */
-async function mount({ state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {} } = {}) {
+async function mount({
+  state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {},
+  // What /api/oauth/status answers, poll by poll. The last entry repeats, so a
+  // login that never finishes needs one. A function is called with the poll
+  // number, which is how a test makes the bridge fail.
+  oauthStatus = [{ done: true, events: [], prompt: null }],
+} = {}) {
   const { window } = parseHTML('<!doctype html><html><body><div id="app"></div></body></html>');
   const { document } = window;
 
   let source = null;
   const fetches = [];
+  let oauthPolls = 0;
+  const nextOauthStatus = () => {
+    const n = oauthPolls++;
+    return typeof oauthStatus === 'function'
+      ? oauthStatus(n)
+      : oauthStatus[Math.min(n, oauthStatus.length - 1)];
+  };
 
   globalThis.window = window;
   globalThis.document = document;
@@ -46,7 +59,7 @@ async function mount({ state = {}, models = [], providers = [], oauthProviders =
       : u.includes('/api/providers') ? { providers, catalog: [] }
       : u.includes('/api/oauth/providers') ? { providers: oauthProviders }
       // The client polls this until it says done; a mock that never does would poll forever.
-      : u.includes('/api/oauth/status') ? { done: true, events: [], prompt: null }
+      : u.includes('/api/oauth/status') ? nextOauthStatus()
       : u.includes('/api/oauth/start') ? { id: 'login-1' }
       : u.includes('/api/usage') ? usage
       : u.includes('/api/extensions') ? extensions
@@ -67,6 +80,66 @@ async function mount({ state = {}, models = [], providers = [], oauthProviders =
     text() { return document.getElementById('app').textContent.replace(/\s+/g, ' ').trim(); },
     html() { return document.getElementById('app').innerHTML; },
   };
+}
+
+/**
+ * The OAuth poll is a 1200ms timer, and the body of that timer is what this
+ * file could not reach: waiting it out would make the suite slower *and* hand
+ * it back the wall-clock race it was just cured of.
+ *
+ * So the timer is captured instead of waited for: `tick()` runs the callback
+ * the client scheduled, and nothing else. Every other delay -- the frame
+ * shim, `settle()`, the retry backoff -- is left to the platform.
+ *
+ * This is scoped to one test and undone by `restore()`. That is what makes it
+ * different from the harness-wide `setTimeout` patch this file used to carry:
+ * it drives the timer to reach code, rather than replacing the timer for every
+ * test and silently clearing what a test meant to keep.
+ */
+const OAUTH_POLL_MS = 1200;
+function pollClock() {
+  const scheduled = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    if (ms !== OAUTH_POLL_MS) return realSetTimeout(fn, ms, ...rest);
+    const timer = { fn, live: true };
+    scheduled.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (id) => {
+    // The client clears its previous poll before scheduling the next one.
+    if (id && typeof id === 'object' && 'live' in id) { id.live = false; return; }
+    realClearTimeout(id);
+  };
+  return {
+    /** How many poll callbacks are waiting to run. */
+    pending: () => scheduled.filter((t) => t.live).length,
+    /** Run whatever the client has scheduled, and wait for it to settle. */
+    async tick() {
+      const live = scheduled.filter((t) => t.live);
+      for (const t of live) { t.live = false; await t.fn(); }
+      return live.length;
+    },
+    restore() {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    },
+  };
+}
+
+/** Menu -> Provider -> the OAuth provider. This opens the OAuth sheet. */
+async function signIn(app) {
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const provider = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Provider'));
+  provider.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const oauth = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Claude Pro/Max'));
+  assert.ok(oauth, 'the OAuth provider is not offered');
+  oauth.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
 }
 
 test('the attach-time frame renders the conversation', async () => {
@@ -147,22 +220,118 @@ test('a failed tool call is shown, and marked failed', async () => {
   assert.match(app.text(), /failed/, 'the failure is not in the summary');
 });
 
+const oauthProvider = [{ id: 'anthropic', name: 'Anthropic', label: 'Claude Pro/Max' }];
+
+/** How many times the client asked the bridge about this login. */
+const statusPolls = (app) => app.fetches.filter(([url]) => url.includes('/api/oauth/status')).length;
+
 test('an OAuth device code is shown, not [object Object]', async () => {
-  const app = await mount({ oauthProviders: [{ id: 'anthropic', name: 'Anthropic', label: 'Claude Pro/Max' }] });
-  app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
-  await app.settle();
-  // Open the provider sheet, then the OAuth sheet.
-  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
-  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
-  await app.settle();
-  const provider = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Provider'));
-  provider.dispatchEvent(new window.Event('click', { bubbles: true }));
-  await app.settle();
-  const signIn = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Claude Pro/Max'));
-  assert.ok(signIn, 'the OAuth provider is not offered');
-  signIn.dispatchEvent(new window.Event('click', { bubbles: true }));
-  await app.settle();
-  assert.doesNotMatch(app.text(), /\[object Object\]/, 'an OAuth event was rendered as [object Object]');
+  const clock = pollClock();
+  try {
+    const app = await mount({
+      oauthProviders: oauthProvider,
+      // The shape the bridge sends for a device-code login. The old client
+      // rendered this event object as "[object Object]", which is the defect
+      // this test is named for -- so it needs an event to render, and used to
+      // be handed none.
+      oauthStatus: [{
+        done: false,
+        prompt: null,
+        events: [{ type: 'device_code', userCode: 'ABCD-1234', verificationUri: 'https://example.test/device' }],
+      }],
+    });
+    app.send({ type: 'bridge_snapshot', sessionName: 'Main', snapshot: { entries: [], run: null } });
+    await app.settle();
+    await signIn(app);
+    await clock.tick();
+    await app.settle();
+    assert.match(app.text(), /ABCD-1234/, 'the device code is not shown');
+    assert.match(app.text(), /example\.test\/device/, 'where to enter the code is not shown');
+    assert.doesNotMatch(app.text(), /\[object Object\]/, 'an OAuth event was rendered as [object Object]');
+  } finally {
+    clock.restore();
+  }
+});
+
+test('the oauth poll asks the bridge again, and merges the events it gets', async () => {
+  const clock = pollClock();
+  try {
+    const app = await mount({
+      oauthProviders: oauthProvider,
+      oauthStatus: [
+        { done: false, events: [{ type: 'text', text: 'waiting for you' }], prompt: null },
+        { done: true, events: [{ type: 'text', text: 'the provider said yes' }], prompt: null },
+      ],
+    });
+    await signIn(app);
+    assert.equal(clock.pending(), 1, 'starting a login did not schedule a poll');
+
+    // A login that is not finished keeps asking, and shows what came back.
+    assert.equal(await clock.tick(), 1);
+    await app.settle();
+    assert.match(app.text(), /waiting for you/, 'the first poll is not on the sheet');
+    assert.equal(clock.pending(), 1, 'a login that is not done stopped polling');
+
+    // The second answer finishes the login. The events accumulate: the sheet is
+    // the login's history, and the bridge sends only what is new since the last
+    // poll, so a merge that replaced would drop the device code mid-login.
+    assert.equal(await clock.tick(), 1);
+    await app.settle();
+    assert.match(app.text(), /waiting for you/, 'the merge dropped an earlier event');
+    assert.match(app.text(), /the provider said yes/, 'the last event is missing');
+    assert.equal(clock.pending(), 0, 'a finished login kept polling');
+
+    assert.equal(statusPolls(app), 2, `the bridge was asked ${statusPolls(app)} times`);
+    assert.match(app.fetches.filter(([url]) => url.includes('/api/oauth/status'))[0][0], /id=login-1/,
+      'the poll did not carry the login id');
+  } finally {
+    clock.restore();
+  }
+});
+
+test('the oauth poll stops once the sheet is closed', async () => {
+  const clock = pollClock();
+  try {
+    const app = await mount({
+      oauthProviders: oauthProvider,
+      oauthStatus: [{ done: false, events: [], prompt: null }],
+    });
+    await signIn(app);
+    assert.equal(clock.pending(), 1, 'starting a login did not schedule a poll');
+
+    // The user walks away. The server keeps the login alive for ten minutes, and
+    // there is no reason to keep asking about it once nobody is looking.
+    const close = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Close');
+    assert.ok(close, 'the OAuth sheet has no close button');
+    close.dispatchEvent(new window.Event('click', { bubbles: true }));
+    await app.settle();
+    const askedBefore = statusPolls(app);
+
+    await clock.tick();
+    await app.settle();
+    assert.equal(statusPolls(app), askedBefore, 'a closed sheet kept polling');
+    assert.equal(clock.pending(), 0, 'the poll scheduled another ask after the sheet closed');
+  } finally {
+    clock.restore();
+  }
+});
+
+test('an oauth poll that fails says so, and does not keep asking', async () => {
+  const clock = pollClock();
+  try {
+    const app = await mount({
+      oauthProviders: oauthProvider,
+      // The bridge went away between starting the login and the first poll.
+      oauthStatus: () => { throw new Error('the bridge is gone'); },
+    });
+    await signIn(app);
+    await clock.tick();
+    await app.settle();
+    assert.match(app.text(), /the bridge is gone/, 'the poll failed with nothing said about it');
+    assert.equal(clock.pending(), 0, 'a failed poll kept asking');
+  } finally {
+    clock.restore();
+  }
 });
 
 test('prose after a code fence is prose, not code', async () => {
