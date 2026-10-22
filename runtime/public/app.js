@@ -289,12 +289,12 @@ const state = {
   usageSession: null,   // the session slice of /api/usage
   inbox: [],
   sessionName: 'Main',
-  entries: [],          // { id, kind: 'user'|'assistant'|'sys', text, thinking, tools, tone }
+  entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
   seen: new Set(),
   attachedTools: new Set(), // tool calls already placed in the transcript
   pending: [],          // optimistic user messages awaiting their entry
   live: null,           // the assistant message being streamed: { text, think[] }
-  tools: new Map(),     // callId -> { name, brief, out, status, child, live }
+  tools: new Map(),     // callId -> { name, brief, out, status: 'run'|'queued'|'done'|'err', child }
   sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
                         //      | 'addkey' | 'oauth' | 'sessions' | 'usage' | 'extensions'
   models: [],
@@ -347,21 +347,32 @@ function pushEntry(entry) {
         state.pending.splice(i, 1);
       } else if (body) state.entries.push({ kind: 'user', text: body });
     } else if (m.role === 'assistant') {
-      const body = textOf(m);
       const thoughts = thinkingOf(m);
-      const calls = [];
+      // The blocks in the order the message wrote them: a sentence, the call it
+      // makes, the sentence after it. Collecting the calls into a list of their
+      // own and rendering that list above the text put a running tool above the
+      // line that introduced it, and made anything said after a call read
+      // backwards. The order the model wrote is the only order that is not a
+      // guess.
+      const blocks = [];
       for (const c of Array.isArray(m.content) ? m.content : []) {
-        if (c?.type !== 'toolCall') continue;
-        // `false`: a tool call recorded in history is not a live one.
-        startTool(c.id, c.name, c.arguments, false);
-        if (c.id !== undefined && !state.attachedTools.has(c.id)) {
+        if (c?.type === 'toolCall') {
+          // `false`: a tool call recorded in history is not a live one.
+          startTool(c.id, c.name, c.arguments, false);
+          if (c.id === undefined || state.attachedTools.has(c.id)) continue;
           state.attachedTools.add(c.id);
-          calls.push(c.id);
+          blocks.push({ type: 'tool', id: c.id });
+        } else if (c?.type === 'text' && typeof c.text === 'string' && c.text) {
+          const last = blocks[blocks.length - 1];
+          // Adjacent text blocks are one run of prose, not two: rendering them
+          // apart would put a margin between two halves of one sentence.
+          if (last?.type === 'text') last.text += `\n${c.text}`;
+          else blocks.push({ type: 'text', text: c.text });
         }
       }
       // A turn that only called a tool still deserves a row in the transcript.
-      if (body || thoughts || calls.length) {
-        state.entries.push({ kind: 'assistant', text: body, thinking: thoughts, tools: calls });
+      if (blocks.length || thoughts) {
+        state.entries.push({ kind: 'assistant', blocks, thinking: thoughts });
       }
       if (m.stopReason === 'aborted') sys('(interrupted)');
       if (m.stopReason === 'error' && m.errorMessage) sys(`error: ${m.errorMessage}`, 'bad');
@@ -384,14 +395,22 @@ function sys(text, tone) {
 
 function startTool(callId, name, args, live = true) {
   if (callId !== undefined && state.tools.has(callId)) {
-    // A tool first seen in committed history can still turn out to be running.
-    if (live) state.tools.get(callId).live = true;
+    // A tool first seen in committed history can still turn out to be running:
+    // the history records the call before the harness starts it. Only a queued
+    // call is promoted -- a finished one stays finished, however late it is
+    // mentioned.
+    const t = state.tools.get(callId);
+    if (live && t.status === 'queued') t.status = 'run';
     return;
   }
   const brief = args
     ? (args.command || args.path || args.pattern || args.task || JSON.stringify(args).slice(0, 80))
     : '';
-  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: 'run', live });
+  // A call recorded in history has been made, not necessarily started: the
+  // harness starts tools after the message is committed, and it may run them
+  // one at a time. Calling that "running…" claimed a tool was working while it
+  // was still waiting its turn.
+  state.tools.set(callId, { name: name || 'tool', brief: String(brief ?? ''), out: '', status: live ? 'run' : 'queued' });
 }
 
 function renderSnapshot(snapshot) {
@@ -408,7 +427,9 @@ function renderSnapshot(snapshot) {
 
   for (const t of snapshot?.tools ?? []) {
     if (!t?.callId || t.status === 'done') continue;
-    startTool(t.callId, t.name);
+    // The slot's own status is the only truth here: `pending` is a call the
+    // sequential round has not started, not one that is running.
+    startTool(t.callId, t.name, undefined, t.status === 'running');
     const slot = state.tools.get(t.callId);
     if (slot && t.output) slot.out = t.output;
     if (slot && t.details?.conversationId !== undefined) slot.child = t.details.conversationId;
@@ -816,11 +837,12 @@ function StatusStrip() {
 function Tool({ t }) {
   const running = t.status === 'run';
   const failed = t.status === 'err';
+  const queued = t.status === 'queued';
   const out = String(t.out ?? '');
   const brief = t.child !== undefined ? `subagent #${t.child}` : t.brief;
-  const meta = running ? 'running…' : failed ? 'failed' : out ? `${out.length.toLocaleString()} chars` : 'done';
+  const meta = running ? 'running…' : queued ? 'queued' : failed ? 'failed' : out ? `${out.length.toLocaleString()} chars` : 'done';
   return html`
-    <details class=${`thoughts tool${running ? ' live' : ''}${failed ? ' err' : ''}`}>
+    <details class=${`thoughts tool${running ? ' live' : ''}${queued ? ' queued' : ''}${failed ? ' err' : ''}`}>
       <summary>
         <span class="caret">▶</span>
         <span class="name">${t.name}</span>
@@ -830,7 +852,7 @@ function Tool({ t }) {
       <div class="think-body">
         ${out
           ? html`<pre>${out}</pre>`
-          : html`<div class="tool-empty">${running ? 'Running…' : 'No output'}</div>`}
+          : html`<div class="tool-empty">${running ? 'Running…' : queued ? 'Waiting to run…' : 'No output'}</div>`}
       </div>
     </details>`;
 }
@@ -859,11 +881,13 @@ function Message({ m }) {
   }
   return html`<div class="msg assistant">
     ${m.thinking ? html`<${Thoughts} text=${m.thinking} />` : null}
-    ${(m.tools ?? []).map((id) => {
-      const t = state.tools.get(id);
-      return t ? html`<${Tool} key=${`tool-${id}`} t=${t} />` : null;
+    ${(m.blocks ?? []).map((b, i) => {
+      if (b.type === 'tool') {
+        const t = state.tools.get(b.id);
+        return t ? html`<${Tool} key=${`b${i}-${b.id}`} t=${t} />` : null;
+      }
+      return html`<div class="body md" key=${`b${i}`}>${markdown(b.text)}</div>`;
     })}
-    ${m.text ? html`<div class="body md">${markdown(m.text)}</div>` : null}
   </div>`;
 }
 
