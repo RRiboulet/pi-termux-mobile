@@ -911,6 +911,17 @@ function Transcript() {
   return html`<div class="log" id="log">${items}</div>`;
 }
 
+function BottomBar() {
+  const level = state.thinking?.level ?? 'off';
+  const levelLabel = level === 'off' ? 'off' : (level[0].toUpperCase() + level.slice(1));
+  return html`
+    <div class="bottombar">
+      <button class="bottombar-item" onClick=${() => openSheet('model')} aria-label="Model">${modelShort(state.model)}</button>
+      <span class="bottombar-dot">·</span>
+      <button class="bottombar-item" onClick=${() => openSheet('thinking')} aria-label="Thinking level">${levelLabel}</button>
+    </div>`;
+}
+
 function Composer() {
   const busy = state.busy;
   return html`
@@ -1271,11 +1282,11 @@ function App() {
           <span class="who">${state.sessionName}</span>
         </div>
         <button class="icon" aria-label="Menu" onClick=${() => openSheet('menu')}>☰</button>
-        <button class="icon" aria-label="Model" onClick=${() => openSheet('model')}>${modelShort(state.model)}</button>
       </div>
       <${StatusStrip} />
     </div>
     <${Transcript} />
+    <${BottomBar} />
     <${Composer} />
     <${Sheet} />`;
 }
