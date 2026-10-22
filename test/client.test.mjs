@@ -360,3 +360,32 @@ test('a proposal that arrives is fetched, not waited for', async () => {
   const after = app.fetches.filter(([url]) => url.includes('/api/extensions')).length;
   assert.ok(after > before, 'the client did not ask for the proposals again');
 });
+
+test('a client paints into the document it booted into, and into no other', async () => {
+  // A browser gives a module one document for its whole life, so this cannot
+  // happen in production. The harness is where two documents exist at once:
+  // it re-imports the module per test and swaps the process-wide `document`,
+  // which modeled "the page is gone" as "document is now someone else's".
+  // While the client read the global at paint time, an instance that outlived
+  // its test -- one with a pending OAuth poll -- painted into the next test's
+  // DOM and took its Extensions sheet, Install button and all.
+  const app = await mount();
+  const mine = app.document;
+  app.send({ type: 'bridge_snapshot', sessionName: 'Mine', snapshot: { entries: [], run: null } });
+  await app.settle();
+  assert.match(mine.getElementById('app').textContent, /Mine/, 'the first snapshot did not render');
+
+  // Another document becomes the global one.
+  const other = parseHTML('<!doctype html><html><body><div id="app"></div></body></html>').document;
+  globalThis.document = other;
+  try {
+    app.send({ type: 'bridge_snapshot', sessionName: 'Other', snapshot: { entries: [], run: null } });
+    await app.settle();
+    assert.match(mine.getElementById('app').textContent, /Other/, 'the client did not paint into its own document');
+    assert.equal(other.getElementById('app').textContent, '', 'the client painted into a document it did not boot into');
+  } finally {
+    // Restore even when an assertion above throws, so the rest of the file
+    // does not run against a document belonging to a finished test.
+    globalThis.document = mine;
+  }
+});
