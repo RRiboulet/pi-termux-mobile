@@ -114,6 +114,11 @@ below.
 
 ## Left open, deliberately
 
+> **Closed by PR #16** (`test/oauth-poll-coverage`), which drives the poll's
+> timer instead of waiting it out and covers the guard, the merge, the error
+> path and the re-poll. The paragraph below is kept as the record of what the
+> review knew at the time.
+
 `pollOauth`'s callback body — the `!o || o.done || state.sheet !== 'oauth'`
 guard, the `events` accumulation, and the error path — has no deterministic
 test. It needs the real 1200 ms to reach, so covering it is a follow-up (an
