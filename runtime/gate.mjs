@@ -11,30 +11,49 @@
 //
 // So the gate is an accident guardrail, not a boundary. It makes the user
 // look at the code before it runs, and it makes the kernel's own behaviour
-// change an explicit, recorded act. It does not contain a malicious agent:
-// the same agent can read the token and call the bridge itself. The plan says
-// so, and this file says so, so that nobody mistakes the gate for a wall.
+// change an explicit, recorded act.
 //
-// What the gate does:
+// What it does NOT stop, and does not pretend to stop:
 //
-//   * finds the extensions the agent wrote in the workspace's extensions/ dir
-//   * hashes them, and diffs them against the version that was installed
-//   * installs one — but only the exact hash the user was shown
-//   * remembers the rejections, so the same code cannot be proposed in a loop
-//   * re-installs what was installed, so a bridge restart keeps the kernel's
-//     own extensions
+//   * The agent runs in this process, with this process's uid. It can write
+//     the ledger (it lives in the agent's own HOME), it can call the install
+//     route itself, and it can run `bash`. Nothing here contains a malicious
+//     agent, and the plan says so in §2.8: a real boundary is a separate
+//     spike (a second app package with its own uid).
+//   * The guardrail is for the ordinary case: the agent writes an extension
+//     through the sanctioned path, and the user gets to see it first.
+//
+// What the gate does buy, concretely:
+//
+//   * the user sees the whole file, its hash and its diff before it runs;
+//   * the hash is what is approved, and the bytes that are imported are the
+//     bytes that were hashed, so a file that changes in between is refused;
+//   * a proposal cannot take over the app's own extensions or tools;
+//   * a proposal the user refused stays refused, so the agent cannot propose
+//     the same file in a loop;
+//   * the kernel's extensions survive a bridge restart, and a file that
+//     changed while the bridge was down is *not* silently reinstalled.
 //
 // The hot install works because pi-durable reads the registry when it
 // resolves an agent, not when the harness opens: a newly installed extension
 // is in the next turn's tool list, with no restart and no lost session.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync,
-  symlinkSync, writeFileSync, renameSync,
+  existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync,
+  unlinkSync, writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { structuredPatch } from 'diff';
+
+/** The names the app's own extensions use. A proposal may not take them:
+ *  the registry replaces by name, so a proposal called `coding-tools` would
+ *  remove the kernel's own read/write/edit/bash. */
+export const RESERVED_EXTENSIONS = ['coding-tools', 'subagent', 'install-gate'];
+
+/** The gate's own tool. */
+export const GATE_TOOL = 'extension_propose';
 
 /** The file names a proposal may have. A `.js` file is CommonJS unless a
  *  package.json above it says otherwise, so `.mjs` is the one to write. */
@@ -43,16 +62,26 @@ export const PROPOSAL_SUFFIXES = ['.mjs', '.js'];
 /** A proposal bigger than this is not a proposal; it is a mistake. */
 export const MAX_PROPOSAL_BYTES = 256 * 1024;
 
+/** The keys an extension may have. Anything else is refused, by name: a file
+ *  that asks for a hook and does not get one is a file the user approved and
+ *  the kernel did not install. */
+const ACCEPTED_KEYS = new Set(['name', 'tools', 'sections']);
+
+/** Why a key is refused, where there is something better to say. */
+const REFUSED_KEYS = {
+  tasks: 'a task is scheduled by the kernel; v1 installs tools and sections only',
+  wraps: 'a wrap intercepts other tools; v1 installs tools and sections only',
+  hooks: 'a hook runs around every tool call; v1 installs tools and sections only',
+};
+
+/** The section key pi-durable reserves for the agent's instructions. A
+ *  proposal may not take it: the registry refuses it, and it is better to
+ *  say so before the file runs. */
+const RESERVED_SECTION_KEY = 'instructions';
+
 /** Extension names, tool names and section keys: lowercase, then letters,
  *  digits, dash and underscore. The same rule the registry uses for sections. */
 const NAME_RE = /^[a-z][a-z0-9_-]{0,63}$/;
-
-/** Lines of context around a change in a diff. */
-const CONTEXT = 3;
-
-/** The diff is a quadratic table; past this many lines on a side it is
- *  refused rather than quietly eating the phone's memory. */
-const MAX_DIFF_LINES = 1500;
 
 /** An error with a status code, so the server can answer with it. */
 export class GateError extends Error {
@@ -75,104 +104,21 @@ export function shortHash(hash) {
 /**
  * A unified diff between two texts, line by line.
  *
- * The longest common subsequence decides what is a change and what is
- * context; the output is the usual `@@ -a,b +c,d @@` hunks. An empty `before`
- * is a new file, so every line is an addition.
+ * The diff is `diff`'s — the package pi-durable already ships — so it is the
+ * one everybody else uses, down to the `@@ -a,b +c,d @@` headers and the
+ * marker for a last line with no newline.
  */
-export function diffLines(before, after) {
-  const left = splitLines(before);
-  const right = splitLines(after);
-  const a = left.lines;
-  const b = right.lines;
-  if (a.length > MAX_DIFF_LINES || b.length > MAX_DIFF_LINES) {
-    return `--- (too large to diff: ${a.length} and ${b.length} lines)\n`;
-  }
-  const m = a.length;
-  const n = b.length;
-  // dp[i][j] is the length of the LCS of a[i..] and b[j..].
-  const width = n + 1;
-  const dp = new Int32Array((m + 1) * width);
-  for (let i = m - 1; i >= 0; i--) {
-    for (let j = n - 1; j >= 0; j--) {
-      dp[i * width + j] = a[i] === b[j]
-        ? dp[(i + 1) * width + (j + 1)] + 1
-        : Math.max(dp[(i + 1) * width + j], dp[i * width + (j + 1)]);
-    }
-  }
-  const ops = [];
-  let i = 0;
-  let j = 0;
-  while (i < m && j < n) {
-    if (a[i] === b[j]) {
-      ops.push({ type: ' ', text: a[i], lastA: i === m - 1, lastB: j === n - 1 });
-      i++; j++; continue;
-    }
-    if (dp[(i + 1) * width + j] >= dp[i * width + (j + 1)]) {
-      ops.push({ type: '-', text: a[i], lastA: i === m - 1, lastB: false });
-      i++;
-    } else {
-      ops.push({ type: '+', text: b[j], lastA: false, lastB: j === n - 1 });
-      j++;
-    }
-  }
-  while (i < m) { ops.push({ type: '-', text: a[i], lastA: i === m - 1, lastB: false }); i++; }
-  while (j < n) { ops.push({ type: '+', text: b[j], lastA: false, lastB: j === n - 1 }); j++; }
-  if (!ops.some((op) => op.type !== ' ')) return '';
-
-  // Group the changes into hunks, each with CONTEXT lines around it.
-  const changed = ops.map((op) => op.type !== ' ');
-  const hunks = [];
-  let start = -1;
-  for (let k = 0; k < ops.length; k++) {
-    if (changed[k] && start < 0) start = k;
-    if ((!changed[k] || k === ops.length - 1) && start >= 0) {
-      const last = changed[k] ? k : k - 1;
-      hunks.push([Math.max(0, start - CONTEXT), Math.min(ops.length - 1, last + CONTEXT)]);
-      start = -1;
-    }
-  }
-  // The line numbers of each side, as the hunks walk the operations.
-  const lineOf = [0, 0]; // [a, b]
-  const beforeStart = [];
-  const afterStart = [];
-  for (const op of ops) {
-    beforeStart.push(lineOf[0]);
-    afterStart.push(lineOf[1]);
-    if (op.type !== '+') lineOf[0]++;
-    if (op.type !== '-') lineOf[1]++;
-  }
+export function diffLines(before, after, { context = 3 } = {}) {
+  const patch = structuredPatch(
+    'a', 'b', String(before ?? ''), String(after ?? ''), undefined, undefined, { context },
+  );
+  if (!patch.hunks.length) return '';
   const out = [];
-  for (const [from, to] of hunks) {
-    let aStart = beforeStart[from];
-    let bStart = afterStart[from];
-    let aCount = 0;
-    let bCount = 0;
-    for (let k = from; k <= to; k++) {
-      if (ops[k].type !== '+') aCount++;
-      if (ops[k].type !== '-') bCount++;
-    }
-    out.push(`@@ -${aStart + 1},${aCount} +${bStart + 1},${bCount} @@`);
-    for (let k = from; k <= to; k++) {
-      out.push(`${ops[k].type}${ops[k].text}`);
-      // A file whose last line has no newline says so, as diff does.
-      if (ops[k].lastA && !left.endsWithNewline) out.push('\\ No newline at end of file');
-      if (ops[k].lastB && !right.endsWithNewline) out.push('\\ No newline at end of file');
-    }
+  for (const hunk of patch.hunks) {
+    out.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+    out.push(...hunk.lines);
   }
   return out.join('\n');
-}
-
-/**
- * The lines of a text, and whether its last line is newline-terminated.
- *
- * A trailing newline terminates the last line; it does not add an empty one.
- */
-function splitLines(text) {
-  const t = String(text ?? '');
-  if (t === '') return { lines: [], endsWithNewline: true };
-  const lines = t.split('\n');
-  if (lines[lines.length - 1] === '') { lines.pop(); return { lines, endsWithNewline: true }; }
-  return { lines, endsWithNewline: false };
 }
 
 /**
@@ -181,37 +127,44 @@ function splitLines(text) {
  *
  * The rules are deliberately narrow, because the code is kernel code:
  *
- *   * a name, lowercase
+ *   * a name, lowercase, and not one of the app's own
  *   * tools: a name, a description, a JSON schema for the parameters, a
- *     function to run
+ *     function to run, and a name the kernel is not already using
  *   * sections: a key and a render function
  *
- * `tasks` and `wraps` are refused. A task is scheduled by the kernel and a
- * wrap intercepts other tools: both are a much larger surface than a tool,
- * and v1 does not need them.
+ * `tasks`, `wraps` and `hooks` are refused. A task is scheduled by the
+ * kernel, a wrap intercepts other tools and a hook runs around every tool
+ * call: all three are a much larger surface than a tool, and v1 does not
+ * need them.
  *
  * Every tool is installed with `replay: 'unsafe'`. That is pi-durable's own
- * default, and it is the right one here: a replayed tool runs again after a
- * crash, and nobody can show that agent-written code is safe to run twice.
+ * default, and it is the right one here: 'safe' means the tool may run AGAIN
+ * after a crash, and nobody can show that agent-written code is safe to run
+ * twice.
  */
-export function validateExtension(mod) {
+export function validateExtension(mod, { reservedExtensions = RESERVED_EXTENSIONS, reservedTools = new Set() } = {}) {
   const problems = [];
   const candidate = unwrap(mod);
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
     return { extension: null, problems: ['the file does not export an extension object'] };
   }
+  for (const key of Object.keys(candidate)) {
+    if (ACCEPTED_KEYS.has(key)) continue;
+    problems.push(REFUSED_KEYS[key] ?? `"${key}" is not something v1 installs`);
+  }
   const name = candidate.name;
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     problems.push('the extension needs a name: lowercase letters, then letters, digits, - or _');
+  } else if (reservedExtensions.includes(name)) {
+    problems.push(`"${name}" is the app's own extension; a proposal may not take its name`);
   }
-  if (candidate.tasks !== undefined) problems.push('tasks are not accepted in v1');
-  if (candidate.wraps !== undefined) problems.push('wraps are not accepted in v1');
 
   const tools = [];
   if (candidate.tools !== undefined) {
     if (!Array.isArray(candidate.tools)) {
       problems.push('tools must be an array');
     } else {
+      const names = new Set();
       candidate.tools.forEach((tool, index) => {
         if (!tool || typeof tool !== 'object') {
           problems.push(`tool ${index} is not an object`);
@@ -219,7 +172,14 @@ export function validateExtension(mod) {
         }
         if (typeof tool.name !== 'string' || !NAME_RE.test(tool.name)) {
           problems.push(`tool ${index} needs a name: lowercase letters, then letters, digits, - or _`);
+        } else if (reservedTools.has(tool.name)) {
+          problems.push(`the tool "${tool.name}" is already in the kernel; a proposal may not take it over`);
+        } else if (names.has(tool.name)) {
+          // pi-durable refuses this too, but it refuses it AFTER the file has
+          // run: the gate says it first.
+          problems.push(`the extension has two tools named "${tool.name}"`);
         }
+        names.add(tool.name);
         if (typeof tool.description !== 'string' || !tool.description.trim()) {
           problems.push(`tool ${tool.name ?? index} needs a description`);
         }
@@ -246,6 +206,8 @@ export function validateExtension(mod) {
         }
         if (typeof sec.key !== 'string' || !NAME_RE.test(sec.key)) {
           problems.push(`section ${index} needs a key: lowercase letters, then letters, digits, - or _`);
+        } else if (sec.key === RESERVED_SECTION_KEY) {
+          problems.push(`the section key "${RESERVED_SECTION_KEY}" is reserved by the kernel`);
         }
         if (typeof sec.render !== 'function') {
           problems.push(`section ${sec.key ?? index} needs a render function`);
@@ -299,10 +261,22 @@ export class InstallGate {
     if (this.#state) return this.#state;
     let parsed = null;
     try { parsed = JSON.parse(readFileSync(this.#stateFile, 'utf8')); } catch { parsed = null; }
+    if (parsed === null && existsSync(this.#stateFile)) {
+      // A ledger that does not parse is not a ledger: the installed
+      // extensions are forgotten, and the user has to be told rather than
+      // find out from a sheet that says "none installed".
+      console.error(`the extensions ledger at ${this.#stateFile} does not parse; it is ignored`);
+    }
+    if (parsed && parsed.version !== undefined && parsed.version !== 1) {
+      // A ledger from another version is not read as if it were this one.
+      console.error(`the extensions ledger is version ${parsed.version}; it is ignored`);
+      parsed = null;
+    }
     this.#state = {
       version: 1,
       installed: parsed?.installed && typeof parsed.installed === 'object' ? parsed.installed : {},
       rejected: parsed?.rejected && typeof parsed.rejected === 'object' ? parsed.rejected : {},
+      failed: parsed?.failed && typeof parsed.failed === 'object' ? parsed.failed : {},
       proposed: parsed?.proposed && typeof parsed.proposed === 'object' ? parsed.proposed : {},
     };
     return this.#state;
@@ -311,15 +285,28 @@ export class InstallGate {
   #save() {
     if (!this.#stateFile) return;
     mkdirSync(path.dirname(this.#stateFile), { recursive: true });
-    const tmp = `${this.#stateFile}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tmp, this.#stateFile);
+    // A name nobody can guess, and 'wx' so a file that is already there is an
+    // error rather than something the agent prepared.
+    const tmp = `${this.#stateFile}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      writeFileSync(tmp, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+      renameSync(tmp, this.#stateFile);
+    } catch (error) {
+      try { unlinkSync(tmp); } catch { /* it was never written */ }
+      throw error;
+    }
   }
 
-  /** The path a key names, refusing anything outside the proposals dir. */
+  /**
+   * The path a key names, refusing anything outside the proposals dir.
+   *
+   * The agent's working directory is the workspace, so it may well say
+   * "extensions/foo.mjs"; both spellings name the same file.
+   */
   resolve(key) {
-    const name = String(key ?? '');
+    let name = String(key ?? '');
     if (!name) throw new GateError(400, 'no file named');
+    if (name.startsWith('extensions/')) name = name.slice('extensions/'.length);
     const file = path.resolve(this.#dir, name);
     if (file !== this.#dir && !file.startsWith(this.#dir + path.sep)) {
       throw new GateError(400, 'the path is outside the extensions directory');
@@ -332,53 +319,68 @@ export class InstallGate {
     return path.relative(this.#dir, file).split(path.sep).join('/');
   }
 
-  /** The proposal files: everything in the dir that could be an extension. */
+  /**
+   * The proposal files: the ones the agent proposed.
+   *
+   * A file that is in the directory but was never proposed is not a proposal:
+   * a helper module next to an extension would otherwise show up as
+   * something to install, and fail.
+   */
   files() {
-    let entries = [];
-    try { entries = readdirSync(this.#dir, { withFileTypes: true }); } catch { return []; }
-    return entries
-      .filter((e) => e.isFile() && PROPOSAL_SUFFIXES.includes(path.extname(e.name)))
-      .map((e) => path.join(this.#dir, e.name))
-      .sort();
+    const out = [];
+    for (const key of Object.keys(this.state.proposed)) {
+      let file;
+      try { file = this.resolve(key); } catch { continue; }
+      if (!existsSync(file)) continue;
+      out.push(file);
+    }
+    return out.sort();
   }
 
-  /** What is in a file right now: its text, its hash, and its size. */
+  /**
+   * What is in a file right now: its text, its hash, and its size.
+   *
+   * A symlink is resolved first: a link in the proposals directory that
+   * points outside it is not a proposal.
+   */
   read(file) {
-    const stat = statSync(file);
+    const real = realpathSync(file);
+    if (real !== this.#dir && !real.startsWith(this.#dir + path.sep)) {
+      throw new GateError(400, 'the file resolves outside the extensions directory');
+    }
+    const stat = statSync(real);
     if (!stat.isFile()) throw new GateError(400, 'not a file');
     if (stat.size > MAX_PROPOSAL_BYTES) {
       throw new GateError(400, `the file is ${stat.size} bytes; a proposal may be at most ${MAX_PROPOSAL_BYTES}`);
     }
-    const text = readFileSync(file, 'utf8');
+    const text = readFileSync(real, 'utf8');
     return { text, hash: sha256(text), bytes: stat.size };
   }
 
   /**
-   * The state of one proposal: pending, installed, rejected, or changed
-   * since it was approved.
+   * The state of one proposal: pending, installed, rejected, changed since
+   * it was installed, or failed.
    */
   statusOf(file) {
     const key = this.keyOf(file);
-    const current = this.read(file);
-    return this.#status(key, current);
+    return this.#status(key, this.read(file));
   }
 
   /** The state of a proposal, from what was just read. */
   #status(key, current) {
+    const base = { key, hash: current.hash, bytes: current.bytes };
     const installed = this.state.installed[key];
-    if (installed && installed.hash === current.hash) {
-      return { key, hash: current.hash, bytes: current.bytes, state: 'installed', installed };
-    }
-    if (this.state.rejected[key] === current.hash) {
-      return { key, hash: current.hash, bytes: current.bytes, state: 'rejected' };
-    }
-    if (installed) return { key, hash: current.hash, bytes: current.bytes, state: 'changed', installed };
-    return { key, hash: current.hash, bytes: current.bytes, state: 'pending' };
+    if (installed && installed.hash === current.hash) return { ...base, state: 'installed', installed };
+    if (this.state.rejected[key] === current.hash) return { ...base, state: 'rejected' };
+    if (installed) return { ...base, state: 'changed', installed };
+    const failed = this.state.failed[key];
+    if (failed && failed.hash === current.hash) return { ...base, state: 'failed' };
+    return { ...base, state: 'pending' };
   }
 
   /**
-   * Every proposal, with the diff the user is shown: the proposed file
-   * against the version that was installed.
+   * Every proposal, with what the user is shown: the whole file, its hash,
+   * and the diff against the version that was installed.
    */
   proposals() {
     const out = [];
@@ -394,8 +396,10 @@ export class InstallGate {
         bytes: status.bytes,
         state: status.state,
         name: installed?.name ?? null,
-        proposedAt: this.state.proposed[key]?.at ?? null,
         diff: diffLines(installed?.content ?? '', current.text),
+        // The whole file, so that nothing is ever approved unseen.
+        content: current.text,
+        error: status.state === 'failed' ? (this.state.failed[key]?.error ?? null) : null,
       });
     }
     return out;
@@ -412,50 +416,102 @@ export class InstallGate {
   }
 
   /**
+   * The proposals that could not be installed, and why.
+   *
+   * A file that fails to load, or that the kernel no longer accepts, is
+   * here: the user has to be told, or the sheet says "installed" for
+   * something that is not.
+   */
+  problems() {
+    const out = Object.entries(this.state.failed).map(([key, rec]) => ({
+      key,
+      hash: rec.hash ?? null,
+      error: rec.error ?? 'unknown error',
+      at: rec.at ?? null,
+      gone: !existsSync(this.resolve(key)),
+    }));
+    // A proposal whose file is gone is a problem too.
+    for (const key of Object.keys(this.state.proposed)) {
+      if (this.state.failed[key]) continue;
+      let file;
+      try { file = this.resolve(key); } catch { continue; }
+      if (!existsSync(file)) out.push({ key, hash: null, error: 'the file is gone', at: null, gone: true });
+    }
+    return out;
+  }
+
+  /**
    * Record that the agent wants this file installed, and say where it
    * stands. This is what the agent's tool calls.
+   *
+   * Every path tells the client: the sheet has to learn that something is
+   * waiting, including the ordinary case of a file that changed after it
+   * was installed.
    */
   propose(key) {
     const file = this.resolve(key);
     if (!existsSync(file)) throw new GateError(404, `no such file: ${key}`);
+    if (!PROPOSAL_SUFFIXES.includes(path.extname(file))) {
+      throw new GateError(400, `a proposal is a ${PROPOSAL_SUFFIXES.join(' or ')} file`);
+    }
     const status = this.statusOf(file);
-    if (status.state === 'installed') {
-      return { ...status, message: `${status.key} is installed (${shortHash(status.hash)}).` };
-    }
-    if (status.state === 'rejected') {
-      return { ...status, message: `${status.key} was rejected by the user (${shortHash(status.hash)}). Change the file before proposing it again.` };
-    }
-    if (status.state === 'changed') {
-      return { ...status, message: `${status.key} changed since it was installed. The user has to approve the new version.` };
-    }
+    // The proposal is recorded, so the sheet knows this file is one. A file
+    // the agent wrote and never proposed is not on the sheet.
     this.state.proposed[status.key] = { hash: status.hash, at: this.#now() };
     this.#save();
     this.#onChange();
-    return {
-      ...status,
-      message: `${status.key} is proposed (sha256 ${shortHash(status.hash)}). The user has to approve it in the Extensions sheet before it runs.`,
-    };
+    switch (status.state) {
+      case 'installed':
+        return { ...status, message: `${status.key} is installed (${shortHash(status.hash)}).` };
+      case 'rejected':
+        return { ...status, message: `${status.key} was rejected by the user (${shortHash(status.hash)}). Change the file before proposing it again.` };
+      case 'changed':
+        return { ...status, message: `${status.key} changed since it was installed. The user has to approve the new version.` };
+      case 'failed':
+        return { ...status, message: `${status.key} does not install: ${this.state.failed[status.key]?.error ?? 'unknown error'}. Fix the file and propose it again.` };
+      default:
+        return {
+          ...status,
+          message: `${status.key} is proposed (sha256 ${shortHash(status.hash)}). The user has to approve it in the Extensions sheet before it runs.`,
+        };
+    }
   }
 
   /**
    * Install a proposal: import it, check it, and put it in the registry.
    *
    * `expectedHash` is the hash the user was shown, and it is required: the
-   * user approved a file, not a name. If the file changed since, the install
-   * is refused.
+   * user approved a file, not a name. The bytes that are imported are the
+   * bytes that were hashed, so a file that changes in the meantime cannot
+   * slip in under the approval.
    */
   async install(key, expectedHash) {
     if (!expectedHash) throw new GateError(400, 'the hash is required: approve the file you were shown');
     const file = this.resolve(key);
     if (!existsSync(file)) throw new GateError(404, `no such file: ${key}`);
+    if (!this.state.proposed[this.keyOf(file)]) {
+      throw new GateError(400, 'that file was not proposed; nothing to approve');
+    }
     const { text, hash } = this.read(file);
     if (expectedHash !== hash) {
       throw new GateError(409, 'the file changed since you approved it; look at it again');
     }
-    const mod = await this.#import(file, hash);
-    const { extension, problems } = validateExtension(mod);
+    let mod;
+    try {
+      mod = await this.#importApproved(file, text, hash);
+    } catch (error) {
+      const why = String(error?.message ?? error);
+      this.#fail(key, hash, `the file does not load: ${why}`);
+      throw new GateError(400, `the file does not load: ${why}`);
+    }
+    const candidate = unwrap(mod);
+    const { extension, problems } = validateExtension(mod, {
+      reservedTools: this.#toolsInUse(typeof candidate?.name === 'string' ? candidate.name : null),
+    });
     if (problems.length) {
-      throw new GateError(400, problems.join('; '));
+      const why = problems.join('; ');
+      this.#fail(key, hash, why);
+      throw new GateError(400, why);
     }
     if (!this.#registry) throw new GateError(500, 'the gate has no registry to install into');
     this.#registry.install(extension);
@@ -474,6 +530,7 @@ export class InstallGate {
       replaced: previous?.name ?? null,
     };
     delete this.state.rejected[key];
+    delete this.state.failed[key];
     this.#save();
     this.#onChange();
     return { key, name: extension.name, hash, tools: extension.tools.map((t) => t.name) };
@@ -488,6 +545,7 @@ export class InstallGate {
       throw new GateError(409, 'the file changed since you looked at it');
     }
     this.state.rejected[key] = current;
+    delete this.state.failed[key];
     this.#save();
     this.#onChange();
     return { key, hash: current };
@@ -509,72 +567,161 @@ export class InstallGate {
    * Install what was installed, after a restart.
    *
    * A file that changed since it was approved is *not* installed: the user
-   * approved a hash, and the file is not that hash any more. It shows up as a
-   * proposal again, which is the honest reading.
+   * approved a hash, and the file is not that hash any more. It shows up as
+   * a proposal again, which is the honest reading.
    */
   async restore() {
     const results = [];
     for (const [key, record] of Object.entries(this.state.installed)) {
-      const file = path.resolve(this.#dir, key);
+      let file;
+      try {
+        file = this.resolve(key);
+      } catch (error) {
+        this.#drop(key, record, String(error?.message ?? error));
+        results.push({ key, name: record.name, ok: false, error: String(error?.message ?? error) });
+        continue;
+      }
       if (!existsSync(file)) {
+        this.#drop(key, record, 'the file is gone');
         results.push({ key, name: record.name, ok: false, error: 'the file is gone' });
         continue;
       }
       let current;
-      try { current = this.read(file); } catch (error) {
-        results.push({ key, name: record.name, ok: false, error: String(error.message ?? error) });
+      try {
+        current = this.read(file);
+      } catch (error) {
+        const why = String(error?.message ?? error);
+        this.#drop(key, record, why);
+        results.push({ key, name: record.name, ok: false, error: why });
         continue;
       }
       if (current.hash !== record.hash) {
+        this.#drop(key, record, 'the file changed since it was approved');
         results.push({ key, name: record.name, ok: false, error: 'the file changed since it was approved' });
         continue;
       }
+      // The ledger keeps the content it approved. If the file and the ledger
+      // disagree, neither one is an approval of the other.
+      if (typeof record.content === 'string' && record.content !== current.text) {
+        this.#drop(key, record, 'the file no longer matches what was approved');
+        results.push({ key, name: record.name, ok: false, error: 'the file no longer matches what was approved' });
+        continue;
+      }
       try {
-        const mod = await this.#import(file, current.hash);
-        const { extension, problems } = validateExtension(mod);
+        const mod = await this.#importApproved(file, current.text, current.hash);
+        const { extension, problems } = validateExtension(mod, {
+          reservedTools: this.#toolsInUse(record.name),
+        });
         if (problems.length) throw new Error(problems.join('; '));
         this.#registry?.install(extension);
         results.push({ key, name: extension.name, ok: true });
       } catch (error) {
-        results.push({ key, name: record.name, ok: false, error: String(error?.message ?? error) });
+        const why = String(error?.message ?? error);
+        this.#drop(key, record, why);
+        results.push({ key, name: record.name, ok: false, error: why });
       }
     }
     return results;
   }
 
+  /** The tool names the kernel is already using. */
+  #toolsInUse(excludeName) {
+    const names = new Set();
+    const snapshot = this.#registry?.snapshot();
+    for (const { extension, tool } of snapshot?.tools() ?? []) {
+      // The extension being replaced does not count against itself.
+      if (excludeName && extension.name === excludeName) continue;
+      names.add(tool.name);
+    }
+    return names;
+  }
+
+  /** Remember that a proposal does not install, and why. */
+  #fail(key, hash, error) {
+    this.state.failed[key] = { hash, error, at: this.#now() };
+    this.#save();
+    this.#onChange();
+  }
+
   /**
-   * Import the file, with a query on the URL so a changed file is a new
-   * module and not the cached one.
+   * Take a record out of the ledger: it is not installed any more, and the
+   * reason is kept so the sheet can say what happened.
    */
-  async #import(file, hash) {
-    const url = `${pathToFileURL(file).href}?v=${hash}`;
-    return import(url);
+  #drop(key, record, error) {
+    delete this.state.installed[key];
+    this.state.failed[key] = { hash: record.hash ?? null, error, at: this.#now() };
+    this.#save();
+    this.#onChange();
+  }
+
+  /**
+   * Import the bytes that were approved.
+   *
+   * Not the path: the agent runs in this process and can rewrite the file
+   * between the hash check and the import. The approved text is written to a
+   * shadow file beside the original — so a relative import still resolves,
+   * and the bare imports still find the runtime's packages — and *that* is
+   * what is imported.
+   */
+  async #importApproved(file, text, hash) {
+    const shadow = path.join(
+      path.dirname(file),
+      `.installing-${hash.slice(0, 12)}-${randomBytes(4).toString('hex')}.mjs`,
+    );
+    writeFileSync(shadow, text, { mode: 0o600 });
+    try {
+      return await import(`${pathToFileURL(shadow).href}?v=${hash}`);
+    } finally {
+      try { unlinkSync(shadow); } catch { /* the module is already in memory */ }
+    }
   }
 }
 
 /**
- * Make the runtime's packages importable from a proposal.
+ * The tool the agent uses to propose an extension.
  *
- * A proposal that wants `defineTool` or a TypeBox schema has to import them,
- * and the proposals directory is not under the runtime's `node_modules`. A
- * symlink is the whole of the fix; if it cannot be made, an extension that
- * needs no imports still works.
+ * The gate itself is server-owned: the agent can ask, and it is told where
+ * the proposal stands, but it cannot install anything. The user taps
+ * Install.
  */
-export function linkRuntimeModules(dir, runtimeModules) {
-  const target = path.join(dir, 'node_modules');
-  try {
-    if (lstatSync(target, { throwIfNoEntry: false })) return true;
-  } catch { /* fall through to the mkdir */ }
-  try {
-    mkdirSync(dir, { recursive: true });
-    symlinkSync(runtimeModules, target, 'dir');
-    return true;
-  } catch {
-    return false;
-  }
+export function gateExtension(gate) {
+  return {
+    name: 'install-gate',
+    tools: [{
+      name: GATE_TOOL,
+      description: [
+        'Propose an extension file for the user to install.',
+        '',
+        `Write the extension to ${gate.dir}/ and call this tool with its file name.`,
+        'The user is shown the file, its sha256 and its diff, and has to approve it',
+        'before it runs. The extension is kernel code: it runs inside the bridge',
+        "process, with the bridge's permissions. It cannot be installed any other way.",
+      ].join('\n'),
+      parameters: {
+        type: 'object',
+        properties: { file: { type: 'string', description: 'The file name, inside the extensions directory.' } },
+        required: ['file'],
+        additionalProperties: false,
+      },
+      replay: 'safe', // it only records a proposal; a rerun records the same one
+      execute: async (args) => {
+        const said = gate.propose(String(args.file ?? ''));
+        return { content: [{ type: 'text', text: said.message }] };
+      },
+    }],
+  };
 }
 
-/** The runtime's own node_modules, next to this file. */
+/**
+ * The runtime's own node_modules, next to this file.
+ *
+ * The gate does NOT link it into the proposals directory: a link to the
+ * kernel's own packages inside a directory the agent can write to is a way
+ * into the kernel's packages, and the plan's boundary is a separate package
+ * with its own uid, not a symlink. An extension that needs nothing from the
+ * runtime needs nothing from the runtime: `defineTool` is an identity
+ * function, and a tool's parameters are a plain JSON schema.
+ */
 export function runtimeModulesDir() {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'node_modules');
 }

@@ -267,40 +267,9 @@ export async function openHarness({ dbPath, models, env, extensions = [] }, ctx)
   return { harness, registry };
 }
 
-// --- the install gate's own tool -----------------------------------------------------
-
-/**
- * The tool the agent uses to propose an extension.
- *
- * The gate itself is server-owned: the agent can ask, and it is told where the
- * proposal stands, but it cannot install anything. The user taps Install.
- */
-export function gateExtension(gate) {
-  return defineExtension({
-    name: 'install-gate',
-    tools: [
-      defineTool({
-        name: 'extension_propose',
-        description: [
-          'Propose an extension file for the user to install.',
-          '',
-          `Write the extension to ${gate.dir}/ and call this tool with its file name.`,
-          'The user is shown the file, its sha256 and its diff, and has to approve it',
-          'before it runs. The extension is kernel code: it runs inside the bridge',
-          'process, with the bridge\'s permissions. It cannot be installed any other way.',
-        ].join('\n'),
-        parameters: Type.Object({
-          file: Type.String({ description: 'The file name, inside the extensions directory.' }),
-        }),
-        replay: 'safe', // it only records a proposal; a rerun records the same one
-        execute: async (args) => {
-          const said = gate.propose(String(args.file ?? ''));
-          return { content: [{ type: 'text', text: said.message }] };
-        },
-      }),
-    ],
-  });
-}
+// --- the install gate --------------------------------------------------------------
+// The gate's own tool lives in gate.mjs, with the gate it belongs to: it is 25
+// lines and does nothing but ask the gate where a proposal stands.
 
 // documents are strict JSON: no undefined values
 const defined = (obj) => Object.fromEntries(Object.entries(obj ?? {}).filter(([, v]) => v !== undefined));

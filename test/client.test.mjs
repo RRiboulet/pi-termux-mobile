@@ -242,6 +242,7 @@ test('the extensions sheet shows the file, the hash and the diff', async () => {
       proposals: [{
         key: 'demo.mjs', hash: 'a'.repeat(64), state: 'pending', bytes: 42,
         diff: '@@ -1,0 +1,2 @@\n+export default {\n+  name: "demo"',
+        content: 'export default {\n  name: "demo"\n',
       }],
     },
   });
@@ -256,6 +257,72 @@ test('the extensions sheet shows the file, the hash and the diff', async () => {
   assert.match(text, /demo\.mjs/, 'the proposal is not named');
   assert.match(text, /aaaaaaaaaaaa/, 'the hash is not shown');
   assert.match(text, /\+export default/, 'the diff is not shown');
+});
+
+test('the whole file is there to read, not only the diff', async () => {
+  const app = await mount({
+    extensions: {
+      installed: [],
+      proposals: [{
+        key: 'demo.mjs', hash: 'a'.repeat(64), state: 'pending', bytes: 42,
+        diff: '@@ -1,0 +1,2 @@\n+export default {',
+        content: 'export default { name: "demo" }',
+      }],
+    },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const item = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Extensions'));
+  item.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  // Nothing is ever approved unseen: the whole file is in the sheet.
+  assert.match(app.text(), /export default \{ name: "demo" \}/);
+  assert.ok(app.document.querySelector('details.whole'), 'there is no way to see the whole file');
+});
+
+test('a proposal that does not install says so', async () => {
+  const app = await mount({
+    extensions: {
+      installed: [],
+      proposals: [{
+        key: 'broken.mjs', hash: 'a'.repeat(64), state: 'failed', bytes: 10,
+        diff: '', content: 'export default {}', error: 'the extension needs a name',
+      }],
+      problems: [{ key: 'gone.mjs', error: 'the file is gone' }],
+    },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const item = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Extensions'));
+  item.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const text = app.text();
+  assert.match(text, /the extension needs a name/, 'the failure is not on the card');
+  assert.match(text, /the file is gone/, 'a problem is not shown');
+});
+
+test('an installed extension is listed once', async () => {
+  const app = await mount({
+    extensions: {
+      installed: [{ key: 'demo.mjs', name: 'demo', hash: 'a'.repeat(64), installedAt: 1 }],
+      proposals: [{
+        key: 'demo.mjs', hash: 'a'.repeat(64), state: 'installed', bytes: 42, diff: '', content: '',
+      }],
+    },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const item = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Extensions'));
+  item.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const rows = [...app.document.querySelectorAll('.row')].filter((r) => (r.textContent ?? '').includes('demo.mjs'));
+  assert.equal(rows.length, 1, `the extension is listed ${rows.length} times`);
 });
 
 test('installing sends the hash the user was shown', async () => {

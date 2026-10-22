@@ -40,22 +40,35 @@ async function get(path) {
  * POST, with the retry: a phone loses the bridge for a moment all the time,
  * and the body carries a requestId, so a retried prompt is answered once and
  * only once.
+ *
+ * A 4xx is not retried: it is an answer, not a lost bridge. The install gate
+ * answers 409 when the file changed since the user saw it, and retrying that
+ * would run the proposal's code again for nothing.
  */
 async function post(path, body, { retries = 3 } = {}) {
   for (let attempt = 0; ; attempt++) {
+    let r;
     try {
-      const r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
-      const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
-      if (r.status === 503 && j.reconnecting && attempt < retries) {
-        await new Promise((res) => setTimeout(res, 1500));
-        continue;
-      }
-      if (!r.ok) throw new Error(j.error || `http ${r.status}`);
-      return j;
+      r = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body ?? {}) });
     } catch (e) {
+      // The bridge is gone. That is worth another try.
       if (attempt >= retries) throw e;
       await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+      continue;
     }
+    const j = await r.json().catch(() => ({ error: `http ${r.status}` }));
+    if (r.status === 503 && j.reconnecting && attempt < retries) {
+      await new Promise((res) => setTimeout(res, 1500));
+      continue;
+    }
+    if (!r.ok) {
+      if (r.status >= 500 && attempt < retries) {
+        await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+        continue;
+      }
+      throw new Error(j.error || `http ${r.status}`);
+    }
+    return j;
   }
 }
 
@@ -282,7 +295,7 @@ const state = {
                         //      | 'addkey' | 'oauth' | 'sessions' | 'usage' | 'extensions'
   models: [],
   sessions: [],
-  extensions: { installed: [], proposals: [] },  // the install gate's state
+  extensions: { installed: [], proposals: [], problems: [] },  // the install gate's state
   providers: [],        // the keys that are set
   catalog: [],          // every provider that takes an API key
   oauthProviders: [],
@@ -726,7 +739,7 @@ async function chooseSession(id) {
 async function refreshExtensions() {
   try {
     const r = await get('/api/extensions');
-    set({ extensions: { installed: r.installed ?? [], proposals: r.proposals ?? [] } });
+    set({ extensions: { installed: r.installed ?? [], proposals: r.proposals ?? [], problems: r.problems ?? [] } });
     return true;
   } catch {
     return false;
@@ -1085,8 +1098,16 @@ function DiffBlock({ text }) {
 function ExtensionsSheet() {
   const installed = state.extensions?.installed ?? [];
   const proposals = state.extensions?.proposals ?? [];
-  const pending = proposals.filter((p) => p.state === 'pending' || p.state === 'changed');
-  const settled = proposals.filter((p) => p.state !== 'pending' && p.state !== 'changed');
+  const problems = state.extensions?.problems ?? [];
+  const waiting = proposals.filter((p) => p.state === 'pending' || p.state === 'changed' || p.state === 'failed');
+  const refused = proposals.filter((p) => p.state === 'rejected');
+  const label = (p) => ({
+    pending: 'new extension',
+    changed: 'changed since it was installed',
+    failed: 'does not install',
+    installed: 'installed',
+    rejected: 'refused',
+  })[p.state] ?? p.state;
   return html`
     <div class="sheet">
       <div class="grab"></div>
@@ -1097,8 +1118,14 @@ function ExtensionsSheet() {
       </header>
       <div class="body">
         ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
+        ${problems.length ? html`
+          <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Problems</span></div>
+          ${problems.map((p) => html`
+            <div class="row" key=${'p-' + p.key}>
+              <span class="grow">${p.key}<br /><small style="color:var(--bad)">${p.error}</small></span>
+            </div>`)}` : null}
         <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Waiting for you</span></div>
-        ${pending.length ? pending.map((p) => html`
+        ${waiting.length ? waiting.map((p) => html`
           <div class="proposal" key=${p.key}>
             <div class="row">
               <span class="grow">${p.key}</span>
@@ -1106,21 +1133,26 @@ function ExtensionsSheet() {
             </div>
             <div class="row">
               <span class="grow" style="color:var(--muted);font-size:12.5px">
-                ${p.state === 'changed' ? 'changed since it was installed' : 'new extension'} · ${(p.bytes ?? 0).toLocaleString()} bytes
+                ${label(p)} · ${(p.bytes ?? 0).toLocaleString()} bytes
               </span>
             </div>
+            ${p.error ? html`<div class="row"><span class="grow" style="color:var(--bad);font-size:12.5px">${p.error}</span></div>` : null}
             <${DiffBlock} text=${p.diff} />
+            <details class="whole">
+              <summary>the whole file</summary>
+              <pre class="diff">${p.content ?? ''}</pre>
+            </details>
             <div class="actions">
               <button class="act primary" onClick=${() => installExtension(p)}>Install</button>
               <button class="act" onClick=${() => rejectExtension(p)}>Refuse</button>
             </div>
           </div>`) : html`<div class="empty">Nothing to review.</div>`}
-        ${settled.length ? html`
-          <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Settled</span></div>
-          ${settled.map((p) => html`
-            <div class="row" key=${'s-' + p.key}>
+        ${refused.length ? html`
+          <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Refused</span></div>
+          ${refused.map((p) => html`
+            <div class="row" key=${'r-' + p.key}>
               <span class="grow">${p.key}</span>
-              <small>${p.state === 'installed' ? 'installed' : p.state === 'rejected' ? 'refused' : p.state}</small>
+              <small>sha256 ${String(p.hash ?? '').slice(0, 12)}</small>
             </div>`)}` : null}
         <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Installed</span></div>
         ${installed.length ? installed.map((e) => html`

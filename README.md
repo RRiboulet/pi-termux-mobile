@@ -126,10 +126,12 @@ models. The file is read when the bridge starts.
 ## Extensions
 
 The agent can write code for the kernel. That code is a **proposal**: the
-file, its sha256 and its diff are shown in the menu's **Extensions** sheet,
-and nothing runs until you tap **Install**. The hash you were shown is the
-hash that is approved, so a file that changed in the meantime is refused
-rather than installed.
+agent writes the extension and calls `extension_propose`, and the whole file,
+its sha256 and its diff appear in the menu's **Extensions** sheet. Nothing
+runs until you tap **Install**. The hash you were shown is the hash that is
+approved, and the bytes that are imported are the bytes that were hashed, so
+a file that changed in the meantime is refused rather than installed. A
+proposal cannot take over the app's own extensions or tools.
 
 The install is hot: the tool is in the next turn's tool list, with no restart
 and no lost session, and the kernel's extensions come back after a bridge
@@ -138,7 +140,11 @@ restart — unless the file changed while it was down.
 An extension is **not sandboxed**. It runs inside the bridge process, with
 the bridge's permissions, and the agent can read the bridge's token. The gate
 is an accident guardrail — it makes you look at the code before it runs — and
-not a boundary. [docs/install-gate.md](docs/install-gate.md) has the details.
+not a boundary: the agent has `bash`, and it can already edit the bridge's
+own source. What the gate does is make the ordinary path — write an
+extension, propose it — need a tap.
+[docs/install-gate.md](docs/install-gate.md) has the details, including where
+this falls short of the plan's §5 R10.
 
 ## App screen
 
@@ -179,8 +185,7 @@ file back.
   `node-bin.mjs` (the node binary to spawn: on Android `process.execPath` is
   the dynamic linker, not node),
   `gate.mjs` (the install gate: the agent's proposals, the user's approval),
-  `public/` (the single-screen client), package.json for prod node_modules
-- `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
+  `public/` (the single-screen client), package.json for prod node_modules- `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
   index), `prepare-runtime.py` (packages `runtime.bin` + `payload.sha256`),
   `run-tests.mjs` (runs the test files, on the phone as well as on a host),
   `gh`/`gh.mjs` (the small GitHub CLI)
@@ -373,15 +378,20 @@ Added: `~/.pi/agent/models.json` is read by the bridge, so a model the
 bundled catalog does not know can be added without touching the app.
 
 Added: **the install gate.** An extension the agent writes is a proposal, not
-an install: the file, its sha256 and its diff are shown in the menu's
-**Extensions** sheet, and nothing runs until the user taps **Install**. The
-hash that is shown is the hash that is approved, so a file that changed in
-the meantime is refused rather than installed. The install is hot — the tool
-is in the next turn's tool list, with no restart and no lost session — and
-the kernel's extensions come back after a bridge restart, unless the file
-changed while it was down. See [docs/install-gate.md](docs/install-gate.md).
-This is an accident guardrail, not a boundary: an extension runs inside the
-bridge process, with the bridge's permissions.
+an install: the agent calls `extension_propose`, and the whole file, its
+sha256 and its diff appear in the menu's **Extensions** sheet. Nothing runs
+until the user taps **Install**. The hash that is shown is the hash that is
+approved, and the bytes that are imported are the bytes that were hashed, so
+a file that changed in the meantime is refused rather than installed. A
+proposal cannot take over the app's own extensions or tools. The install is
+hot — the tool is in the next turn's tool list, with no restart and no lost
+session — and the kernel's extensions come back after a bridge restart,
+unless the file changed while it was down. See
+[docs/install-gate.md](docs/install-gate.md). This is an accident guardrail,
+not a boundary: an extension runs inside the bridge process, with the
+bridge's permissions, and the agent can read the bridge's token — it can
+already edit the bridge's own source. What the gate does is make the
+ordinary path, write an extension and propose it, need a tap.
 
 Fixed: the node binary to spawn. `process.execPath` is the dynamic linker on
 Android — termux-exec re-execs every process through it, and `PiService` has

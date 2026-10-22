@@ -13,11 +13,11 @@ import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { watchEvents } from '@earendil-works/pi-durable';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import {
-  acquireOwnerLock, agentOf, createCredentialStore, createModelCatalog, ensureModel, gateExtension, isBusy,
+  acquireOwnerLock, agentOf, createCredentialStore, createModelCatalog, ensureModel, isBusy,
   openHarness, pickModel, readJson, requestIdOf, sessionStore, Subagent, whenBusyOf,
   writeFileAtomic,
 } from './common.mjs';
-import { InstallGate, linkRuntimeModules, runtimeModulesDir } from './gate.mjs';
+import { gateExtension, InstallGate } from './gate.mjs';
 import { nodeBinaryOrNode } from './node-bin.mjs';
 
 const ctx = BACKGROUND_CONTEXT;
@@ -152,10 +152,6 @@ const gate = new InstallGate({
   onChange: () => notifyExtensions(),
 });
 await mkdir(gate.dir, { recursive: true });
-// A proposal that wants to import pi-durable or a schema library has to be
-// able to find them; the proposals directory is not under the runtime's
-// node_modules, so it gets a link to it.
-linkRuntimeModules(gate.dir, runtimeModulesDir());
 registry.install(gateExtension(gate));
 // Whatever was installed before the bridge restarted goes back in. A file that
 // changed since it was approved does not: the user approved a hash.
@@ -367,23 +363,26 @@ async function handleApi(req, res, url, p) {
 
   // --- the install gate
   if (p === '/api/extensions' && req.method === 'GET') {
-    return json(res, 200, { installed: gate.installed(), proposals: gate.proposals() });
+    return json(res, 200, {
+      installed: gate.installed(),
+      proposals: gate.proposals(),
+      // The proposals that could not be installed, and why: the sheet must not
+      // say "installed" for something the kernel does not have.
+      problems: gate.problems(),
+    });
   }
   if (p === '/api/extensions/install' && req.method === 'POST') {
     // The hash is the one the user was shown. A file that changed since is
     // refused: the user approved a file, not a name.
     const result = await gate.install(str(body.key), str(body.hash) || undefined);
-    notifyExtensions();
     return json(res, 200, { ok: true, ...result });
   }
   if (p === '/api/extensions/reject' && req.method === 'POST') {
     const result = gate.reject(str(body.key), str(body.hash) || undefined);
-    notifyExtensions();
     return json(res, 200, { ok: true, ...result });
   }
   if (p === '/api/extensions/uninstall' && req.method === 'POST') {
     const result = gate.uninstall(str(body.key));
-    notifyExtensions();
     return json(res, 200, { ok: true, ...result });
   }
 
