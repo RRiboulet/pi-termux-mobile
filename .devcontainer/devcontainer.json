@@ -1,0 +1,23 @@
+{
+    "name": "pi-termux-mobile-devcontainer",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "devcontainer",
+    "workspaceFolder": "/workspace",
+    "postCreateCommand": "bash /workspace/.devcontainer/postCreate.sh && bash /workspace/.devcontainer/android-sdk.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "eamodio.gitlens",
+                "bierner.markdown-preview-github-styles"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "editor.formatOnSave": false,
+                "files.exclude": {
+                    "**/.git": true,
+                    "**/node_modules": true
+                }
+            }
+        }
+    }
+}

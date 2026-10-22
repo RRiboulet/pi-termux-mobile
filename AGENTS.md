@@ -80,9 +80,10 @@ JAVA_HOME=<path-to>/tools/jdk21 ./gradlew assembleDebug
 
 Four things that bite:
 
-- **JDK 21** for Gradle/AGP 8.7.3 (`tools/` is not committed; the devcontainer
-  image carries one). The system JDK 25 is not supported by that AGP; a
-  system JDK 17 does work.
+- **The JDK.** The app's sources are at Java 11 source level, and AGP 8.7.3
+  needs JDK 17 or newer; JDK 25 is not supported by that AGP. The
+  devcontainer has **17**, and the build succeeds with it — `tools/jdk21` is
+  the local toolchain, and 21 works too.
 - **`scripts/package-rootfs.ts` needs Linux** with `dpkg`, `dpkg-deb`, GNU
   `tar` and `gzip`, and a Node that runs `.ts` directly. It refuses to start
   without them rather than failing 200 MB in.
@@ -102,6 +103,31 @@ Four things that bite:
 `runtime.bin` and `payload.sha256` are rebuilt on every build. Delete
 `android/app/build` before measuring or shipping an APK: an incremental build
 leaves it ~25 MB larger than its contents.
+
+## The devcontainer
+
+`.devcontainer/` is the container this app is worked on in: JDK 17, the
+Android SDK, Node, python3, tmux, gh and pi. Open the repository in it and
+the build works.
+
+Two things about it are deliberate:
+
+- **The Android SDK is not in the image.** It is ~1.5 GB, and a rebuild must
+  not cost a re-download, so `android-sdk.sh` installs it onto the
+  `pi-agent-config` volume — the *same* volume the sibling setup repository's
+  container uses, so the SDK is downloaded once for both. The path is fixed,
+  so `android/local.properties` keeps working across rebuilds.
+- **The rootfs asset is not built in the container.** It is a few minutes of
+  downloads, and that does not belong in container creation, so
+  `postCreate.sh` reports its absence and the command instead.
+
+`postCreate.sh` writes the two paths Gradle needs that are gitignored, and
+therefore absent from a fresh clone: `android/local.properties` and the
+runtime's `node_modules`. Without the second one the build stops with a
+message about a missing package rather than about a missing `npm ci`.
+
+The extensions and skills are not in the image either: the shared setup is a
+pi package declared in `.pi/settings.json`, and pi clones it into `.pi/git/`.
 
 ## Tests
 

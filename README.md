@@ -185,13 +185,22 @@ file back.
   `node-bin.mjs` (the node binary to spawn: on Android `process.execPath` is
   the dynamic linker, not node),
   `gate.mjs` (the install gate: the agent's proposals, the user's approval),
-  `public/` (the single-screen client), package.json for prod node_modules- `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
+  `public/` (the single-screen client), package.json for prod node_modules
+- `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
   index), `prepare-runtime.py` (packages `runtime.bin` + `payload.sha256`),
   `run-tests.mjs` (runs the test files, on the phone as well as on a host),
-  `gh`/`gh.mjs` (the small GitHub CLI)
+  `gate-smoke.sh` (the install gate, against a live bridge),
+  `gh`/`gh.mjs` (a small GitHub CLI)
 - `tools/` — local toolchain (JDK 21, Android SDK, Gradle 8.10.2) — not committed
+- `.devcontainer/` — the container this app is worked on in: the JDK, the
+  Android SDK (installed onto the `pi-agent-config` volume, not baked into
+  the image), and the setup Gradle needs
 
 ## Build
+
+The container in [`.devcontainer/`](.devcontainer/) has the toolchain: JDK 17,
+the Android SDK, Node, python3, tmux and gh. Open this repository in it and
+the build below works as written.
 
 From a clean checkout:
 
@@ -199,7 +208,7 @@ From a clean checkout:
 node scripts/package-rootfs.ts            # assets/rootfs.bin  (once, or after changing the package list)
 cd runtime && npm ci --omit=dev --omit=optional --ignore-scripts && cd ..
 cd android
-JAVA_HOME=<path-to>/tools/jdk21 ./gradlew assembleDebug
+JAVA_HOME=<path-to>/tools/jdk21 ./gradlew assembleDebug   # or the container's JDK 17
 # APK: app/build/outputs/apk/debug/app-debug.apk (~96 MB, aarch64 only content)
 ```
 
