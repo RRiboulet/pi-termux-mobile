@@ -1286,8 +1286,8 @@ function App() {
       <${StatusStrip} />
     </div>
     <${Transcript} />
-    <${BottomBar} />
     <${Composer} />
+    <${BottomBar} />
     <${Sheet} />`;
 }
 
