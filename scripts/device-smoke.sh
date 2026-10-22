@@ -21,7 +21,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # eats the backslash and the expression fails outright.
 PKG="$(awk -F"'" '/^[[:space:]]*applicationId/ {print $2; exit}' "$ROOT/android/app/build.gradle")"
 APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-ADB="${ANDROID_HOME:-/opt/android-sdk}/platform-tools/adb"
+# An explicit $ADB wins, so a caller with its toolchain outside the checkout
+# (a devcontainer) keeps the smoke test on the same adb it just used.
+ADB="${ADB:-${ANDROID_HOME:-/opt/android-sdk}/platform-tools/adb}"
 [ -x "$ADB" ] || ADB="$(command -v adb || true)"
 
 SERIAL="${1:-}"

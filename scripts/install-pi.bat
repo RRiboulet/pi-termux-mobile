@@ -73,5 +73,9 @@ echo     adb shell run-as app.pidabl cat files/log/node.log
 echo     adb shell run-as app.pidabl cat files/home/.pi-mobile/port
 
 :done
+REM capture the install status BEFORE pause, which resets errorlevel, so a
+REM caller sees the failure instead of a silent 0.
+set "RC=%ERRORLEVEL%"
 echo.
 pause
+exit /b %RC%
