@@ -53,7 +53,7 @@ shared package declared in [`.pi/settings.json`](.pi/settings.json):
 
 ```json
 {
-  "packages": ["git:github.com/RRiboulet/my-agent-setup@v1.8.0"]
+  "packages": ["git:github.com/RRiboulet/my-agent-setup@v1.9.0"]
 }
 ```
 
