@@ -190,6 +190,8 @@ is work for a runtime this app does not use.
   state), `RuntimeInstaller` (extraction, versions, fingerprints).
 - `runtime/` — `server.mjs` (the bridge), `common.mjs` (harness setup, the
   credential store, the session registry, the single-owner lock),
+  `sse.mjs` (how much may be queued for an event-stream client, and when to
+  give up on it — no imports, so its test does not pay for the harness),
   `gate.mjs` (the install gate), `public/` (the client).
 - `scripts/` — `package-rootfs.ts`, `prepare-runtime.py`, `run-tests.mjs`,
   `gate-smoke.sh`, `gh` (a small GitHub CLI for the phone), and the device

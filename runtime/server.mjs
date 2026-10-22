@@ -17,6 +17,7 @@ import {
   openHarness, pickModel, readJson, requestIdOf, sessionStore, Subagent, whenBusyOf,
   writeFileAtomic,
 } from './common.mjs';
+import { applySseBudget, writeSseChunk } from './sse.mjs';
 import { gateExtension, InstallGate } from './gate.mjs';
 import { nodeBinaryOrNode } from './node-bin.mjs';
 
@@ -33,6 +34,40 @@ const LEGACY_SESSIONS_FILE = path.join(STATE_DIR, 'sessions.json');
 const DEVICE_ID_FILE = path.join(STATE_DIR, 'device-id');
 const PUBLIC = path.join(ROOT, 'public');
 const MAX_BODY = 1024 * 1024;
+// A client that has stopped reading, and how long it may stay stopped. A
+// suspended WebView keeps its socket open and stops draining it, so without a
+// bound the bridge buffers the conversation in this process -- on a phone.
+//
+// The bound is `budget + whatever the kernel socket buffer holds` (a few MB on
+// Linux), because bytes the kernel accepted are not queued here yet and nothing
+// in this process can see them. The stall window is what decides: a phone on a
+// bad link still drains, so it is not dropped.
+//
+// The window is sampled, not watched: a write samples it, and the heartbeat
+// samples it when nothing is being written, so a client that goes quiet is
+// noticed within one heartbeat after the window has passed.
+//
+// The two knobs are a **test seam**, not a device setting: the Android host
+// builds this process's environment itself (PiService) and does not pass these,
+// so on the phone the defaults are the policy.
+//
+// Parsed rather than `Number(env) || fallback`, which turns "0" into the
+// default and accepts "-5": a typo must not silently disable the bound, and a
+// window of 0 has no room to see progress -- a client can then never finish
+// receiving a snapshot larger than the budget, and reconnects into the same
+// one. Hence `min` of 1 for both.
+const envNumber = (name, fallback, min = 1) => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (Number.isFinite(value) && value >= min) return value;
+  // Silently falling back is how a typo looks configured and does nothing.
+  console.error(`sse: ${name}=${JSON.stringify(raw)} is not a number >= ${min}; using ${fallback}`);
+  return fallback;
+};
+const SSE_HEARTBEAT_MS = 20_000;
+const SSE_MAX_BUFFERED_BYTES = envNumber('PI_SSE_MAX_BUFFERED', 1024 * 1024);
+const SSE_STALL_MS = envNumber('PI_SSE_STALL_MS', SSE_HEARTBEAT_MS);
 const PI_PKG = '@earendil-works/pi-durable';
 // The packages this runtime actually runs. The pi CLI, the pi-server host and
 // the pi-client tunnel are gone from the app, so they are no longer updated.
@@ -197,11 +232,58 @@ async function giveActiveSessionAModel() {
 // --- SSE: one watchEvents stream per client -------------------------------------------
 // A stream's snapshot is the state at attach time; giving every (re)connecting
 // client its own stream delivers the current state plus deltas (late join).
+//
+// The kernel already bounds its own delivery -- watchEvents replaces undelivered
+// batches with one snapshot on overflow -- so nothing here needs a watermark to
+// stay *correct*. What the kernel cannot see is the socket: `res.write` queues
+// into this process when the client stops reading, and that queue is unbounded
+// unless it is bounded here. So a stalled client is dropped instead, and the
+// reconnect it makes is what repairs it: a fresh stream, a fresh snapshot, and
+// no gap for anyone to reason about.
 
 const sseClients = new Set();
 
+/**
+ * Take one look at a client's queue, and drop it if it has stopped draining.
+ * Called after every write and on every heartbeat: a client can stop reading at
+ * any moment, and nothing else would notice.
+ */
+function sampleSseBudget(client) {
+  if (client.closed) return;
+  applySseBudget(client, {
+    now: Date.now(), maxBufferedBytes: SSE_MAX_BUFFERED_BYTES, stallMs: SSE_STALL_MS,
+    // Dropping stops a kernel stream, so it is async; a floating promise here
+    // would be an unhandled rejection waiting to happen.
+    drop: (c, bufferedBytes) => void dropSseClient(c, bufferedBytes),
+  });
+}
+
+/**
+ * Drop a client that is not reading.
+ *
+ * `destroy` rather than `end`: the point of dropping it is to free the queue,
+ * and `end` keeps every queued byte in memory until the peer resumes and reads
+ * it -- which for a suspended WebView may be minutes, or never. There is
+ * nothing to lose on the way out: the client gets a snapshot when it comes
+ * back.
+ */
+async function dropSseClient(client, bufferedBytes) {
+  if (client.closed) return;
+  client.closed = true;
+  sseClients.delete(client);
+  const stream = client.stream;
+  client.stream = null;
+  // Free the queue before anything else: releasing those bytes is the whole
+  // point, and stopping the kernel stream can take a moment.
+  try { client.res.destroy(); } catch {}
+  if (stream) { try { await stream.stop(); } catch {} }
+  console.error(`sse: dropped a client that stopped reading (${bufferedBytes} bytes queued, over ${SSE_MAX_BUFFERED_BYTES} for ${SSE_STALL_MS}ms); it reconnects for a snapshot`);
+}
+
 function sseWrite(client, event) {
-  try { client.res.write(`data: ${JSON.stringify(event)}\n\n`); } catch {}
+  const text = `data: ${JSON.stringify(event)}\n\n`;
+  if (!writeSseChunk(client, text, { drop: (c, bytes) => void dropSseClient(c, bytes) })) return;
+  sampleSseBudget(client);
 }
 
 /** Tell the clients that the proposals changed, so the sheet can update. */
@@ -223,6 +305,11 @@ async function attachSse(client) {
     type: 'bridge_snapshot', snapshot: stream.snapshot,
     sessionId: String(conversationId), sessionName: meta?.name ?? `Session ${conversationId}`,
   });
+  // The snapshot write above can have dropped this client already -- it is the
+  // largest frame we send, so it is the likeliest one to go over the budget.
+  // Starting a watch that was stopped with it throws, and the route's catch
+  // would swallow that into a no-op write to a closed response.
+  if (client.closed) { try { await stream.stop(); } catch {} return; }
   stream.start(async (events) => {
     if (client.stream !== stream) return;
     for (const e of events) sseWrite(client, e);
@@ -230,8 +317,15 @@ async function attachSse(client) {
 }
 
 setInterval(() => {
-  for (const client of sseClients) { try { client.res.write(': ping\n\n'); } catch {} }
-}, 20_000).unref();
+  for (const client of sseClients) {
+    // Counted like any other write, so a client draining a snapshot that
+    // finished long ago still shows progress.
+    if (!writeSseChunk(client, ': ping\n\n', { drop: (c, bytes) => void dropSseClient(c, bytes) })) continue;
+    // The heartbeat is the only thing that runs when nothing is being written,
+    // so it is where a silent client gets noticed.
+    sampleSseBudget(client);
+  }
+}, SSE_HEARTBEAT_MS).unref();
 
 // --- HTTP helpers -------------------------------------------------------------------
 
@@ -529,7 +623,7 @@ const server = http.createServer(async (req, res) => {
     if (!authed(req)) return json(res, 401, { error: 'unauthorized' });
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     res.write(`data: ${JSON.stringify({ type: 'bridge_connected' })}\n\n`);
-    const client = { res, stream: null, closed: false };
+    const client = { res, stream: null, closed: false, overSince: null, lastFlushedBytes: null, sseBytesWritten: 0 };
     sseClients.add(client);
     req.on('close', async () => {
       client.closed = true;
