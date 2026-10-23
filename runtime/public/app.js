@@ -454,6 +454,7 @@ function handle(ev) {
   if (ev.type === 'bridge_snapshot') {
     renderSnapshot(ev.snapshot);
     if (ev.sessionName) set({ sessionName: ev.sessionName });
+    if (ev.gapped) sys('reconnected (missed updates)', 'warn');
     redraw();
     return;
   }
