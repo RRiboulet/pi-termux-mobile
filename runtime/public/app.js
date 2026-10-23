@@ -291,6 +291,7 @@ const state = {
   inbox: [],
   sessionName: 'Main',
   entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
+  copied: new Set(),   // keys of assistant messages whose copy feedback is showing
   seen: new Set(),
   attachedTools: new Set(), // tool calls already placed in the transcript
   pending: [],          // optimistic user messages awaiting their entry
@@ -874,7 +875,7 @@ function Thoughts({ text, live }) {
     </details>`;
 }
 
-function Message({ m }) {
+function Message({ m, idx }) {
   if (m.kind === 'sys') return html`<div class=${`sys ${m.tone || ''}`}>${m.text}</div>`;
   if (m.kind === 'tool') return html`<div class=${`thoughts tool ${m.tone === 'bad' ? 'err' : ''}`}><div class="think-body"><pre>${m.text}</pre></div></div>`;
   if (m.kind === 'user') {
@@ -882,6 +883,9 @@ function Message({ m }) {
       <div class="body">${m.text}</div>
     </div>`;
   }
+  const msgKey = `a${idx}`;
+  const text = (m.blocks ?? []).filter((b) => b.type !== 'tool').map((b) => b.text).join('\n\n');
+  const copied = state.copied.has(msgKey);
   return html`<div class="msg assistant">
     ${m.thinking ? html`<${Thoughts} text=${m.thinking} />` : null}
     ${(m.blocks ?? []).map((b, i) => {
@@ -891,12 +895,13 @@ function Message({ m }) {
       }
       return html`<div class="body md" key=${`b${i}`}>${markdown(b.text)}</div>`;
     })}
+    ${text ? html`<button class="copy-btn" aria-label="Copy" onClick=${() => copyResponse(msgKey, text)}>${copied ? html`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>` : html`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`}</button>` : null}
   </div>`;
 }
 
 function Transcript() {
   const items = [];
-  for (const m of state.entries) items.push(html`<${Message} key=${`e${items.length}`} m=${m} />`);
+  for (let i = 0; i < state.entries.length; i++) { const m = state.entries[i]; items.push(html`<${Message} key=${`e${i}`} m=${m} idx=${i} />`); }
   // Normally every tool sits inside the assistant turn that called it. A tool
   // that starts before that turn is committed is still shown at the end until
   // the history arrives and takes it over.
@@ -1318,6 +1323,22 @@ function App() {
     <${Composer} />
     <${BottomBar} />
     <${Sheet} />`;
+}
+
+async function copyResponse(key, text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(text);
+    else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+  } catch {}
+  state.copied.add(key);
+  redraw();
+  setTimeout(() => { state.copied.delete(key); redraw(); }, 1500);
 }
 
 function modelLabel(model) {

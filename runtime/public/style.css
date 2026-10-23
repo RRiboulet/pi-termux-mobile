@@ -492,3 +492,14 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 }
 .bottombar-item:active { color: var(--text); }
 .bottombar-dot { color: var(--faint); }
+
+/* ── copy button on assistant responses ──────────────────────────────── */
+.copy-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 6px;
+  background: none; border: 0; padding: 2px 4px;
+  color: var(--faint); cursor: pointer; touch-action: manipulation;
+  font-size: 11px; line-height: 1;
+}
+.copy-btn:active { color: var(--muted); }
+.copy-btn svg { color: inherit; }

@@ -432,9 +432,11 @@ test('a turn keeps the order the message wrote its blocks in', async () => {
 
   const turn = app.document.querySelector('.msg.assistant');
   assert.ok(turn, 'the assistant turn is not in the transcript');
-  const order = [...turn.children].map((el) => (el.matches('details.tool') ? 'tool'
-    : String(el.className).includes('body') ? 'text'
-    : el.tagName.toLowerCase()));
+  const order = [...turn.children]
+    .filter((el) => !el.classList.contains('copy-btn'))
+    .map((el) => (el.matches('details.tool') ? 'tool'
+      : String(el.className).includes('body') ? 'text'
+      : el.tagName.toLowerCase()));
   assert.deepEqual(order, ['text', 'tool', 'text'],
     'the turn did not keep the order its blocks were written in');
 });
