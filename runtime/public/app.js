@@ -914,11 +914,20 @@ function Transcript() {
 function BottomBar() {
   const level = state.thinking?.level ?? 'off';
   const levelLabel = level === 'off' ? 'off' : (level[0].toUpperCase() + level.slice(1));
+  const cache = cacheHitRate(state.usage, state.model);
+  const cost = sessionCost(state.usage);
   return html`
     <div class="bottombar">
-      <button class="bottombar-item" onClick=${() => openSheet('model')} aria-label="Model">${modelShort(state.model)}</button>
-      <span class="bottombar-dot">·</span>
-      <button class="bottombar-item" onClick=${() => openSheet('thinking')} aria-label="Thinking level">${levelLabel}</button>
+      <div class="bottombar-left">
+        <button class="bottombar-item" onClick=${() => openSheet('model')} aria-label="Model">${modelShort(state.model)}</button>
+        <span class="bottombar-dot">·</span>
+        <button class="bottombar-item" onClick=${() => openSheet('thinking')} aria-label="Thinking level">${levelLabel}</button>
+      </div>
+      <div class="bottombar-right">
+        <span class="bottombar-item">${cache}</span>
+        <span class="bottombar-dot">·</span>
+        <span class="bottombar-item">${cost}</span>
+      </div>
     </div>`;
 }
 
@@ -1305,6 +1314,21 @@ function usageShort(usage) {
   }
   if (!tokens) return '–';
   return `${tokens.toLocaleString()} tok${cost ? ` · $${cost.toFixed(3)}` : ''}`;
+}
+
+function cacheHitRate(usage, model) {
+  const key = model ? `${model.provider}/${model.modelId ?? model.id ?? model.model}` : '';
+  const u = usage?.models?.[key];
+  if (!u) return '–';
+  const denom = (u.input || 0) + (u.cacheRead || 0);
+  if (!denom) return '–';
+  return `${Math.round((u.cacheRead || 0) / denom * 100)}%`;
+}
+
+function sessionCost(usage) {
+  let cost = 0;
+  for (const u of Object.values(usage?.models ?? {})) cost += u?.cost?.total || 0;
+  return '$' + cost.toFixed(3);
 }
 
 function modelShort(model) {
