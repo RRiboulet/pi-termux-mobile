@@ -35,6 +35,19 @@ test('every runtime module is packaged', () => {
   }
 });
 
+test('every module a packaged module imports is packaged too', () => {
+  // The list check above catches a new file; this catches the reason the list
+  // exists: a relative import that points at something not in the payload.
+  const files = packaged();
+  for (const name of files.filter((f) => f.endsWith('.mjs'))) {
+    const source = readFileSync(path.join(RUNTIME, name), 'utf8');
+    for (const m of source.matchAll(/from '(\.\/[^']+)'/g)) {
+      const target = m[1].replace(/^\.\//, '');
+      assert.ok(files.includes(target), `${name} imports ${m[1]}, which is not in FILES in scripts/prepare-runtime.py`);
+    }
+  }
+});
+
 test('everything packaged is in the tree', () => {
   for (const name of packaged()) {
     assert.ok(existsSync(path.join(RUNTIME, name)), `scripts/prepare-runtime.py packages ${name}, which is not in runtime/`);

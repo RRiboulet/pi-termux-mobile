@@ -19,8 +19,11 @@
 // is bounded by a deadline rather than by a count: the buffer's size is the
 // host's business, not this file's.
 //
-// Booting the bridge dominates the run, which is why there is one boot for both
-// tests.
+// Booting the bridge dominates the run, which is why each test owns one bridge
+// rather than sharing: the drop test leaves a conversation full of 256 KB
+// messages and a run in flight behind it, and the next client to attach then has
+// to be handed a ~1.5 MB snapshot. That is not what the control test is about,
+// and it made the control fail for a reason the control does not describe.
 //
 //   node test/sse-stall-e2e.test.mjs
 import { test } from 'node:test';
@@ -114,12 +117,34 @@ const drops = (log) => (log.match(/sse: dropped a client that stopped reading/g)
 // tiny writes the kernel absorbs, so nothing would ever be queued here.
 const BIG = 'x'.repeat(256 * 1024);
 
-let shared = null;
-const bridge = async () => (shared ??= await bootBridge({ PI_SSE_MAX_BUFFERED: '1', PI_SSE_STALL_MS: '500' }));
-test.after(async () => { await shared?.stop(); shared = null; });
+// The two tests want different windows, and both are honest:
+//
+// - The drop test wants a short one, so a paused client is dropped while the
+//   test is still posting and the run stays small (500ms).
+// - The control wants one longer than anything the bridge does without yielding.
+//   The rule's clock is wall-clock, so while the process is busy building one
+//   large frame it cannot flush to anyone, and a sample taken after that reads
+//   as "no progress". Measured here (a phone): one 256 KB message costs ~1.1s of
+//   uninterrupted work, so a 500ms window drops a reading client on its first
+//   big message -- which is exactly how this control test used to fail.
+const shortStall = () => bootBridge({ PI_SSE_MAX_BUFFERED: '1', PI_SSE_STALL_MS: '500' });
+const longStall = () => bootBridge({ PI_SSE_MAX_BUFFERED: '1', PI_SSE_STALL_MS: '5000' });
 
 test('the bridge drops a client that stopped reading, and keeps serving', async () => {
-  const b = await bridge();
+  const b = await shortStall();
+  try {
+    await dropCheck(b);
+  } finally { await b.stop(); }
+});
+
+test('a client that keeps reading is never dropped', async () => {
+  const b = await longStall();
+  try {
+    await survivesCheck(b);
+  } finally { await b.stop(); }
+});
+
+async function dropCheck(b) {
   const stalled = await attach(b.port, b.token, { read: false });
   assert.match(stalled.status, /200/, `the event stream did not open: ${stalled.status}`);
 
@@ -152,15 +177,14 @@ test('the bridge drops a client that stopped reading, and keeps serving', async 
   fresh.sock.destroy();
   stalled.sock.destroy();
   assert.equal(drops(b.log()), 1, 'the stalled client was dropped more than once');
-});
+}
 
-test('a client that keeps reading is never dropped', async () => {
+async function survivesCheck(b) {
   // The negative control: without it, a bridge that dropped every client would
   // pass the test above, and that is a worse bug than the one being fixed.
   // This is also the end-to-end test of the progress half of the rule -- the
   // queue here goes over a one-byte budget constantly, and is only saved by
   // shrinking within the window.
-  const b = await bridge();
   const before = drops(b.log());
   const reading = await attach(b.port, b.token);
   assert.match(reading.status, /200/, `the event stream did not open: ${reading.status}`);
@@ -168,9 +192,9 @@ test('a client that keeps reading is never dropped', async () => {
   const posted = await b.api('/api/prompt', { method: 'POST', body: JSON.stringify({ message: BIG }) });
   assert.equal(posted.ok, true);
 
-  // Long enough for the stalled client's window to have elapsed many times over.
+  // Long enough for the rule to have looked at the queue many times over.
   await sleep(3_000);
   assert.equal(drops(b.log()), before, 'a client that was reading got dropped');
   assert.equal(b.child.exitCode, null, 'the bridge died while serving a healthy client');
   reading.sock.destroy();
-});
+}
