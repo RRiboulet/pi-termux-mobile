@@ -837,3 +837,47 @@ test('a finished turn refetches the context size', async () => {
 
   assert.equal(contextLabel(app), '50%', 'the bar was not refreshed when the turn ended');
 });
+
+// ── money and cache, the neighbours of the context bar ───────────────────
+// These two have the property the context estimate lacked: the kernel's snapshot
+// always carries a `usage` document (initialised to empty, never absent), and
+// `usage_changed` arrives on every commit. So the client reads them the same way
+// for the same reasons, and a regression here would look exactly like the context
+// bug did -- a stale number that only a reload fixes.
+
+const bottomBar = (app) => app.document.querySelector('.bottombar')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+
+test('a new session clears the money and cache line', async () => {
+  const app = await mount({
+    state: {
+      model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 0,
+      usage: { models: { 'anthropic/claude': { input: 1000, cacheRead: 500, totalTokens: 1500, cost: { total: 0.42 } } }, tools: {} },
+      sessionName: 'Main',
+    },
+  });
+  await app.settle();
+  assert.match(bottomBar(app), /chr 33%/, 'the cache hit rate did not come from the usage it was told about');
+  assert.match(bottomBar(app), /\$0\.420/, 'the session cost did not come from the usage it was told about');
+
+  // What the bridge sends for a session that has not run anything.
+  app.send({ type: 'bridge_snapshot', sessionName: 'New', snapshot: { entries: [], run: null, usage: { models: {}, tools: {} } } });
+  await app.settle();
+  assert.match(bottomBar(app), /chr –/, "the previous session's cache hit rate stayed on the bar");
+  assert.match(bottomBar(app), /\$0\.000/, "the previous session's spend stayed on the bar");
+});
+
+test('the money and cache follow the usage the bridge reports', async () => {
+  const app = await mount({
+    state: { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 0, usage: { models: {}, tools: {} } },
+  });
+  await app.settle();
+  assert.match(bottomBar(app), /chr –/);
+
+  app.send({
+    type: 'usage_changed',
+    usage: { models: { 'anthropic/claude': { input: 1000, cacheRead: 500, totalTokens: 1500, cost: { total: 0.42 } } }, tools: {} },
+  });
+  await app.settle();
+  assert.match(bottomBar(app), /chr 33%/, 'the live usage did not reach the cache hit rate');
+  assert.match(bottomBar(app), /\$0\.420/, 'the live usage did not reach the cost');
+});
