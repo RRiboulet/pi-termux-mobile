@@ -19,13 +19,21 @@ const html = htm.bind(h);
 // the DOM this instance was loaded into, whatever `document` means by then.
 const doc = document;
 
+// ── storage ──────────────────────────────────────────────────────────────
+// localStorage throws when DOM storage is disabled, and this module runs at load,
+// where a throw is a blank app and no error anyone can read. Every access is here.
+const store = {
+  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch {} },
+};
+
 // ── token ────────────────────────────────────────────────────────────────
 // The Activity loads /?token=...; keep it in localStorage and take it out of
 // the address bar, so it is not left in a screenshot or a history entry.
 const params = new URLSearchParams(location.search);
-let token = params.get('token') || localStorage.getItem('pi-token') || '';
+let token = params.get('token') || store.get('pi-token') || '';
 if (token) {
-  localStorage.setItem('pi-token', token);
+  store.set('pi-token', token);
   if (params.get('token')) {
     params.delete('token');
     history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
@@ -281,7 +289,8 @@ function inline(src, depth = 0) {
 // ── state ────────────────────────────────────────────────────────────────
 const state = {
   ready: false,
-  lastSeq: Number(localStorage.getItem('pi-lastSeq') || 0),
+  lastSeq: Number(store.get('pi-lastSeq') || 0), // the frame this client last saw
+  epoch: store.get('pi-epoch'),                  // the bridge run that number belongs to
   error: null,
   busy: false,
   model: null,
@@ -445,16 +454,38 @@ function renderSnapshot(snapshot) {
   set({ busy: Boolean(snapshot?.run) });
 }
 
+// ── the frame watermark ──────────────────────────────────────────────────
+// `seq` counts the frames the bridge has written. Remembering the last one lets a
+// reconnect say where it got to, and lets the bridge answer with `gapped`.
+//
+// The in-memory value is what a reconnect uses, so it moves on every frame. The
+// stored one only has to survive a reload, and a synchronous storage write per
+// streamed text delta is jank on the one path that cannot afford it.
+let seqSave = null;
+function rememberSeq(seq) {
+  set({ lastSeq: seq });
+  if (!seqSave) seqSave = setTimeout(flushSeq, 500);
+}
+function flushSeq() {
+  if (seqSave) { clearTimeout(seqSave); seqSave = null; }
+  store.set('pi-lastSeq', String(state.lastSeq));
+}
+// A WebView can be frozen and killed without another turn to write in.
+try { window.addEventListener('pagehide', flushSeq); } catch {}
+
 // ── events ───────────────────────────────────────────────────────────────
 function handle(ev) {
-  if (ev && typeof ev.seq === 'number') { set({ lastSeq: ev.seq }); try { localStorage.setItem('pi-lastSeq', String(ev.seq)); } catch {} }
+  if (ev && typeof ev.seq === 'number') rememberSeq(ev.seq);
   // The server wraps the attach-time view in its OWN frame, and only later
   // batches arrive as pi-durable events. Without this the transcript is empty
   // on every load, every reconnect and every session switch.
   if (ev.type === 'bridge_snapshot') {
     renderSnapshot(ev.snapshot);
     if (ev.sessionName) set({ sessionName: ev.sessionName });
-    if (ev.gapped) sys('reconnected (missed updates)', 'warn');
+    // `gapped` means frames were written while this client was away. The snapshot
+    // in this same frame is the whole state, so nothing was lost: this is a note
+    // that the transcript was rebuilt, not a warning about missing data.
+    if (ev.gapped) sys('reconnected', 'warn');
     redraw();
     return;
   }
@@ -469,7 +500,17 @@ function handle(ev) {
     refreshExtensions().then(() => redraw());
     return;
   }
-  if (ev.type === 'bridge_connected') return;
+  if (ev.type === 'bridge_connected') {
+    // The counter starts at zero with the bridge process, while the stored
+    // watermark outlives it. A number from another run says nothing about this
+    // one, so it is replaced instead of compared -- this frame is already the
+    // first number of the new run.
+    if (ev.epoch && ev.epoch !== state.epoch) {
+      set({ epoch: ev.epoch });
+      store.set('pi-epoch', ev.epoch);
+    }
+    return;
+  }
   switch (ev.type) {
     case 'snapshot': renderSnapshot(ev); break;
     case 'run_start': set({ busy: true }); break;
@@ -546,17 +587,33 @@ function handle(ev) {
 }
 
 // EventSource cannot set a header, so the token rides in the query.
+//
+// The browser retries a dropped stream with the URL it was given, which would keep
+// asking about the watermark this page loaded with. So the retry is made here,
+// with the watermark the client has now.
+let live = null;
+let retryTimer = null;
+let retryMs = 500;
 function subscribe() {
-  const since = state.lastSeq ? `&since=${encodeURIComponent(state.lastSeq)}` : '';
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  const since = state.lastSeq > 0 ? `&since=${encodeURIComponent(state.lastSeq)}` : '';
   const source = new EventSource(`/api/events?token=${encodeURIComponent(token)}${since}`);
+  live = source;
   source.onmessage = (m) => {
     try { handle(JSON.parse(m.data)); } catch { /* a malformed frame is not worth crashing over */ }
   };
   source.onerror = () => {
+    if (live !== source) return;
+    live = null;
     set({ error: 'lost the connection — retrying' });
     redraw();
+    try { source.close(); } catch {}
+    const wait = retryMs;
+    retryMs = Math.min(retryMs * 2, 15000);
+    retryTimer = setTimeout(() => { retryTimer = null; if (!live) subscribe(); }, wait);
   };
   source.onopen = () => {
+    retryMs = 500;
     set({ error: null, ready: true });
     redraw();
   };

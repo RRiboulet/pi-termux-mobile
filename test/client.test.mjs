@@ -19,6 +19,8 @@ const PUBLIC = new URL('../runtime/public/', import.meta.url);
 /** Mount the client in a fresh DOM and return the handles the test needs. */
 async function mount({
   state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {},
+  // What localStorage already holds, as a reload would find it.
+  stored = {},
   // What /api/oauth/status answers, poll by poll. The last entry repeats, so a
   // login that never finishes needs one. A function is called with the poll
   // number, which is how a test makes the bridge fail.
@@ -28,6 +30,7 @@ async function mount({
   const { document } = window;
 
   let source = null;
+  const sources = [];
   const fetches = [];
   let oauthPolls = 0;
   const nextOauthStatus = () => {
@@ -42,14 +45,14 @@ async function mount({
   globalThis.location = new URL('http://127.0.0.1:8787/?token=test-token');
   globalThis.history = { replaceState: () => {}, pushState: () => {}, back: () => {} };
   globalThis.localStorage = {
-    _m: new Map(),
+    _m: new Map(Object.entries(stored)),
     getItem(k) { return this._m.get(k) ?? null; },
     setItem(k, v) { this._m.set(k, v); },
   };
   globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
   globalThis.EventSource = class {
-    constructor(url) { this.url = url; source = this; }
-    close() {}
+    constructor(url) { this.url = url; this.closed = false; source = this; sources.push(this); }
+    close() { this.closed = true; }
   };
   globalThis.fetch = async (url, opts) => {
     fetches.push([String(url), opts]);
@@ -74,8 +77,18 @@ async function mount({
   return {
     document,
     fetches,
+    sources,
+    stored: globalThis.localStorage._m,
     send(ev) { source.onmessage({ data: JSON.stringify(ev) }); },
     sendMany(evs) { for (const ev of evs) source.onmessage({ data: JSON.stringify(ev) }); },
+    /** Drop the stream, and wait for the client's own retry to open the next one. */
+    async reconnect() {
+      const before = sources.length;
+      source.onerror();
+      const end = Date.now() + 3000;
+      while (sources.length === before && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+      assert.ok(sources.length > before, 'the client did not reconnect');
+    },
     async settle() { await new Promise((r) => setTimeout(r, 30)); },
     text() { return document.getElementById('app').textContent.replace(/\s+/g, ' ').trim(); },
     html() { return document.getElementById('app').innerHTML; },
@@ -694,4 +707,58 @@ test('a client paints into the document it booted into, and into no other', asyn
     // does not run against a document belonging to a finished test.
     globalThis.document = mine;
   }
+});
+
+// ── the frame watermark ──────────────────────────────────────────────────
+// The bridge stamps every frame it writes with `seq` and answers a reconnect with
+// `gapped`. What the client has to get right is the number it asks from: the frame
+// it actually last saw, not the one this page loaded with.
+
+test('a client that has seen nothing asks for no watermark', async () => {
+  const app = await mount();
+  assert.equal(app.sources.length, 1, 'the client should open one stream at boot');
+  assert.doesNotMatch(app.sources[0].url, /since=/, 'a fresh client claimed a watermark it does not have');
+});
+
+test('a reconnect asks from the frame it last saw', async () => {
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', seq: 7, snapshot: { entries: [], run: null } });
+  await app.settle();
+  await app.reconnect();
+  assert.match(app.sources[1].url, /since=7/, 'the reconnect did not ask from the watermark the client has');
+});
+
+test('a reload asks from the stored watermark', async () => {
+  const app = await mount({ stored: { 'pi-lastSeq': '9' } });
+  assert.match(app.sources[0].url, /since=9/, 'a reload did not use the stored watermark');
+});
+
+test('a watermark from another bridge run is dropped', async () => {
+  // The counter starts at zero with the bridge process; the stored number does not.
+  const app = await mount({ stored: { 'pi-lastSeq': '42', 'pi-epoch': 'previous-run' } });
+  app.send({ type: 'bridge_connected', epoch: 'this-run', seq: 1 });
+  await app.settle();
+  await app.reconnect();
+  assert.match(app.sources[1].url, /since=1/, 'a number from the previous run was compared against this one');
+  assert.equal(app.stored.get('pi-epoch'), 'this-run');
+});
+
+test('a gapped reconnect says so, and a plain attach says nothing', async () => {
+  const app = await mount();
+  app.send({ type: 'bridge_snapshot', seq: 3, gapped: false, snapshot: { entries: [], run: null } });
+  await app.settle();
+  assert.doesNotMatch(app.text(), /reconnected/, 'a first attach announced a reconnect');
+
+  app.send({ type: 'bridge_snapshot', seq: 9, gapped: true, snapshot: { entries: [], run: null } });
+  await app.settle();
+  assert.match(app.text(), /reconnected/, 'a gapped reconnect was not shown');
+});
+
+test('the watermark is stored once per burst, not once per frame', async () => {
+  const app = await mount();
+  app.sendMany([{ type: 'run_start', seq: 1 }, { type: 'run_end', seq: 2 }]);
+  await app.settle();
+  assert.equal(app.stored.has('pi-lastSeq'), false, 'every streamed frame wrote to storage');
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(app.stored.get('pi-lastSeq'), '2', 'the watermark never reached storage');
 });
