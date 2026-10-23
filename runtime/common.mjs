@@ -252,6 +252,7 @@ export const SessionRegistry = defineDoc({
   version: 1,
   scope: 'session',
   initial: () => ({ sessions: {}, activeId: null }),
+  checkpointWhen: () => true,
 });
 
 export async function openHarness({ dbPath, models, env, extensions = [] }, ctx) {
