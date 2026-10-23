@@ -18,6 +18,7 @@ import {
   writeFileAtomic,
 } from './common.mjs';
 import { applySseBudget, writeSseChunk } from './sse.mjs';
+import { createWatermark } from './watermark.mjs';
 import { gateExtension, InstallGate } from './gate.mjs';
 import { nodeBinaryOrNode } from './node-bin.mjs';
 
@@ -72,6 +73,7 @@ const envNumber = (name, fallback, min = 1) => {
 const SSE_HEARTBEAT_MS = 20_000;
 const SSE_MAX_BUFFERED_BYTES = envNumber('PI_SSE_MAX_BUFFERED', 1024 * 1024);
 const SSE_STALL_MS = envNumber('PI_SSE_STALL_MS', SSE_HEARTBEAT_MS);
+const watermark = createWatermark();
 const PI_PKG = '@earendil-works/pi-durable';
 // The packages this runtime actually runs. The pi CLI, the pi-server host and
 // the pi-client tunnel are gone from the app, so they are no longer updated.
@@ -285,6 +287,7 @@ async function dropSseClient(client, bufferedBytes) {
 }
 
 function sseWrite(client, event) {
+  if (event && typeof event === 'object' && event.seq === undefined) watermark.stamp(event);
   const text = `data: ${JSON.stringify(event)}\n\n`;
   if (!writeSseChunk(client, text, { drop: (c, bytes) => void dropSseClient(c, bytes) })) return;
   sampleSseBudget(client);
@@ -311,12 +314,14 @@ async function attachSse(client) {
   const modelRef = _view ? agentOf(_view).model : null;
   try { _view?.dispose?.(); } catch {}
   const contextWindow = modelByRef(modelRef)?.contextWindow ?? 128000;
-  sseWrite(client, {
+  const gapped = watermark.gapped(client.since);
+  sseWrite(client, watermark.stamp({
     type: 'bridge_snapshot', snapshot: stream.snapshot,
     sessionId: String(conversationId), sessionName: meta?.name ?? `Session ${conversationId}`,
     contextTokens,
     contextWindow,
-  });
+    gapped,
+  }));
   // The snapshot write above can have dropped this client already -- it is the
   // largest frame we send, so it is the likeliest one to go over the budget.
   // Starting a watch that was stopped with it throws, and the route's catch
@@ -646,8 +651,8 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/events' && req.method === 'GET') {
     if (!authed(req)) return json(res, 401, { error: 'unauthorized' });
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ type: 'bridge_connected' })}\n\n`);
-    const client = { res, stream: null, closed: false, overSince: null, lastFlushedBytes: null, sseBytesWritten: 0 };
+    res.write(`data: ${JSON.stringify(watermark.stamp({ type: 'bridge_connected' }))}\n\n`);
+    const client = { res, stream: null, closed: false, overSince: null, lastFlushedBytes: null, sseBytesWritten: 0, since: url.searchParams.get('since') };
     sseClients.add(client);
     req.on('close', async () => {
       client.closed = true;

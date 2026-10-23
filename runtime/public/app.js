@@ -281,6 +281,7 @@ function inline(src, depth = 0) {
 // ── state ────────────────────────────────────────────────────────────────
 const state = {
   ready: false,
+  lastSeq: 0,
   error: null,
   busy: false,
   model: null,
@@ -446,6 +447,7 @@ function renderSnapshot(snapshot) {
 
 // ── events ───────────────────────────────────────────────────────────────
 function handle(ev) {
+  if (ev && typeof ev.seq === 'number') set({ lastSeq: ev.seq });
   // The server wraps the attach-time view in its OWN frame, and only later
   // batches arrive as pi-durable events. Without this the transcript is empty
   // on every load, every reconnect and every session switch.
@@ -544,7 +546,8 @@ function handle(ev) {
 
 // EventSource cannot set a header, so the token rides in the query.
 function subscribe() {
-  const source = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
+  const since = state.lastSeq ? `&since=${encodeURIComponent(state.lastSeq)}` : '';
+  const source = new EventSource(`/api/events?token=${encodeURIComponent(token)}${since}`);
   source.onmessage = (m) => {
     try { handle(JSON.parse(m.data)); } catch { /* a malformed frame is not worth crashing over */ }
   };
