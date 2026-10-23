@@ -285,11 +285,13 @@ const state = {
   busy: false,
   model: null,
   usage: null,          // the session usage, as /api/state reports it
+  contextTokens: 0,     // estimated tokens in the current context
   usageTotal: null,     // the whole-harness total, from /api/usage
   usageSession: null,   // the session slice of /api/usage
   inbox: [],
   sessionName: 'Main',
   entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
+  copied: new Set(),   // keys of assistant messages whose copy feedback is showing
   seen: new Set(),
   attachedTools: new Set(), // tool calls already placed in the transcript
   pending: [],          // optimistic user messages awaiting their entry
@@ -435,8 +437,9 @@ function renderSnapshot(snapshot) {
     if (slot && t.details?.conversationId !== undefined) slot.child = t.details.conversationId;
   }
 
-  if (snapshot?.agent) set({ model: snapshot.agent.model ?? null });
+  if (snapshot?.agent) set({ model: { ...(state.model ?? {}), ...(snapshot.agent.model ?? {}), contextWindow: snapshot.contextWindow ?? state.model?.contextWindow } });
   if (snapshot?.usage) set({ usage: snapshot.usage });
+  if (snapshot?.contextTokens !== undefined) set({ contextTokens: snapshot.contextTokens });
   if (snapshot?.inbox) set({ inbox: snapshot.inbox });
   set({ busy: Boolean(snapshot?.run) });
 }
@@ -567,6 +570,7 @@ async function refreshState() {
       thinking: { ...state.thinking, level: s.thinkingLevel ?? state.thinking.level ?? 'off' },
       busy: Boolean(s.busy),
       usage: s.usage ?? null,
+      contextTokens: s.contextTokens ?? state.contextTokens ?? 0,
       // The inbox arrives as the pi.inbox DOCUMENT, whose shape is {items:[...]}.
       inbox: s.inbox?.items ?? (Array.isArray(s.inbox) ? s.inbox : []),
       sessionName: s.sessionName ?? 'Main',
@@ -871,7 +875,7 @@ function Thoughts({ text, live }) {
     </details>`;
 }
 
-function Message({ m }) {
+function Message({ m, idx }) {
   if (m.kind === 'sys') return html`<div class=${`sys ${m.tone || ''}`}>${m.text}</div>`;
   if (m.kind === 'tool') return html`<div class=${`thoughts tool ${m.tone === 'bad' ? 'err' : ''}`}><div class="think-body"><pre>${m.text}</pre></div></div>`;
   if (m.kind === 'user') {
@@ -879,6 +883,9 @@ function Message({ m }) {
       <div class="body">${m.text}</div>
     </div>`;
   }
+  const msgKey = `a${idx}`;
+  const text = (m.blocks ?? []).filter((b) => b.type !== 'tool').map((b) => b.text).join('\n\n');
+  const copied = state.copied.has(msgKey);
   return html`<div class="msg assistant">
     ${m.thinking ? html`<${Thoughts} text=${m.thinking} />` : null}
     ${(m.blocks ?? []).map((b, i) => {
@@ -888,12 +895,13 @@ function Message({ m }) {
       }
       return html`<div class="body md" key=${`b${i}`}>${markdown(b.text)}</div>`;
     })}
+    ${text ? html`<button class="copy-btn" aria-label="Copy" onClick=${() => copyResponse(msgKey, text)}>${copied ? html`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>` : html`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`}</button>` : null}
   </div>`;
 }
 
 function Transcript() {
   const items = [];
-  for (const m of state.entries) items.push(html`<${Message} key=${`e${items.length}`} m=${m} />`);
+  for (let i = 0; i < state.entries.length; i++) { const m = state.entries[i]; items.push(html`<${Message} key=${`e${i}`} m=${m} idx=${i} />`); }
   // Normally every tool sits inside the assistant turn that called it. A tool
   // that starts before that turn is committed is still shown at the end until
   // the history arrives and takes it over.
@@ -909,6 +917,43 @@ function Transcript() {
     </div>`);
   }
   return html`<div class="log" id="log">${items}</div>`;
+}
+
+function BottomBar() {
+  const level = state.thinking?.level ?? 'off';
+  const levelLabel = level === 'off' ? 'off' : (level[0].toUpperCase() + level.slice(1));
+  const cache = cacheHitRate(state.usage, state.model);
+  const cost = sessionCost(state.usage);
+  const maxCtx = state.model?.contextWindow ?? (state.models || []).find((m) => m.provider === state.model?.provider && m.modelId === (state.model?.modelId ?? state.model?.id))?.contextWindow ?? 128000;
+  const used = state.contextTokens ?? 0;
+  const pct = maxCtx ? Math.min(100, Math.round(used / maxCtx * 100)) : 0;
+  return html`
+    <div class="bottombar">
+      <div class="bottombar-top">
+        <div class="bottombar-left">
+          <button class="bottombar-item" onClick=${() => openSheet('model')} aria-label="Model">${modelShort(state.model)}</button>
+          <span class="bottombar-dot">·</span>
+          <button class="bottombar-item" onClick=${() => openSheet('thinking')} aria-label="Thinking level">${levelLabel}</button>
+        </div>
+        <div class="bottombar-right">
+          <span class="bottombar-item">chr ${cache}</span>
+          <span class="bottombar-dot">·</span>
+          <span class="bottombar-item">${cost}</span>
+        </div>
+      </div>
+      <div class="context-row">
+        <div class="context-bar"><div class="context-fill" style="width: ${pct}%"></div></div>
+        <button class="context-label" onClick=${() => toggleContextFormat()}>${contextLabel(used, maxCtx)}</button>
+      </div>
+    </div>`;
+}
+
+let contextShowNumbers = false;
+function toggleContextFormat() { contextShowNumbers = !contextShowNumbers; redraw(); }
+function contextLabel(used, max) {
+  if (contextShowNumbers) return `${used.toLocaleString()} / ${max.toLocaleString()}`;
+  const pct = max ? Math.min(100, Math.round(used / max * 100)) : 0;
+  return `${pct}%`;
 }
 
 function Composer() {
@@ -1271,13 +1316,29 @@ function App() {
           <span class="who">${state.sessionName}</span>
         </div>
         <button class="icon" aria-label="Menu" onClick=${() => openSheet('menu')}>☰</button>
-        <button class="icon" aria-label="Model" onClick=${() => openSheet('model')}>${modelShort(state.model)}</button>
       </div>
       <${StatusStrip} />
     </div>
     <${Transcript} />
     <${Composer} />
+    <${BottomBar} />
     <${Sheet} />`;
+}
+
+async function copyResponse(key, text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(text);
+    else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+  } catch {}
+  state.copied.add(key);
+  redraw();
+  setTimeout(() => { state.copied.delete(key); redraw(); }, 1500);
 }
 
 function modelLabel(model) {
@@ -1296,9 +1357,24 @@ function usageShort(usage) {
   return `${tokens.toLocaleString()} tok${cost ? ` · $${cost.toFixed(3)}` : ''}`;
 }
 
+function cacheHitRate(usage, model) {
+  const key = model ? `${model.provider}/${model.modelId ?? model.id ?? model.model}` : '';
+  const u = usage?.models?.[key];
+  if (!u) return '–';
+  const denom = (u.input || 0) + (u.cacheRead || 0);
+  if (!denom) return '–';
+  return `${Math.round((u.cacheRead || 0) / denom * 100)}%`;
+}
+
+function sessionCost(usage) {
+  let cost = 0;
+  for (const u of Object.values(usage?.models ?? {})) cost += u?.cost?.total || 0;
+  return '$' + cost.toFixed(3);
+}
+
 function modelShort(model) {
   if (!model) return '–';
-  const s = typeof model === 'string' ? model : (model.id ?? model.model ?? '');
+  const s = typeof model === "string" ? model : (model.modelId ?? model.id ?? model.model ?? "");
   return String(s).split('/').pop().slice(0, 12) || '–';
 }
 

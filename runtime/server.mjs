@@ -33,6 +33,10 @@ const TOKEN_FILE = path.join(STATE_DIR, 'token');
 const LEGACY_SESSIONS_FILE = path.join(STATE_DIR, 'sessions.json');
 const DEVICE_ID_FILE = path.join(STATE_DIR, 'device-id');
 const PUBLIC = path.join(ROOT, 'public');
+const { pathToFileURL } = await import('node:url');
+const { estimateContext } = await import(
+  pathToFileURL(path.join(ROOT, 'node_modules', '@earendil-works', 'pi-durable', 'dist', 'harness', 'compaction.js')).href
+);
 const MAX_BODY = 1024 * 1024;
 // A client that has stopped reading, and how long it may stay stopped. A
 // suspended WebView keeps its socket open and stops draining it, so without a
@@ -301,9 +305,17 @@ async function attachSse(client) {
   if (client.closed) { await stream.stop(); return; }
   client.stream = stream;
   const meta = await sessions.get(conversationId);
+  let contextTokens = 0;
+  try { const cview = await active.context(ctx); contextTokens = estimateContext(cview, []) || 0; } catch {}
+  const _view = active ? await active.viewState(ctx) : null;
+  const modelRef = _view ? agentOf(_view).model : null;
+  try { _view?.dispose?.(); } catch {}
+  const contextWindow = modelByRef(modelRef)?.contextWindow ?? 128000;
   sseWrite(client, {
     type: 'bridge_snapshot', snapshot: stream.snapshot,
     sessionId: String(conversationId), sessionName: meta?.name ?? `Session ${conversationId}`,
+    contextTokens,
+    contextWindow,
   });
   // The snapshot write above can have dropped this client already -- it is the
   // largest frame we send, so it is the likeliest one to go over the budget.
@@ -409,12 +421,23 @@ async function activeState() {
   const view = active ? await active.viewState(ctx) : null;
   try {
     const meta = active ? await sessions.get(active.id) : null;
+    const modelRef = agentOf(view).model ?? null;
+    const modelObj = modelRef ? { ...modelRef, contextWindow: modelByRef(modelRef)?.contextWindow ?? 128000 } : null;
+    // Current context size (tokens) for the active conversation, via the kernel's estimator.
+    let contextTokens = 0;
+    if (active) {
+      try {
+        const cview = await active.context(ctx);
+        contextTokens = estimateContext(cview, []) || 0;
+      } catch {}
+    }
     return {
-      model: agentOf(view).model ?? null,
+      model: modelObj,
       thinkingLevel: agentOf(view).thinkingLevel ?? 'off',
       busy: isBusy(view),
       inbox: view?.value?.docs?.['pi.inbox'] ?? null,
       usage: view?.value?.docs?.['pi.usage'] ?? null,
+      contextTokens,
       cwd: agentOf(view).cwd ?? WORKDIR,
       sessionId: active ? String(active.id) : null,
       sessionName: meta?.name ?? 'Main',
@@ -514,6 +537,7 @@ async function handleApi(req, res, url, p) {
         modelId: m.id,
         name: m.name ?? m.id,
         thinkingLevels: thinkingLevelsOf(m),
+        contextWindow: m.contextWindow ?? 128000,
       })),
     });
   }
