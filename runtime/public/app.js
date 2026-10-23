@@ -285,6 +285,7 @@ const state = {
   busy: false,
   model: null,
   usage: null,          // the session usage, as /api/state reports it
+  contextTokens: 0,     // estimated tokens in the current context
   usageTotal: null,     // the whole-harness total, from /api/usage
   usageSession: null,   // the session slice of /api/usage
   inbox: [],
@@ -435,8 +436,9 @@ function renderSnapshot(snapshot) {
     if (slot && t.details?.conversationId !== undefined) slot.child = t.details.conversationId;
   }
 
-  if (snapshot?.agent) set({ model: snapshot.agent.model ?? null });
+  if (snapshot?.agent) set({ model: { ...(state.model ?? {}), ...(snapshot.agent.model ?? {}), contextWindow: snapshot.contextWindow ?? state.model?.contextWindow } });
   if (snapshot?.usage) set({ usage: snapshot.usage });
+  if (snapshot?.contextTokens !== undefined) set({ contextTokens: snapshot.contextTokens });
   if (snapshot?.inbox) set({ inbox: snapshot.inbox });
   set({ busy: Boolean(snapshot?.run) });
 }
@@ -567,6 +569,7 @@ async function refreshState() {
       thinking: { ...state.thinking, level: s.thinkingLevel ?? state.thinking.level ?? 'off' },
       busy: Boolean(s.busy),
       usage: s.usage ?? null,
+      contextTokens: s.contextTokens ?? state.contextTokens ?? 0,
       // The inbox arrives as the pi.inbox DOCUMENT, whose shape is {items:[...]}.
       inbox: s.inbox?.items ?? (Array.isArray(s.inbox) ? s.inbox : []),
       sessionName: s.sessionName ?? 'Main',
@@ -916,19 +919,36 @@ function BottomBar() {
   const levelLabel = level === 'off' ? 'off' : (level[0].toUpperCase() + level.slice(1));
   const cache = cacheHitRate(state.usage, state.model);
   const cost = sessionCost(state.usage);
+  const maxCtx = state.model?.contextWindow ?? (state.models || []).find((m) => m.provider === state.model?.provider && m.modelId === (state.model?.modelId ?? state.model?.id))?.contextWindow ?? 128000;
+  const used = state.contextTokens ?? 0;
+  const pct = maxCtx ? Math.min(100, Math.round(used / maxCtx * 100)) : 0;
   return html`
     <div class="bottombar">
-      <div class="bottombar-left">
-        <button class="bottombar-item" onClick=${() => openSheet('model')} aria-label="Model">${modelShort(state.model)}</button>
-        <span class="bottombar-dot">·</span>
-        <button class="bottombar-item" onClick=${() => openSheet('thinking')} aria-label="Thinking level">${levelLabel}</button>
+      <div class="bottombar-top">
+        <div class="bottombar-left">
+          <button class="bottombar-item" onClick=${() => openSheet('model')} aria-label="Model">${modelShort(state.model)}</button>
+          <span class="bottombar-dot">·</span>
+          <button class="bottombar-item" onClick=${() => openSheet('thinking')} aria-label="Thinking level">${levelLabel}</button>
+        </div>
+        <div class="bottombar-right">
+          <span class="bottombar-item">chr ${cache}</span>
+          <span class="bottombar-dot">·</span>
+          <span class="bottombar-item">${cost}</span>
+        </div>
       </div>
-      <div class="bottombar-right">
-        <span class="bottombar-item">chr ${cache}</span>
-        <span class="bottombar-dot">·</span>
-        <span class="bottombar-item">${cost}</span>
+      <div class="context-row">
+        <div class="context-bar"><div class="context-fill" style="width: ${pct}%"></div></div>
+        <button class="context-label" onClick=${() => toggleContextFormat()}>${contextLabel(used, maxCtx)}</button>
       </div>
     </div>`;
+}
+
+let contextShowNumbers = false;
+function toggleContextFormat() { contextShowNumbers = !contextShowNumbers; redraw(); }
+function contextLabel(used, max) {
+  if (contextShowNumbers) return `${used.toLocaleString()} / ${max.toLocaleString()}`;
+  const pct = max ? Math.min(100, Math.round(used / max * 100)) : 0;
+  return `${pct}%`;
 }
 
 function Composer() {
