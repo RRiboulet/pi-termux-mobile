@@ -29,78 +29,121 @@ async function boot(env = {}) {
   return { child, port, token, tmp, log: () => log, stop: async () => { child.kill('SIGTERM'); await sleep(200); rmSync(tmp, { recursive: true, force: true }); } };
 }
 
-async function firstSnapshot(port, token, since) {
+/**
+ * One SSE connection, read in the background into `frames`, so a test can wait
+ * for the frame it cares about instead of sleeping for a fixed time.
+ */
+async function attach(port, token, since) {
+  const ctl = new AbortController();
+  const frames = [];
   const url = `http://127.0.0.1:${port}/api/events?token=${token}${since !== undefined ? `&since=${since}` : ''}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: ctl.signal });
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const chunk = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      const line = chunk.split('\n').find((l) => l.startsWith('data:'));
-      if (!line) continue;
-      let ev;
-      try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-      if (ev.type === 'bridge_snapshot') { reader.cancel(); return ev; }
-    }
+  (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n\n')) !== -1) {
+          const chunk = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const line = chunk.split('\n').find((l) => l.startsWith('data:'));
+          if (!line) continue;
+          try { frames.push(JSON.parse(line.slice(5).trim())); } catch {}
+        }
+      }
+    } catch { /* cancelled */ }
+  })();
+  return { frames, cancel: () => ctl.abort() };
+}
+
+const isSnapshot = (f) => f.type === 'bridge_snapshot';
+const seqOf = (f) => (typeof f.seq === 'number' ? f.seq : 0);
+const highest = (frames) => frames.reduce((n, f) => Math.max(n, seqOf(f)), 0);
+
+/** The first frame in `frames` that matches, from index `from` onwards. */
+async function waitFor(frames, match, { from = 0, ms = 15000 } = {}) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const hit = frames.find((f, i) => i >= from && match(f, i));
+    if (hit) return hit;
+    await sleep(25);
   }
-  reader.cancel();
-  throw new Error('no snapshot');
+  throw new Error(`no matching frame; saw ${JSON.stringify(frames.map((f) => f.type))}`);
+}
+
+/** Make the harness emit frames, and wait for one the attached client has not seen. */
+async function traffic(b, live) {
+  const before = highest(live.frames);
+  const res = await fetch(`http://127.0.0.1:${b.port}/api/prompt`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-token': b.token },
+    body: JSON.stringify({ message: 'hello', requestId: `wm-${Math.random().toString(36).slice(2)}` }),
+  });
+  assert.ok(res.ok, `the prompt was refused: ${res.status}`);
+  return waitFor(live.frames, (f) => seqOf(f) > before);
 }
 
 test('a stale since yields gapped: true', async () => {
   const b = await boot();
   try {
-    // keep a draining client attached so traffic advances the watermark
-    const res0 = await fetch(`http://127.0.0.1:${b.port}/api/events?token=${b.token}`);
-    const reader0 = res0.body.getReader();
-    const dec0 = new TextDecoder();
-    let buf0 = '';
-    const gotSnap = await new Promise((resolve) => {
-      const deadline = Date.now() + 8000;
-      const tick = async () => {
-        if (Date.now() > deadline) return resolve(null);
-        const { value, done } = await reader0.read();
-        if (done) return resolve(null);
-        buf0 += dec0.decode(value, { stream: true });
-        let i;
-        while ((i = buf0.indexOf('\n\n')) !== -1) {
-          const c = buf0.slice(0, i); buf0 = buf0.slice(i + 2);
-          const l = c.split('\n').find((x) => x.startsWith('data:'));
-          if (!l) continue;
-          const ev = JSON.parse(l.slice(5));
-          if (ev.type === 'bridge_snapshot') return resolve(ev);
-        }
-        tick();
-      };
-      tick();
-    });
-    assert.ok(gotSnap, 'initial snapshot');
-    // generate traffic while the draining client is attached
-    await fetch(`http://127.0.0.1:${b.port}/api/prompt`, {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-token': b.token },
-      body: JSON.stringify({ message: 'hello', requestId: 'wm-1' }),
-    });
-    await sleep(2000);
-    // reconnect claiming we only saw seq 1 (stale)
-    const snap1 = await firstSnapshot(b.port, b.token, 1);
-    assert.equal(snap1.gapped, true, 'stale since should be gapped');
-    reader0.cancel();
+    const live = await attach(b.port, b.token);
+    const first = await waitFor(live.frames, isSnapshot);
+    await traffic(b, live);
+    live.cancel();
+    // The client comes back claiming the watermark it had before that traffic.
+    const back = await attach(b.port, b.token, first.seq);
+    const snap = await waitFor(back.frames, isSnapshot);
+    assert.equal(snap.gapped, true, 'frames written while it was away should be a gap');
+    back.cancel();
   } finally { await b.stop(); }
 });
 
 test('a current since yields gapped: false', async () => {
   const b = await boot();
   try {
-    const snap0 = await firstSnapshot(b.port, b.token);
-    const snap1 = await firstSnapshot(b.port, b.token, snap0.seq);
-    assert.equal(snap1.gapped, false, 'current since should not be gapped');
+    const live = await attach(b.port, b.token);
+    const first = await waitFor(live.frames, isSnapshot);
+    live.cancel();
+    const back = await attach(b.port, b.token, highest(live.frames) || first.seq);
+    const snap = await waitFor(back.frames, isSnapshot);
+    assert.equal(snap.gapped, false, 'a client that has seen everything is not gapped');
+    // Both connections are this bridge run: the epoch is how a client tells one
+    // run's counter from the last one's.
+    const epochs = [...live.frames, ...back.frames].filter((f) => f.type === 'bridge_connected').map((f) => f.epoch);
+    assert.equal(epochs.length, 2, 'both connections should have a bridge_connected frame');
+    assert.equal(typeof epochs[0], 'string', 'bridge_connected should carry an epoch');
+    assert.equal(epochs[0], epochs[1], 'the epoch should be stable within one bridge run');
+    back.cancel();
+  } finally { await b.stop(); }
+});
+
+test('a session switch is not a reconnect', async () => {
+  const b = await boot();
+  try {
+    // Somebody else's traffic, so the counter is ahead of the watermark below.
+    const live = await attach(b.port, b.token);
+    await waitFor(live.frames, isSnapshot);
+    await traffic(b, live);
+
+    // A client that was away comes back behind: its first snapshot says so.
+    const away = await attach(b.port, b.token, 1);
+    const first = await waitFor(away.frames, isSnapshot);
+    assert.equal(first.gapped, true, 'a client that was away should be told once');
+
+    // Switching sessions re-attaches every client (runtime/server.mjs: activate),
+    // and the client has been receiving since: it has no second gap to report.
+    const from = away.frames.length;
+    const res = await fetch(`http://127.0.0.1:${b.port}/api/sessions/new`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-token': b.token }, body: '{}',
+    });
+    assert.ok(res.ok, `the session switch was refused: ${res.status}`);
+    const snap = await waitFor(away.frames, isSnapshot, { from });
+    assert.equal(snap.gapped, false, 'a session switch reported a reconnect the client did not have');
+    live.cancel();
+    away.cancel();
   } finally { await b.stop(); }
 });

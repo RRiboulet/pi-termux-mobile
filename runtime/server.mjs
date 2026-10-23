@@ -74,6 +74,10 @@ const SSE_HEARTBEAT_MS = 20_000;
 const SSE_MAX_BUFFERED_BYTES = envNumber('PI_SSE_MAX_BUFFERED', 1024 * 1024);
 const SSE_STALL_MS = envNumber('PI_SSE_STALL_MS', SSE_HEARTBEAT_MS);
 const watermark = createWatermark();
+// The counter above starts at zero with the process; the client's stored watermark
+// outlives the process. The epoch is how a client tells one run's numbers from the
+// last one's, instead of comparing them.
+const EPOCH = crypto.randomBytes(6).toString('hex');
 const PI_PKG = '@earendil-works/pi-durable';
 // The packages this runtime actually runs. The pi CLI, the pi-server host and
 // the pi-client tunnel are gone from the app, so they are no longer updated.
@@ -287,7 +291,9 @@ async function dropSseClient(client, bufferedBytes) {
 }
 
 function sseWrite(client, event) {
-  if (event && typeof event === 'object' && event.seq === undefined) watermark.stamp(event);
+  // Idempotent: a frame written to several clients keeps the number it was given
+  // the first time.
+  watermark.stamp(event);
   const text = `data: ${JSON.stringify(event)}\n\n`;
   if (!writeSseChunk(client, text, { drop: (c, bytes) => void dropSseClient(c, bytes) })) return;
   sampleSseBudget(client);
@@ -314,14 +320,19 @@ async function attachSse(client) {
   const modelRef = _view ? agentOf(_view).model : null;
   try { _view?.dispose?.(); } catch {}
   const contextWindow = modelByRef(modelRef)?.contextWindow ?? 128000;
-  const gapped = watermark.gapped(client.since);
-  sseWrite(client, watermark.stamp({
+  // Where the counter stood when this client CONNECTED, not where it stands now:
+  // a frame written since then was written for somebody else, or for this client
+  // after it had already attached. A re-attach is a session switch, not a
+  // reconnect -- the client never stopped receiving -- so it reports no gap.
+  const gapped = !client.attached && watermark.gapped(client.since, client.base);
+  client.attached = true;
+  sseWrite(client, {
     type: 'bridge_snapshot', snapshot: stream.snapshot,
     sessionId: String(conversationId), sessionName: meta?.name ?? `Session ${conversationId}`,
     contextTokens,
     contextWindow,
     gapped,
-  }));
+  });
   // The snapshot write above can have dropped this client already -- it is the
   // largest frame we send, so it is the likeliest one to go over the budget.
   // Starting a watch that was stopped with it throws, and the route's catch
@@ -651,8 +662,18 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/events' && req.method === 'GET') {
     if (!authed(req)) return json(res, 401, { error: 'unauthorized' });
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify(watermark.stamp({ type: 'bridge_connected' }))}\n\n`);
-    const client = { res, stream: null, closed: false, overSince: null, lastFlushedBytes: null, sseBytesWritten: 0, since: url.searchParams.get('since') };
+    // `base` below is taken before the connect frame is stamped, so that frame is
+    // not itself counted as a frame the client missed.
+    const client = {
+      res, stream: null, closed: false, overSince: null, lastFlushedBytes: null, sseBytesWritten: 0,
+      // The watermark the client claims to have seen, and where the counter stood
+      // when it connected. The pair is only read by the first attach: a later one
+      // is a session switch, not a reconnect.
+      since: url.searchParams.get('since'),
+      base: watermark.current(),
+      attached: false,
+    };
+    res.write(`data: ${JSON.stringify(watermark.stamp({ type: 'bridge_connected', epoch: EPOCH }))}\n\n`);
     sseClients.add(client);
     req.on('close', async () => {
       client.closed = true;
