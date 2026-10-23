@@ -762,3 +762,78 @@ test('the watermark is stored once per burst, not once per frame', async () => {
   await new Promise((r) => setTimeout(r, 700));
   assert.equal(app.stored.get('pi-lastSeq'), '2', 'the watermark never reached storage');
 });
+
+// ── the context bar ──────────────────────────────────────────────────────
+// Its number comes from the kernel's estimate for the ACTIVE conversation, and it
+// is expensive enough that only two things fetch it: `/api/state`, and the
+// attach snapshot. Both used to be wrong in a way that left the previous
+// session's number on the bar.
+
+const contextLabel = (app) => app.document.querySelector('.context-label')?.textContent.trim();
+
+test('the attach snapshot sets the context size', async () => {
+  const app = await mount({
+    state: { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 100000 },
+  });
+  await app.settle();
+  assert.equal(contextLabel(app), '78%', 'the bar did not start from /api/state');
+
+  // The estimate rides on the frame, not inside the kernel snapshot (which has no
+  // such field): a new session's attach must be able to reset the bar.
+  app.send({ type: 'bridge_snapshot', contextTokens: 0, contextWindow: 128000, snapshot: { entries: [], run: null } });
+  await app.settle();
+  assert.equal(contextLabel(app), '0%', 'the attach snapshot did not reset the context bar');
+});
+
+test('a new session resets the context bar', async () => {
+  const live = { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 100000 };
+  const app = await mount({ state: live });
+  await app.settle();
+  assert.equal(contextLabel(app), '78%');
+
+  // The bridge's answer for the new, empty session.
+  live.contextTokens = 0;
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const newSession = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'New session');
+  assert.ok(newSession, 'the menu does not offer a new session');
+  newSession.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  assert.equal(contextLabel(app), '0%', 'the previous session\'s context stayed on the bar');
+});
+
+test('resetting the conversation resets the context bar', async () => {
+  const live = { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 64000 };
+  const app = await mount({ state: live });
+  await app.settle();
+  assert.equal(contextLabel(app), '50%');
+
+  live.contextTokens = 0;
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const reset = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Reset this conversation');
+  assert.ok(reset, 'the menu does not offer a reset');
+  reset.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  assert.equal(contextLabel(app), '0%', 'the reset conversation kept its context size');
+});
+
+test('a finished turn refetches the context size', async () => {
+  const live = { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 1000 };
+  const app = await mount({ state: live });
+  await app.settle();
+  assert.equal(contextLabel(app), '1%');
+
+  // The turn grew the conversation; the frames carry the text, not the estimate.
+  live.contextTokens = 64000;
+  app.send({ type: 'run_start' });
+  await app.settle();
+  app.send({ type: 'run_end' });
+  await app.settle();
+
+  assert.equal(contextLabel(app), '50%', 'the bar was not refreshed when the turn ended');
+});

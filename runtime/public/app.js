@@ -447,9 +447,8 @@ function renderSnapshot(snapshot) {
     if (slot && t.details?.conversationId !== undefined) slot.child = t.details.conversationId;
   }
 
-  if (snapshot?.agent) set({ model: { ...(state.model ?? {}), ...(snapshot.agent.model ?? {}), contextWindow: snapshot.contextWindow ?? state.model?.contextWindow } });
+  if (snapshot?.agent) set({ model: { ...(state.model ?? {}), ...(snapshot.agent.model ?? {}) } });
   if (snapshot?.usage) set({ usage: snapshot.usage });
-  if (snapshot?.contextTokens !== undefined) set({ contextTokens: snapshot.contextTokens });
   if (snapshot?.inbox) set({ inbox: snapshot.inbox });
   set({ busy: Boolean(snapshot?.run) });
 }
@@ -482,6 +481,13 @@ function handle(ev) {
   if (ev.type === 'bridge_snapshot') {
     renderSnapshot(ev.snapshot);
     if (ev.sessionName) set({ sessionName: ev.sessionName });
+    // The context estimate rides on the FRAME, not inside the kernel's snapshot
+    // (pi-durable's SnapshotEvent has no such field), and this frame is the
+    // authoritative state after an attach: a session switch, a new session, or a
+    // reconnect. Reading it off `ev.snapshot` left the old session's number on
+    // the context bar until something else happened to refetch /api/state.
+    if (typeof ev.contextTokens === 'number') set({ contextTokens: ev.contextTokens });
+    if (typeof ev.contextWindow === 'number') set({ model: { ...(state.model ?? {}), contextWindow: ev.contextWindow } });
     // `gapped` means frames were written while this client was away. The snapshot
     // in this same frame is the whole state, so nothing was lost: this is a note
     // that the transcript was rebuilt, not a warning about missing data.
@@ -514,7 +520,13 @@ function handle(ev) {
   switch (ev.type) {
     case 'snapshot': renderSnapshot(ev); break;
     case 'run_start': set({ busy: true }); break;
-    case 'run_end': set({ busy: false, live: null }); break;
+    case 'run_end':
+      set({ busy: false, live: null });
+      // The context estimate is the kernel's, not something the deltas carry, so
+      // it is refetched when a turn ends -- otherwise the bar sits at whatever it
+      // showed when the page loaded, and every turn makes that more wrong.
+      refreshState().catch(() => {});
+      break;
 
     case 'message_start':
       if (ev.message?.role === 'assistant') set({ live: { text: textOf(ev.message), think: thinkingSegments(ev.message) } });
@@ -1086,10 +1098,10 @@ function MenuSheet() {
             <span class="grow">${it.label}</span>
             <small>${it.hint}</small>
           </button>`)}
-        <button class="row" onClick=${async () => { await post('/api/sessions/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
+        <button class="row" onClick=${async () => { await post('/api/sessions/new').catch(() => {}); await refreshState().catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">New session</span>
         </button>
-        <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
+        <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); await refreshState().catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">Reset this conversation</span>
         </button>
         <button class="row" onClick=${async () => { await post('/api/compact').catch(() => {}); set({ sheet: null }); redraw(); }}>
