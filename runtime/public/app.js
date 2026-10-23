@@ -924,7 +924,7 @@ function BottomBar() {
         <button class="bottombar-item" onClick=${() => openSheet('thinking')} aria-label="Thinking level">${levelLabel}</button>
       </div>
       <div class="bottombar-right">
-        <span class="bottombar-item">${cache}</span>
+        <span class="bottombar-item">chr ${cache}</span>
         <span class="bottombar-dot">·</span>
         <span class="bottombar-item">${cost}</span>
       </div>
