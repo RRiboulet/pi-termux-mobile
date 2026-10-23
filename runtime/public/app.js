@@ -455,7 +455,7 @@ function renderSnapshot(snapshot) {
 }
 
 // ── the frame watermark ──────────────────────────────────────────────────
-// `seq` counts the frames the bridge has written. Remembering the last one lets a
+// `bridgeSeq` counts the frames the bridge has written. Remembering the last one lets a
 // reconnect say where it got to, and lets the bridge answer with `gapped`.
 //
 // The in-memory value is what a reconnect uses, so it moves on every frame. The
@@ -475,7 +475,7 @@ try { window.addEventListener('pagehide', flushSeq); } catch {}
 
 // ── events ───────────────────────────────────────────────────────────────
 function handle(ev) {
-  if (ev && typeof ev.seq === 'number') rememberSeq(ev.seq);
+  if (ev && typeof ev.bridgeSeq === 'number') rememberSeq(ev.bridgeSeq);
   // The server wraps the attach-time view in its OWN frame, and only later
   // batches arrive as pi-durable events. Without this the transcript is empty
   // on every load, every reconnect and every session switch.

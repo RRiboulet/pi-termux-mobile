@@ -12,7 +12,7 @@ test('stamp adds seq to frame', () => {
   const frame = { type: 'x' };
   const out = w.stamp(frame);
   assert.equal(out, frame);
-  assert.equal(frame.seq, 1);
+  assert.equal(frame.bridgeSeq, 1);
   assert.equal(w.current(), 1);
 });
 
@@ -22,7 +22,7 @@ test('stamping twice keeps the first number', () => {
   const frame = { type: 'bridge_extensions' };
   w.stamp(frame);
   w.stamp(frame);
-  assert.equal(frame.seq, 1);
+  assert.equal(frame.bridgeSeq, 1);
   assert.equal(w.current(), 1);
 });
 

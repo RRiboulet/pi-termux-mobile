@@ -1,6 +1,10 @@
 // A sequence number for the frames the bridge writes, so a client can say which
 // frame it last saw and the bridge can say whether anything was written since.
 //
+// The field is `bridgeSeq`, not `seq`: the kernel already uses `seq` for its own
+// commit sequence, and frames here are the kernel's own event objects, so a plain
+// `seq` would be two counters sharing one name and silently picking the wrong one.
+//
 // The counter belongs to the bridge, not to a client: it advances on every frame
 // written to anybody. So with more than one client attached, `gapped()` is an
 // upper bound -- another client's snapshot moves the counter without this client
@@ -21,7 +25,7 @@ export function createWatermark() {
      * it was given the first time, so they all see the same one for the same frame.
      */
     stamp(frame) {
-      if (frame && typeof frame === 'object' && frame.seq === undefined) frame.seq = ++seq;
+      if (frame && typeof frame === 'object' && frame.bridgeSeq === undefined) frame.bridgeSeq = ++seq;
       return frame;
     },
     /**

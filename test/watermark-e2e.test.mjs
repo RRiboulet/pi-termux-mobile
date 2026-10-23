@@ -62,7 +62,7 @@ async function attach(port, token, since) {
 }
 
 const isSnapshot = (f) => f.type === 'bridge_snapshot';
-const seqOf = (f) => (typeof f.seq === 'number' ? f.seq : 0);
+const seqOf = (f) => (typeof f.bridgeSeq === 'number' ? f.bridgeSeq : 0);
 const highest = (frames) => frames.reduce((n, f) => Math.max(n, seqOf(f)), 0);
 
 /** The first frame in `frames` that matches, from index `from` onwards. */
@@ -95,7 +95,7 @@ test('a stale since yields gapped: true', async () => {
     await traffic(b, live);
     live.cancel();
     // The client comes back claiming the watermark it had before that traffic.
-    const back = await attach(b.port, b.token, first.seq);
+    const back = await attach(b.port, b.token, first.bridgeSeq);
     const snap = await waitFor(back.frames, isSnapshot);
     assert.equal(snap.gapped, true, 'frames written while it was away should be a gap');
     back.cancel();
@@ -108,7 +108,7 @@ test('a current since yields gapped: false', async () => {
     const live = await attach(b.port, b.token);
     const first = await waitFor(live.frames, isSnapshot);
     live.cancel();
-    const back = await attach(b.port, b.token, highest(live.frames) || first.seq);
+    const back = await attach(b.port, b.token, highest(live.frames) || first.bridgeSeq);
     const snap = await waitFor(back.frames, isSnapshot);
     assert.equal(snap.gapped, false, 'a client that has seen everything is not gapped');
     // Both connections are this bridge run: the epoch is how a client tells one

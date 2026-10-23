@@ -722,7 +722,7 @@ test('a client that has seen nothing asks for no watermark', async () => {
 
 test('a reconnect asks from the frame it last saw', async () => {
   const app = await mount();
-  app.send({ type: 'bridge_snapshot', seq: 7, snapshot: { entries: [], run: null } });
+  app.send({ type: 'bridge_snapshot', bridgeSeq: 7, snapshot: { entries: [], run: null } });
   await app.settle();
   await app.reconnect();
   assert.match(app.sources[1].url, /since=7/, 'the reconnect did not ask from the watermark the client has');
@@ -736,7 +736,7 @@ test('a reload asks from the stored watermark', async () => {
 test('a watermark from another bridge run is dropped', async () => {
   // The counter starts at zero with the bridge process; the stored number does not.
   const app = await mount({ stored: { 'pi-lastSeq': '42', 'pi-epoch': 'previous-run' } });
-  app.send({ type: 'bridge_connected', epoch: 'this-run', seq: 1 });
+  app.send({ type: 'bridge_connected', epoch: 'this-run', bridgeSeq: 1 });
   await app.settle();
   await app.reconnect();
   assert.match(app.sources[1].url, /since=1/, 'a number from the previous run was compared against this one');
@@ -745,18 +745,18 @@ test('a watermark from another bridge run is dropped', async () => {
 
 test('a gapped reconnect says so, and a plain attach says nothing', async () => {
   const app = await mount();
-  app.send({ type: 'bridge_snapshot', seq: 3, gapped: false, snapshot: { entries: [], run: null } });
+  app.send({ type: 'bridge_snapshot', bridgeSeq: 3, gapped: false, snapshot: { entries: [], run: null } });
   await app.settle();
   assert.doesNotMatch(app.text(), /reconnected/, 'a first attach announced a reconnect');
 
-  app.send({ type: 'bridge_snapshot', seq: 9, gapped: true, snapshot: { entries: [], run: null } });
+  app.send({ type: 'bridge_snapshot', bridgeSeq: 9, gapped: true, snapshot: { entries: [], run: null } });
   await app.settle();
   assert.match(app.text(), /reconnected/, 'a gapped reconnect was not shown');
 });
 
 test('the watermark is stored once per burst, not once per frame', async () => {
   const app = await mount();
-  app.sendMany([{ type: 'run_start', seq: 1 }, { type: 'run_end', seq: 2 }]);
+  app.sendMany([{ type: 'run_start', bridgeSeq: 1 }, { type: 'run_end', bridgeSeq: 2 }]);
   await app.settle();
   assert.equal(app.stored.has('pi-lastSeq'), false, 'every streamed frame wrote to storage');
   await new Promise((r) => setTimeout(r, 700));
