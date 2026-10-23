@@ -13,7 +13,12 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / 'runtime'
 ASSETS = ROOT / 'android/app/src/main/assets'
+# Every module the runtime imports has to be here: a file that is left out boots
+# from the repo and fails on the phone with ERR_MODULE_NOT_FOUND, which is a dead
+# bridge and no way for the user to see why. test/packaging.test.mjs checks this
+# list against runtime/.
 FILES = ['server.mjs', 'common.mjs', 'sse.mjs', 'models-config.mjs', 'node-bin.mjs', 'gate.mjs',
+         'watermark.mjs',
          'package.json', 'package-lock.json', 'public', 'node_modules']
 
 if not (RUNTIME / 'node_modules/@earendil-works/pi-durable').is_dir():
