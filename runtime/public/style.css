@@ -344,7 +344,7 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
   padding: 4px 6px;
 }
 .send:disabled { color: var(--faint); }
-.send.stop { color: var(--bad); }
+.send.stop { color: var(--muted); }
 
 /* ── sheets ──────────────────────────────────────────────────────────── */
 .scrim {
