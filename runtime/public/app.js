@@ -281,7 +281,7 @@ function inline(src, depth = 0) {
 // ── state ────────────────────────────────────────────────────────────────
 const state = {
   ready: false,
-  lastSeq: 0,
+  lastSeq: Number(localStorage.getItem('pi-lastSeq') || 0),
   error: null,
   busy: false,
   model: null,
@@ -447,7 +447,7 @@ function renderSnapshot(snapshot) {
 
 // ── events ───────────────────────────────────────────────────────────────
 function handle(ev) {
-  if (ev && typeof ev.seq === 'number') set({ lastSeq: ev.seq });
+  if (ev && typeof ev.seq === 'number') { set({ lastSeq: ev.seq }); try { localStorage.setItem('pi-lastSeq', String(ev.seq)); } catch {} }
   // The server wraps the attach-time view in its OWN frame, and only later
   // batches arrive as pi-durable events. Without this the transcript is empty
   // on every load, every reconnect and every session switch.
