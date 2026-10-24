@@ -495,3 +495,14 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 }
 .copy-btn:active { color: var(--muted); }
 .copy-btn svg { color: inherit; }
+
+/* The update's own output, where the tap happened: npm's last lines are the only
+   useful explanation when an install fails. */
+.sheet .pi-log {
+  margin: 0; padding: 10px 16px 14px;
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted); white-space: pre-wrap; word-break: break-word;
+  max-height: 28vh; overflow-y: auto;
+  border-bottom: 1px solid var(--line-soft);
+}
+.sheet .pi-error { color: var(--bad); }

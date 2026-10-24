@@ -19,6 +19,8 @@ const PUBLIC = new URL('../runtime/public/', import.meta.url);
 /** Mount the client in a fresh DOM and return the handles the test needs. */
 async function mount({
   state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {}, sessions = {},
+  // What /api/pi-update answers, poll by poll, and what starting one answers.
+  piStatus = [{ installed: '1.4.0', running: false }], piStart = { started: true },
   // What localStorage already holds, as a reload would find it.
   stored = {},
   // What /api/oauth/status answers, poll by poll. The last entry repeats, so a
@@ -33,6 +35,10 @@ async function mount({
   const sources = [];
   const fetches = [];
   let oauthPolls = 0;
+  let piPolls = 0;
+  const nextPiStatus = () => typeof piStatus === 'function'
+    ? piStatus(piPolls++)
+    : piStatus[Math.min(piPolls++, piStatus.length - 1)];
   const nextOauthStatus = () => {
     const n = oauthPolls++;
     return typeof oauthStatus === 'function'
@@ -67,6 +73,7 @@ async function mount({
       : u.includes('/api/usage') ? usage
       : u.includes('/api/extensions') ? extensions
       : u.includes('/api/sessions') ? sessions
+      : u.includes('/api/pi-update') ? (opts?.method === 'POST' ? piStart : nextPiStatus())
       : {};
     return { ok: true, status: 200, json: async () => body };
   };
@@ -903,4 +910,65 @@ test('the sessions sheet marks the session that is active', async () => {
   const marked = rows.filter((r) => r.includes('·'));
   assert.equal(marked.length, 1, `expected one marked session, got ${JSON.stringify(rows)}`);
   assert.match(marked[0], /^13\b/, `the marker is on the wrong session: ${JSON.stringify(rows)}`);
+});
+
+// ── updating pi from the menu ────────────────────────────────────────────
+// The tap used to be invisible: it set a one-line notice the menu does not
+// render, the install ran in the background, and the only effect anyone could
+// see was the bridge restarting.
+
+const openMenu = async (app) => {
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+};
+const piRow = (app) => [...app.document.querySelectorAll('button.row')].find((b) => b.textContent.includes('Update pi'));
+/** The update is polled, so the assertion waits for the text rather than guessing a delay. */
+async function waitForText(app, re, ms = 4000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await app.settle();
+    if (re.test(app.text())) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.fail(`never saw ${re}: ${app.text().slice(0, 400)}`);
+}
+
+test('the menu says which pi is installed', async () => {
+  const app = await mount({ piStatus: [{ installed: '1.4.0', running: false }] });
+  await app.settle();
+  await openMenu(app);
+  assert.match(piRow(app)?.textContent ?? '', /v1\.4\.0/, 'the menu does not say which pi is running');
+});
+
+test('an update reports that it is running, then the version it reached', async () => {
+  const app = await mount({
+    piStatus: [
+      { installed: '1.4.0', running: false },
+      { installed: '1.4.0', running: true },
+      { installed: '1.5.0', running: false, done: true, ok: true, changed: true, version: '1.5.0' },
+    ],
+  });
+  await app.settle();
+  await openMenu(app);
+  piRow(app).dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.match(piRow(app).textContent, /updating/, 'the tap gave no sign that anything started');
+
+  await waitForText(app, /updated to 1\.5\.0/);
+});
+
+test("a failed update shows npm's error and its last words", async () => {
+  const app = await mount({
+    piStatus: [
+      { installed: '1.4.0', running: false },
+      { installed: '1.4.0', running: false, done: true, ok: false, error: 'npm exited with code 1',
+        log: ['npm ERR! code E404', 'npm ERR! 404 Not Found - GET https://registry.npmjs.org/@earendil-works%2fpi-durable'] },
+    ],
+  });
+  await app.settle();
+  await openMenu(app);
+  piRow(app).dispatchEvent(new window.Event('click', { bubbles: true }));
+  await waitForText(app, /npm exited with code 1/);
+  assert.match(app.text(), /E404/, "npm's own output is not shown");
 });

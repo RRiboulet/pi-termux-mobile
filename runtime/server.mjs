@@ -85,10 +85,11 @@ const EARENDIL_PKGS = ['@earendil-works/pi-durable', '@earendil-works/pi-ai', '@
 function piInstalledVersion() {
   try { return JSON.parse(readFileSync(path.join(ROOT,'node_modules',PI_PKG,'package.json'),'utf8')).version; } catch { return null; }
 }
-const piUpdate = { running: false, done: false, ok: false, version: null, error: null, log: [] };
+const piUpdate = { running: false, done: false, ok: false, changed: false, version: null, error: null, log: [] };
 function startPiUpdate() {
-  if (piUpdate.running) return false;
-  Object.assign(piUpdate, { running: true, done: false, ok: false, version: null, error: null, log: [] });
+  if (piUpdate.running) return { started: false, reason: 'an update is already running' };
+  const before = piInstalledVersion();
+  Object.assign(piUpdate, { running: true, done: false, ok: false, changed: false, version: null, error: null, log: [] });
   const prefix = process.env.PREFIX || '';
   // Run npm via node to avoid Termux shebang incompatibility on Android.
   // Try: node <npm-cli.js>, fallback to direct npm binary.
@@ -110,13 +111,24 @@ function startPiUpdate() {
   const addLog = (d) => { for (const l of String(d).split('\n')) { const t = l.trimEnd(); if (t) { piUpdate.log.push(t); if (piUpdate.log.length > 500) piUpdate.log.shift(); } } };
   child.stdout.on('data', addLog); child.stderr.on('data', addLog);
   child.on('close', (code) => {
+    const after = piInstalledVersion();
     piUpdate.running = false; piUpdate.done = true;
-    piUpdate.ok = code === 0; piUpdate.version = piInstalledVersion();
+    piUpdate.ok = code === 0; piUpdate.version = after;
+    // Restarting reloads the modules, so it is only worth interrupting the
+    // bridge for when the version actually moved. `@latest` resolving to what is
+    // already installed used to exit the process anyway: from the user's side
+    // that is a dropped connection and no explanation.
+    piUpdate.changed = code === 0 && after !== before;
     piUpdate.error = code !== 0 ? `npm exited with code ${code}` : null;
-    if (code === 0) { addLog(`pi updated to ${piUpdate.version} — restarting bridge…`); setTimeout(() => process.exit(0), 1500); }
+    if (code === 0) {
+      addLog(piUpdate.changed
+        ? `pi ${before ?? '?'} → ${after} — restarting the bridge…`
+        : `pi ${after ?? '?'} is already the latest — nothing to restart`);
+      if (piUpdate.changed) setTimeout(() => process.exit(0), 1500);
+    }
   });
   child.on('error', (e) => { piUpdate.running = false; piUpdate.done = true; piUpdate.ok = false; piUpdate.error = e.message; });
-  return true;
+  return { started: true, from: before };
 }
 
 const MIME = {
@@ -489,8 +501,13 @@ async function handleApi(req, res, url, p) {
     throw Object.assign(new Error('harness not ready'), { status: 503 });
   }
 
+  if (p === '/api/pi-update' && req.method === 'GET') {
+    // `installed` is read from disk every time: it is the answer to "what am I
+    // running", and the update is the one thing that changes it.
+    return json(res, 200, { ...piUpdate, installed: piInstalledVersion() });
+  }
   if (p === '/api/pi-update' && req.method === 'POST') {
-    return json(res, 200, { started: startPiUpdate() });
+    return json(res, 200, startPiUpdate());
   }
   if (p === '/api/state') return json(res, 200, await activeState());
 
