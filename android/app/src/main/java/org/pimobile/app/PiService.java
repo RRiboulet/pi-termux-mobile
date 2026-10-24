@@ -14,6 +14,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import org.json.JSONObject;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,11 +39,23 @@ import java.util.regex.Pattern;
 public final class PiService extends Service {
 
     private static final String CHANNEL = "pi-runtime";
+    // A second channel, because the ongoing one is deliberately silent: a turn that
+    // ends while the app is in the background is news, and news is allowed to buzz.
+    private static final String TURN_CHANNEL = "pi-turns";
+    private static final int ONGOING_ID = 1;
+    private static final int FINISHED_ID = 2;
     private static final long STOP_GRACE_MS = 8000;
 
     private final Object lock = new Object();
     private Process nodeProcess;
     private Thread supervisor;
+    private Thread statusWatcher;
+
+    /**
+     * Set by MainActivity: a finished turn is only worth a notification when nobody
+     * is looking at the screen.
+     */
+    public static volatile boolean appVisible = false;
     private volatile boolean stopping;
     private PowerManager.WakeLock wakeLock;
 
@@ -58,6 +71,11 @@ public final class PiService extends Service {
             stopping = false;
             supervisor = new Thread(this::superviseNode, "pi-supervisor");
             supervisor.start();
+            if (statusWatcher == null || !statusWatcher.isAlive()) {
+                statusWatcher = new Thread(this::watchStatus, "pi-status");
+                statusWatcher.setDaemon(true);
+                statusWatcher.start();
+            }
         }
         return START_STICKY;
     }
@@ -251,30 +269,12 @@ public final class PiService extends Service {
             nm.createNotificationChannel(new NotificationChannel(
                     CHANNEL, "pi runtime", NotificationManager.IMPORTANCE_LOW));
         }
-        Intent open = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, open,
-                PendingIntent.FLAG_IMMUTABLE);
-        Notification n;
-        if (Build.VERSION.SDK_INT >= 26) {
-            n = new Notification.Builder(this, CHANNEL)
-                    .setContentTitle("pi mobile")
-                    .setContentText("agent runtime running")
-                    .setSmallIcon(android.R.drawable.ic_media_play)
-                    .setContentIntent(pi)
-                    .build();
-        } else {
-            n = new Notification.Builder(this)
-                    .setContentTitle("pi mobile")
-                    .setContentText("agent runtime running")
-                    .setSmallIcon(android.R.drawable.ic_media_play)
-                    .setContentIntent(pi)
-                    .build();
-        }
+        Notification n = buildOngoing("starting\u2026");
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(1, n,
+            startForeground(ONGOING_ID, n,
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         } else {
-            startForeground(1, n);
+            startForeground(ONGOING_ID, n);
         }
     }
 
@@ -285,6 +285,111 @@ public final class PiService extends Service {
             wakeLock.setReferenceCounted(false); // repeated starts must not stack holds
         }
         if (!wakeLock.isHeld()) wakeLock.acquire();
+    }
+
+    /**
+     * Follow what the bridge is doing, for the notification.
+     *
+     * The bridge writes $HOME/.pi-mobile/status.json when a run starts, when a tool
+     * starts, and when the run ends; this reads it once a second. It is a file and
+     * not a socket because node cannot post a notification and Android cannot see
+     * inside node — the file is the whole interface between them.
+     */
+    private void watchStatus() {
+        final File file = new File(new File(new File(getFilesDir(), "home"), ".pi-mobile"), "status.json");
+        String shownText = null;
+        long shownFinishedAt = -1;
+        while (!stopping) {
+            try {
+                if (file.isFile()) {
+                    JSONObject st = new JSONObject(readText(file));
+                    String state = st.optString("state", "idle");
+                    String tool = st.optString("tool", "");
+                    long finishedAt = st.optLong("finishedAt", 0);
+                    String text = "working".equals(state)
+                            ? (tool.isEmpty() ? "working" : "working \u00b7 " + tool)
+                            : "idle";
+                    if (!text.equals(shownText)) {
+                        shownText = text;
+                        updateOngoing(text);
+                    }
+                    if (shownFinishedAt < 0) {
+                        shownFinishedAt = finishedAt;   // adopt: a restart is not a finish
+                    } else if (finishedAt > shownFinishedAt) {
+                        shownFinishedAt = finishedAt;
+                        if (!appVisible) postFinished(tool);
+                    }
+                }
+            } catch (Exception ignored) {
+                // A half-written file or no bridge yet: try again next tick.
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ie) {
+                return;
+            }
+        }
+    }
+
+    private void updateOngoing(String text) {
+        try {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            nm.notify(ONGOING_ID, buildOngoing(text));
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** A turn ended with the app in the background. */
+    private void postFinished(String tool) {
+        try {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(new NotificationChannel(
+                        TURN_CHANNEL, "finished turns", NotificationManager.IMPORTANCE_DEFAULT));
+            }
+            Intent open = new Intent(this, MainActivity.class);
+            PendingIntent pi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE);
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, TURN_CHANNEL)
+                    : new Notification.Builder(this);
+            b.setContentTitle("pi finished")
+                    .setContentText(tool.isEmpty() ? "the turn is done" : "the turn is done \u00b7 " + tool)
+                    .setSmallIcon(android.R.drawable.ic_media_play)
+                    .setContentIntent(pi)
+                    .setAutoCancel(true);
+            nm.notify(FINISHED_ID, b.build());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static String readText(File f) throws IOException {
+        FileInputStream in = new FileInputStream(f);
+        try {
+            byte[] buf = new byte[(int) f.length()];
+            int read = 0;
+            while (read < buf.length) {
+                int n = in.read(buf, read, buf.length - read);
+                if (n < 0) break;
+                read += n;
+            }
+            return new String(buf, 0, read, "UTF-8");
+        } finally {
+            try { in.close(); } catch (IOException ignored) { }
+        }
+    }
+
+    private Notification buildOngoing(String text) {
+        Intent open = new Intent(this, MainActivity.class);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, open,
+                PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, CHANNEL)
+                : new Notification.Builder(this);
+        return b.setContentTitle("pi mobile")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentIntent(pi)
+                .build();
     }
 
     @Override

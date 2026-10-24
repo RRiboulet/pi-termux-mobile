@@ -33,9 +33,13 @@ Ordered by value per unit of work. One item per session.
    ships with the next APK).
 3. ~~**Stuck-state audit of the client.**~~ Done: one toast for every notice,
    `connecting…` instead of a false `idle`, and a "Reload client" row in the menu.
-4. **A notification when a turn finishes.** The foreground notification is a
-   static "agent runtime running". Needs Java (`PiService`), so it ships with an
-   APK — pair it with 9.
+4. **A notification when a turn finishes.** Code done, **needs a build**:
+   the bridge writes `$HOME/.pi-mobile/status.json` (`state`, `tool`, `session`,
+   `finishedAt`) from the kernel's own event stream — no client needed — and
+   PiService polls it to put `working · <tool>` in the ongoing notification and to
+   post "pi finished" when a turn ends with the app in the background
+   (`MainActivity` reports `appVisible`). `test/status-e2e.test.mjs` covers the
+   bridge half; the Java half is unverified until it compiles, which is item 9.
 5. **Attachments.** Images and files from the phone. Biggest item here: check
    what pi-durable accepts as content before designing the UI.
 6. ~~**CI.**~~ Done: `.github/workflows/tests.yml`, green on `dev` and on pull
