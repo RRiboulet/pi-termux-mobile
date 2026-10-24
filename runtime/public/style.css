@@ -516,3 +516,13 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 }
 .sheet .icon.small { width: 34px; height: 34px; font-size: 15px; }
 .sheet .icon.small[aria-label="Archive"] { color: var(--muted); }
+
+/* The one action that changes what the next turn costs lives next to the number
+   it would change. */
+.context-compact {
+  margin-left: 4px; padding: 1px 8px;
+  font-size: 11.5px; color: var(--accent);
+  border: 1px solid var(--line-soft); border-radius: 999px;
+  white-space: nowrap;
+}
+.context-compact:active { background: var(--accent-wash); }
