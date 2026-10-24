@@ -403,6 +403,28 @@ function serveStatic(res, pathname) {
   let st = null;
   try { st = statSync(filePath); } catch {}
   if (!st?.isFile()) { filePath = path.join(PUBLIC, 'index.html'); }
+  // `no-store` covers the response, not what the WebView already compiled: a
+  // reload that reuses a cached page can keep running the module it fetched
+  // before the file was edited, which is invisible until an edit appears not to
+  // have landed. Naming the assets by their mtime makes every edit a URL the
+  // WebView has never seen, so a stale copy cannot shadow a fresh one.
+  if (path.basename(filePath) === 'index.html') {
+    let html;
+    try { html = readFileSync(filePath, 'utf8'); } catch { res.writeHead(500); return res.end(); }
+    const version = (name) => {
+      try { return Math.trunc(statSync(path.join(PUBLIC, name)).mtimeMs).toString(36); } catch { return '0'; }
+    };
+    // An existing query is replaced, not appended to: a hand-versioned page (the
+    // deploy path for a runtime older than this code) must not freeze a stale
+    // version forever.
+    html = html.replace(/(href|src)="(style\.css|app\.js)(\?[^"]*)?"/g, (_, attr, name) => `${attr}="${name}?v=${version(name)}"`);
+    res.writeHead(200, {
+      'content-type': MIME['.html'],
+      'cache-control': 'no-store',
+      'content-length': Buffer.byteLength(html),
+    });
+    return res.end(html);
+  }
   // No caching: the whole point of the no-build client is that the file the agent edits on the
   // phone is the file that runs, and that only works if a reload really re-fetches it.
   res.writeHead(200, {

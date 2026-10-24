@@ -300,6 +300,7 @@ const state = {
   usageSession: null,   // the session slice of /api/usage
   inbox: [],
   sessionName: 'Main',
+  sessionId: null,      // which session /api/state says is active
   entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
   copied: new Set(),   // keys of assistant messages whose copy feedback is showing
   seen: new Set(),
@@ -646,7 +647,10 @@ async function refreshState() {
       contextTokens: s.contextTokens ?? state.contextTokens ?? 0,
       // The inbox arrives as the pi.inbox DOCUMENT, whose shape is {items:[...]}.
       inbox: s.inbox?.items ?? (Array.isArray(s.inbox) ? s.inbox : []),
-      sessionName: s.sessionName ?? 'Main',
+  sessionName: s.sessionName ?? 'Main',
+      // The id is what the sessions sheet marks as current. Matching on the name
+      // was wrong: sessions created without one all report 'Main'.
+      sessionId: s.sessionId ?? null,
       error: null,
     });
   } catch (e) {
@@ -1342,7 +1346,7 @@ function Sheet() {
       ? sessions.map((s) => {
           const id = s.id ?? s;
           return html`<button class="row" key=${id} onClick=${() => chooseSession(id)}>
-            <span class="grow">${s.name ?? id}${s.id === state.sessionId || s.name === state.sessionName ? ' ·' : ''}</span>
+            <span class="grow">${s.name ?? id}${String(s.id) === String(state.sessionId) ? ' ·' : ''}</span>
             ${s.cwd ? html`<small>${s.cwd}</small>` : null}
           </button>`;
         })

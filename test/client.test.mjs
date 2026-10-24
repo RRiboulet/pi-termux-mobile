@@ -18,7 +18,7 @@ const PUBLIC = new URL('../runtime/public/', import.meta.url);
 
 /** Mount the client in a fresh DOM and return the handles the test needs. */
 async function mount({
-  state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {},
+  state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {}, sessions = {},
   // What localStorage already holds, as a reload would find it.
   stored = {},
   // What /api/oauth/status answers, poll by poll. The last entry repeats, so a
@@ -66,6 +66,7 @@ async function mount({
       : u.includes('/api/oauth/start') ? { id: 'login-1' }
       : u.includes('/api/usage') ? usage
       : u.includes('/api/extensions') ? extensions
+      : u.includes('/api/sessions') ? sessions
       : {};
     return { ok: true, status: 200, json: async () => body };
   };
@@ -880,4 +881,26 @@ test('the money and cache follow the usage the bridge reports', async () => {
   await app.settle();
   assert.match(bottomBar(app), /chr 33%/, 'the live usage did not reach the cache hit rate');
   assert.match(bottomBar(app), /\$0\.420/, 'the live usage did not reach the cost');
+});
+
+test('the sessions sheet marks the session that is active', async () => {
+  // The marker used to be by name, and every session created without one reports
+  // 'Main' — so it landed on the wrong row, or on several. /api/state carries the
+  // id; the sheet uses it.
+  const app = await mount({
+    state: { sessionId: '13', sessionName: 'Main' },
+    sessions: { activeId: '13', sessions: [{ id: '1', name: 'Main' }, { id: '13' }] },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const sessionsRow = [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Sessions'));
+  sessionsRow.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const rows = [...app.document.querySelectorAll('button.row')].map((b) => b.textContent.replace(/\s+/g, ' ').trim());
+  const marked = rows.filter((r) => r.includes('·'));
+  assert.equal(marked.length, 1, `expected one marked session, got ${JSON.stringify(rows)}`);
+  assert.match(marked[0], /^13\b/, `the marker is on the wrong session: ${JSON.stringify(rows)}`);
 });
