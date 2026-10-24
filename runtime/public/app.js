@@ -902,7 +902,6 @@ function StatusStrip() {
 
   return html`
     <div class=${`strip ${tone}`}>
-      <span class="dot"></span>
       <span>${label}</span>
       ${queued && !state.busy ? html`<span>· ${queued} waiting</span>` : null}
     </div>`;
