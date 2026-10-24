@@ -21,6 +21,8 @@ async function mount({
   state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {}, sessions = {},
   // What /api/backup lists, and what pi-update answers poll by poll.
   backup = { dir: '/x/backups', running: false, backups: [] },
+  // Paths that answer with an error instead, so a failure path can be driven.
+  fail = {},
   // What /api/pi-update answers, poll by poll, and what starting one answers.
   piStatus = [{ installed: '1.4.0', running: false }], piStart = { started: true },
   // What localStorage already holds, as a reload would find it.
@@ -78,6 +80,8 @@ async function mount({
       : u.includes('/api/pi-update') ? (opts?.method === 'POST' ? piStart : nextPiStatus())
       : u.includes('/api/backup') ? (opts?.method === 'POST' ? { started: true, name: 'pi-backup-x.tar.gz', path: '/x/b', bytes: 1 } : backup)
       : {};
+    const refusal = Object.entries(fail).find(([path]) => u.includes(path));
+    if (refusal) return { ok: false, status: refusal[1].status ?? 500, json: async () => refusal[1].body ?? { error: 'refused' } };
     return { ok: true, status: 200, json: async () => body };
   };
 
@@ -91,6 +95,8 @@ async function mount({
     sources,
     stored: globalThis.localStorage._m,
     send(ev) { source.onmessage({ data: JSON.stringify(ev) }); },
+    /** The stream came up, as the real one does before any frame arrives. */
+    open() { source.onopen?.(); },
     sendMany(evs) { for (const ev of evs) source.onmessage({ data: JSON.stringify(ev) }); },
     /** Drop the stream, and wait for the client's own retry to open the next one. */
     async reconnect() {
@@ -1104,4 +1110,61 @@ test('a large context offers to compact, a small one does not', async () => {
   await tight.settle();
   assert.equal([...tight.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'compact'), undefined,
     'a context at 8% offered a compaction');
+});
+
+// ── stuck states end somewhere the user can act ──────────────────────────
+// A message raised from a sheet that does not render it is a message nobody
+// sees: that is how "Update pi" looked like a no-op for a day. One toast now, and
+// a way out of a page that outlived its bridge.
+
+test('a notice is shown wherever it is raised', async () => {
+  const app = await mount({
+    state: { sessionId: '13' },
+    // The server refuses to archive the open session; the sheet that raises it is
+    // the sessions sheet, which never rendered notices.
+    sessions: [{ id: '13', name: 'Main' }, { id: '20', name: 'old' }],
+    fail: { '/api/sessions/archive': { status: 400, body: { error: 'cannot archive the session that is open' } } },
+  });
+  await app.settle();
+  await openSessions(app);
+  const row = [...app.document.querySelectorAll('.row.session')].find((r) => r.textContent.includes('old'));
+  row.querySelector('button[aria-label="Archive"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const toast = app.document.querySelector('.notice-toast');
+  assert.ok(toast, 'the refusal was raised and nothing showed it');
+  assert.match(toast.textContent, /cannot archive the session that is open/);
+
+  // Tapping it dismisses it; nothing else on screen changes.
+  toast.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.equal(app.document.querySelector('.notice-toast'), null, 'the toast would not go away');
+});
+
+test('the strip says connecting, not idle, before the stream is up', async () => {
+  const app = await mount();
+  await app.settle();
+  assert.equal(app.document.querySelector('.strip').textContent.trim(), 'connecting…',
+    'a page whose stream has not opened claimed the bridge was idle');
+
+  const strip = () => app.document.querySelector('.strip').textContent.trim();
+  app.open();
+  await app.settle();
+  assert.equal(strip(), 'idle', 'the strip did not settle to idle after the stream opened');
+});
+
+test('the menu offers a reload for a page that outlived its bridge', async () => {
+  const app = await mount();
+  await app.settle();
+  let reloaded = 0;
+  globalThis.location.reload = () => { reloaded += 1; };
+
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const row = [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Reload client'));
+  assert.ok(row, 'no reload row in the menu');
+  row.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.equal(reloaded, 1, 'the reload row did not reload');
 });
