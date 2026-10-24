@@ -50,6 +50,7 @@ async function signIn() {
   if (!body) return false;
   try {
     const r = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.status === 404 || r.status === 405) return 'legacy';   // a bridge without sign-in: keep the token
     if (!r.ok) return false;
     const j = await r.json();
     token = '';
@@ -61,10 +62,12 @@ async function signIn() {
 }
 
 // ── api ──────────────────────────────────────────────────────────────────
-const headers = () => ({ 'content-type': 'application/json' });
+// The cookie is the credential; the token is only here for a bridge too old to know
+// one, and it is dropped the moment the exchange succeeds.
+const headers = () => (token ? { 'content-type': 'application/json', 'x-token': token } : { 'content-type': 'application/json' });
 
 async function get(path) {
-  const r = await fetch(path);
+  const r = await fetch(path, token ? { headers: { 'x-token': token } } : {});
   if (!r.ok) throw new Error(`http ${r.status}`);
   return r.json();
 }
@@ -641,7 +644,8 @@ let failures = 0;
 function subscribe() {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   const since = state.lastSeq > 0 ? `&since=${encodeURIComponent(state.lastSeq)}` : '';
-  const source = new EventSource(`/api/events${since ? '?' + since.slice(1) : ''}`);
+  const legacy = token ? `token=${encodeURIComponent(token)}` : '';
+  const source = new EventSource(`/api/events?${[legacy, since.slice(1)].filter(Boolean).join('&')}`);
   live = source;
   source.onmessage = (m) => {
     try { handle(JSON.parse(m.data)); } catch { /* a malformed frame is not worth crashing over */ }
@@ -1937,9 +1941,11 @@ doc.getElementById('app').replaceChildren();
 // exchanged for one here, before the first request that needs it.
 (async () => {
   const ok = await signIn();
-  if (!ok) {
-    const probe = await fetch('/api/session').then((r) => r.json()).catch(() => ({ ok: false }));
-    set({ pairNeeded: !probe.ok });
+  if (ok === false) {
+    // Only an old bridge answers false for a token it could not use; a bridge that
+    // knows sign-in and has no cookie for us answers 401/404 on the probe.
+    const probe = await fetch('/api/session').then(async (r) => (r.ok ? r.json() : null)).catch(() => null);
+    set({ pairNeeded: probe !== null && probe.ok !== true });
   }
   subscribe();
   refreshState();
