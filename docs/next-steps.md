@@ -1,0 +1,106 @@
+# Next steps — hand-off
+
+*2026-10-24, `dev@4f673bf`. Written at the end of a long session that got
+expensive; the "paying less" section is the point of half this file.*
+
+## Where things stand
+
+- **`dev` is green.** `node scripts/run-tests.mjs` runs 14 test files: DOM tests
+  for the client, e2e against a booted bridge for SSE, sessions/backup and static
+  assets, plus the textual client↔server contract check.
+- **The phone runs a hand-copied runtime, not the APK.** `files/runtime/` holds
+  `dev@4f673bf`'s `server.mjs`, `common.mjs`, `watermark.mjs` and `public/`.
+  `server.mjs.bak` and `common.mjs.bak` are the previous copies. The APK's own
+  payload is older; **installing a different APK wipes `files/runtime`** (HOME and
+  WORK survive).
+- **The bridge is on a stable port now: `127.0.0.1:8787`** (8787→8791, then
+  ephemeral). The WebView's origin is that port, so a bridge restart reconnects in
+  place instead of stranding the page on a dead URL. Live since 2026-10-24 12:54.
+- `scripts/ui-dump.mjs` is in the working tree, untracked: it mounts the real
+  client in linkedom **against the live bridge** and prints what the user would
+  see as text. Commit it as a tool or delete it — don't leave it rotting.
+
+## The queue
+
+Ordered by value per unit of work. One item per session.
+
+1. **Put the token bill on screen.** `/api/usage` and the `pi.usage` ledger carry
+   `input`/`cacheRead`/`output`/`cost`, and the Usage sheet shows only tokens and
+   `$`. A session's spend is its prefix × tool rounds, so show per-model
+   `in · cacheRead · out · $` and the session's own total, and add a hint in the
+   composer when the last call's `cacheRead` passes ~150k: "context is large —
+   compact". Cheap, and it is the number that made this session cost $0.75.
+2. **A log view.** `files/log/node.log` and `files/log/service-error.txt` are
+   written by PiService and nothing reads them. Add `GET /api/log?tail=N` and a
+   sheet, so "lost the connection — retrying" comes with a reason. While there:
+   `service-error.txt` records intentional stops as `node exited 0; restarting` —
+   filter those out at the source.
+3. **Stuck-state audit of the client.** The reload-once-after-twelve-failures
+   fallback exists; the Activity still only loads a page in `onCreate`. Add a
+   "Reload client" row to the menu (`location.reload()`), and make sure every
+   failure path ends somewhere the user can act.
+4. **A notification when a turn finishes.** The foreground notification is a
+   static "agent runtime running". Needs Java (`PiService`), so it ships with an
+   APK — pair it with 9.
+5. **Attachments.** Images and files from the phone. Biggest item here: check
+   what pi-durable accepts as content before designing the UI.
+6. **CI.** There is none. A workflow that runs `node scripts/run-tests.mjs` on
+   every push is the cheapest quality win in the repo: the branch merged as #22
+   was red when it was picked up, and nothing said so.
+7. **Store size.** Nothing ever deletes rows; the store is 15 MB with 22
+   conversations and 4,556 entries and only grows. Two routes: a "purge archived
+   sessions" maintenance command (SQL in one transaction, forced backup first,
+   `VACUUM` after), or upstream a conversation-delete in the kernel.
+8. **Document restore.** Backup exists (menu → Back up sessions); restore is a
+   manual procedure that has to happen with the database closed. Write it down in
+   `docs/` — the archive contains `harness.sqlite`, `backup.json` and
+   `~/.pi/agent/{auth,models}.json`.
+9. **Prove the APK path.** `prepare-runtime.py` + `gradlew` in the devcontainer,
+   then boot it. `test/packaging.test.mjs` only proves the *list*; a real build is
+   the only thing that proves the payload.
+10. **Visual coverage.** The client tests are linkedom: structure and text, no
+    layout, no touch, no CSS. Everything the user reported by eye this week (a
+    pulsing dot, a bar that would not reset) was invisible to the suite.
+
+## Facts that cost hours — do not rediscover them
+
+- **Client deploy** = copy into `files/runtime/public/`. Live after a page load,
+  and a page load happens only in `MainActivity.onCreate`: **Back out of the app
+  and relaunch**. Force stop kills the bridge *and* the agent session.
+- **Server deploy** = copy the `.mjs` into `files/runtime/`, then
+  `pkill -f 'files/runtime/server.mjs'`; PiService restarts node in ~1 s. It ends
+  a running turn, so do it with nothing in flight.
+- The Activity never reloads on resume, and the served page names its assets by
+  mtime (`app.js?v=…`), which is why a stale page can no longer masquerade as a
+  deployed fix.
+- `scripts/prepare-runtime.py` packages an explicit `FILES` list.
+  `test/packaging.test.mjs` guards it: a module missing from that list is a dead
+  bridge on the phone (`ERR_MODULE_NOT_FOUND` at boot).
+- **There is no conversation delete**, in the app or in pi-durable. Archiving is a
+  flag in the `app.sessions` document; the transcript stays. Nothing in the app
+  deletes rows, not even "Reset this conversation" (it appends a reset marker).
+- **Usage is per assistant message**: `entries.record.model[].usage` with
+  `timestamp` (ms). The `pi.usage` document is a cumulative ledger per
+  (conversation, model) and has no timestamps. Session 7992 reached 746 entries /
+  1.87 MB / ~380k tokens of prefix per call.
+- `files/log/service-error.txt` logs normal stops as errors — read it with that in
+  mind.
+- The debug keystore lives in the devcontainer. A fresh container cannot update an
+  installed APK → uninstall → HOME is gone → **back up first**.
+
+## Paying less
+
+A session's cost is its prefix × its tool rounds; both are under your control.
+
+- **One task per session.** Start fresh, and compact (menu → Compact context) once
+  the context passes ~150k. Do not continue a 1.8 MB session to save a minute.
+- **Read narrowly:** `rg -n` for locations, `sed -n 'a,bp'` for the region. Never
+  `cat` a large file. Pipe long output through `head`/`tail`, or write it to a file
+  and grep that.
+- **Never paste a whole diff or a whole log into the conversation** — it stays in
+  the prefix for every later call. `git diff --stat`, then the hunks you need.
+- **Test the file you touched** (`node scripts/run-tests.mjs client`) while
+  iterating; the full 14-file run once before a push (≈2 min, 20 s of it is
+  `sse-stall`). A DOM test is ~50 ms; each e2e bridge boot is ~6–8 s.
+- **One PR per concern**: branch off `dev`, tests in the same commit, merge with a
+  merge commit. Leave nothing half-pushed.
