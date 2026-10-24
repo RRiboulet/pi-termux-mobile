@@ -1,0 +1,49 @@
+# The gates this repo has been running by hand.
+#
+# There was no CI, so a branch could be red and nothing said so: the branch that
+# became #22 was failing its own e2e test when it was picked up, and the only
+# signal was a reviewer running the suite. This runs the same command on every
+# push to dev and every pull request.
+#
+# Two installs, because they are two different trees: the root is the host-side
+# harness (linkedom, gitignored lockfile, test-only) and runtime/ is what ships to
+# the phone, installed from its committed lockfile.
+name: tests
+
+on:
+  push:
+    branches: [dev, master]
+  pull_request:
+    branches: [dev, master]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # runtime/package.json wants >=22.19.0
+          node-version: '22'
+
+      # Cheap and first: a syntax error in a file no test imports still fails here.
+      - name: syntax
+        run: |
+          for f in runtime/*.mjs runtime/public/app.js scripts/*.mjs; do
+            node --check "$f"
+          done
+
+      # The client tests mount runtime/public/app.js in a DOM.
+      - name: host deps
+        run: npm install --no-audit --no-fund
+
+      # The e2e tests boot the real bridge, which imports the kernel. This is the
+      # command the docs give, down to --ignore-scripts: esbuild's postinstall is
+      # what makes a plain `npm ci` fail here.
+      - name: runtime deps
+        run: cd runtime && npm ci --omit=dev --omit=optional --ignore-scripts
+
+      - name: tests
+        run: npm test
