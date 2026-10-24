@@ -18,7 +18,9 @@ const PUBLIC = new URL('../runtime/public/', import.meta.url);
 
 /** Mount the client in a fresh DOM and return the handles the test needs. */
 async function mount({
-  state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {},
+  state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {}, sessions = {},
+  // What /api/pi-update answers, poll by poll, and what starting one answers.
+  piStatus = [{ installed: '1.4.0', running: false }], piStart = { started: true },
   // What localStorage already holds, as a reload would find it.
   stored = {},
   // What /api/oauth/status answers, poll by poll. The last entry repeats, so a
@@ -33,6 +35,10 @@ async function mount({
   const sources = [];
   const fetches = [];
   let oauthPolls = 0;
+  let piPolls = 0;
+  const nextPiStatus = () => typeof piStatus === 'function'
+    ? piStatus(piPolls++)
+    : piStatus[Math.min(piPolls++, piStatus.length - 1)];
   const nextOauthStatus = () => {
     const n = oauthPolls++;
     return typeof oauthStatus === 'function'
@@ -66,6 +72,8 @@ async function mount({
       : u.includes('/api/oauth/start') ? { id: 'login-1' }
       : u.includes('/api/usage') ? usage
       : u.includes('/api/extensions') ? extensions
+      : u.includes('/api/sessions') ? sessions
+      : u.includes('/api/pi-update') ? (opts?.method === 'POST' ? piStart : nextPiStatus())
       : {};
     return { ok: true, status: 200, json: async () => body };
   };
@@ -761,4 +769,206 @@ test('the watermark is stored once per burst, not once per frame', async () => {
   assert.equal(app.stored.has('pi-lastSeq'), false, 'every streamed frame wrote to storage');
   await new Promise((r) => setTimeout(r, 700));
   assert.equal(app.stored.get('pi-lastSeq'), '2', 'the watermark never reached storage');
+});
+
+// ── the context bar ──────────────────────────────────────────────────────
+// Its number comes from the kernel's estimate for the ACTIVE conversation, and it
+// is expensive enough that only two things fetch it: `/api/state`, and the
+// attach snapshot. Both used to be wrong in a way that left the previous
+// session's number on the bar.
+
+const contextLabel = (app) => app.document.querySelector('.context-label')?.textContent.trim();
+
+test('the attach snapshot sets the context size', async () => {
+  const app = await mount({
+    state: { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 100000 },
+  });
+  await app.settle();
+  assert.equal(contextLabel(app), '78%', 'the bar did not start from /api/state');
+
+  // The estimate rides on the frame, not inside the kernel snapshot (which has no
+  // such field): a new session's attach must be able to reset the bar.
+  app.send({ type: 'bridge_snapshot', contextTokens: 0, contextWindow: 128000, snapshot: { entries: [], run: null } });
+  await app.settle();
+  assert.equal(contextLabel(app), '0%', 'the attach snapshot did not reset the context bar');
+});
+
+test('a new session resets the context bar', async () => {
+  const live = { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 100000 };
+  const app = await mount({ state: live });
+  await app.settle();
+  assert.equal(contextLabel(app), '78%');
+
+  // The bridge's answer for the new, empty session.
+  live.contextTokens = 0;
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const newSession = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'New session');
+  assert.ok(newSession, 'the menu does not offer a new session');
+  newSession.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  assert.equal(contextLabel(app), '0%', 'the previous session\'s context stayed on the bar');
+});
+
+test('resetting the conversation resets the context bar', async () => {
+  const live = { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 64000 };
+  const app = await mount({ state: live });
+  await app.settle();
+  assert.equal(contextLabel(app), '50%');
+
+  live.contextTokens = 0;
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const reset = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Reset this conversation');
+  assert.ok(reset, 'the menu does not offer a reset');
+  reset.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  assert.equal(contextLabel(app), '0%', 'the reset conversation kept its context size');
+});
+
+test('a finished turn refetches the context size', async () => {
+  const live = { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 1000 };
+  const app = await mount({ state: live });
+  await app.settle();
+  assert.equal(contextLabel(app), '1%');
+
+  // The turn grew the conversation; the frames carry the text, not the estimate.
+  live.contextTokens = 64000;
+  app.send({ type: 'run_start' });
+  await app.settle();
+  app.send({ type: 'run_end' });
+  await app.settle();
+
+  assert.equal(contextLabel(app), '50%', 'the bar was not refreshed when the turn ended');
+});
+
+// ── money and cache, the neighbours of the context bar ───────────────────
+// These two have the property the context estimate lacked: the kernel's snapshot
+// always carries a `usage` document (initialised to empty, never absent), and
+// `usage_changed` arrives on every commit. So the client reads them the same way
+// for the same reasons, and a regression here would look exactly like the context
+// bug did -- a stale number that only a reload fixes.
+
+const bottomBar = (app) => app.document.querySelector('.bottombar')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+
+test('a new session clears the money and cache line', async () => {
+  const app = await mount({
+    state: {
+      model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 0,
+      usage: { models: { 'anthropic/claude': { input: 1000, cacheRead: 500, totalTokens: 1500, cost: { total: 0.42 } } }, tools: {} },
+      sessionName: 'Main',
+    },
+  });
+  await app.settle();
+  assert.match(bottomBar(app), /chr 33%/, 'the cache hit rate did not come from the usage it was told about');
+  assert.match(bottomBar(app), /\$0\.420/, 'the session cost did not come from the usage it was told about');
+
+  // What the bridge sends for a session that has not run anything.
+  app.send({ type: 'bridge_snapshot', sessionName: 'New', snapshot: { entries: [], run: null, usage: { models: {}, tools: {} } } });
+  await app.settle();
+  assert.match(bottomBar(app), /chr –/, "the previous session's cache hit rate stayed on the bar");
+  assert.match(bottomBar(app), /\$0\.000/, "the previous session's spend stayed on the bar");
+});
+
+test('the money and cache follow the usage the bridge reports', async () => {
+  const app = await mount({
+    state: { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 0, usage: { models: {}, tools: {} } },
+  });
+  await app.settle();
+  assert.match(bottomBar(app), /chr –/);
+
+  app.send({
+    type: 'usage_changed',
+    usage: { models: { 'anthropic/claude': { input: 1000, cacheRead: 500, totalTokens: 1500, cost: { total: 0.42 } } }, tools: {} },
+  });
+  await app.settle();
+  assert.match(bottomBar(app), /chr 33%/, 'the live usage did not reach the cache hit rate');
+  assert.match(bottomBar(app), /\$0\.420/, 'the live usage did not reach the cost');
+});
+
+test('the sessions sheet marks the session that is active', async () => {
+  // The marker used to be by name, and every session created without one reports
+  // 'Main' — so it landed on the wrong row, or on several. /api/state carries the
+  // id; the sheet uses it.
+  const app = await mount({
+    state: { sessionId: '13', sessionName: 'Main' },
+    sessions: { activeId: '13', sessions: [{ id: '1', name: 'Main' }, { id: '13' }] },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const sessionsRow = [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Sessions'));
+  sessionsRow.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const rows = [...app.document.querySelectorAll('button.row')].map((b) => b.textContent.replace(/\s+/g, ' ').trim());
+  const marked = rows.filter((r) => r.includes('·'));
+  assert.equal(marked.length, 1, `expected one marked session, got ${JSON.stringify(rows)}`);
+  assert.match(marked[0], /^13\b/, `the marker is on the wrong session: ${JSON.stringify(rows)}`);
+});
+
+// ── updating pi from the menu ────────────────────────────────────────────
+// The tap used to be invisible: it set a one-line notice the menu does not
+// render, the install ran in the background, and the only effect anyone could
+// see was the bridge restarting.
+
+const openMenu = async (app) => {
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+};
+const piRow = (app) => [...app.document.querySelectorAll('button.row')].find((b) => b.textContent.includes('Update pi'));
+/** The update is polled, so the assertion waits for the text rather than guessing a delay. */
+async function waitForText(app, re, ms = 4000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await app.settle();
+    if (re.test(app.text())) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.fail(`never saw ${re}: ${app.text().slice(0, 400)}`);
+}
+
+test('the menu says which pi is installed', async () => {
+  const app = await mount({ piStatus: [{ installed: '1.4.0', running: false }] });
+  await app.settle();
+  await openMenu(app);
+  assert.match(piRow(app)?.textContent ?? '', /v1\.4\.0/, 'the menu does not say which pi is running');
+});
+
+test('an update reports that it is running, then the version it reached', async () => {
+  const app = await mount({
+    piStatus: [
+      { installed: '1.4.0', running: false },
+      { installed: '1.4.0', running: true },
+      { installed: '1.5.0', running: false, done: true, ok: true, changed: true, version: '1.5.0' },
+    ],
+  });
+  await app.settle();
+  await openMenu(app);
+  piRow(app).dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.match(piRow(app).textContent, /updating/, 'the tap gave no sign that anything started');
+
+  await waitForText(app, /updated to 1\.5\.0/);
+});
+
+test("a failed update shows npm's error and its last words", async () => {
+  const app = await mount({
+    piStatus: [
+      { installed: '1.4.0', running: false },
+      { installed: '1.4.0', running: false, done: true, ok: false, error: 'npm exited with code 1',
+        log: ['npm ERR! code E404', 'npm ERR! 404 Not Found - GET https://registry.npmjs.org/@earendil-works%2fpi-durable'] },
+    ],
+  });
+  await app.settle();
+  await openMenu(app);
+  piRow(app).dispatchEvent(new window.Event('click', { bubbles: true }));
+  await waitForText(app, /npm exited with code 1/);
+  assert.match(app.text(), /E404/, "npm's own output is not shown");
 });

@@ -113,18 +113,12 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
   font-size: 12.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.strip .dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--faint); flex: 0 0 auto;
-}
+/* The strip said "working" next to a dot that pulsed while the model worked.
+   The word says it, and the transcript said it again with a dot of its own (see
+   `.live` below), so both dots are gone. */
 .strip.working { color: var(--text); }
-.strip.working .dot { background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
 .strip.warn { color: var(--warn); }
-.strip.warn .dot { background: var(--warn); }
 .strip.bad  { color: var(--bad); }
-.strip.bad .dot { background: var(--bad); }
-@keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
-@media (prefers-reduced-motion: reduce) { .strip.working .dot { animation: none; opacity: 1 } }
 
 /* ── transcript ──────────────────────────────────────────────────────── */
 .log {
@@ -230,12 +224,10 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 }
 .sys.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
 
-.live { position: relative; }
-.live::after {
-  content: ""; position: absolute; left: 0; bottom: -.35em;
-  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
-  animation: pulse 1.5s ease-in-out infinite;
-}
+/* `.live` marks whatever is still arriving -- the streaming message, a running
+   tool -- and that is all it does now. It used to hang a pulsing dot under each
+   one, so a turn with a tool call showed two of them at once, saying nothing the
+   status strip was not already saying. */
 
 /* Tools use the same quiet disclosure as thoughts. The name stays monospace,
    the call's one-line brief is allowed to truncate, and the output keeps its
@@ -503,3 +495,14 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
 }
 .copy-btn:active { color: var(--muted); }
 .copy-btn svg { color: inherit; }
+
+/* The update's own output, where the tap happened: npm's last lines are the only
+   useful explanation when an install fails. */
+.sheet .pi-log {
+  margin: 0; padding: 10px 16px 14px;
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted); white-space: pre-wrap; word-break: break-word;
+  max-height: 28vh; overflow-y: auto;
+  border-bottom: 1px solid var(--line-soft);
+}
+.sheet .pi-error { color: var(--bad); }

@@ -300,6 +300,8 @@ const state = {
   usageSession: null,   // the session slice of /api/usage
   inbox: [],
   sessionName: 'Main',
+  sessionId: null,      // which session /api/state says is active
+  pi: null,             // /api/pi-update: the version installed, and any update in flight
   entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
   copied: new Set(),   // keys of assistant messages whose copy feedback is showing
   seen: new Set(),
@@ -447,9 +449,8 @@ function renderSnapshot(snapshot) {
     if (slot && t.details?.conversationId !== undefined) slot.child = t.details.conversationId;
   }
 
-  if (snapshot?.agent) set({ model: { ...(state.model ?? {}), ...(snapshot.agent.model ?? {}), contextWindow: snapshot.contextWindow ?? state.model?.contextWindow } });
+  if (snapshot?.agent) set({ model: { ...(state.model ?? {}), ...(snapshot.agent.model ?? {}) } });
   if (snapshot?.usage) set({ usage: snapshot.usage });
-  if (snapshot?.contextTokens !== undefined) set({ contextTokens: snapshot.contextTokens });
   if (snapshot?.inbox) set({ inbox: snapshot.inbox });
   set({ busy: Boolean(snapshot?.run) });
 }
@@ -482,6 +483,13 @@ function handle(ev) {
   if (ev.type === 'bridge_snapshot') {
     renderSnapshot(ev.snapshot);
     if (ev.sessionName) set({ sessionName: ev.sessionName });
+    // The context estimate rides on the FRAME, not inside the kernel's snapshot
+    // (pi-durable's SnapshotEvent has no such field), and this frame is the
+    // authoritative state after an attach: a session switch, a new session, or a
+    // reconnect. Reading it off `ev.snapshot` left the old session's number on
+    // the context bar until something else happened to refetch /api/state.
+    if (typeof ev.contextTokens === 'number') set({ contextTokens: ev.contextTokens });
+    if (typeof ev.contextWindow === 'number') set({ model: { ...(state.model ?? {}), contextWindow: ev.contextWindow } });
     // `gapped` means frames were written while this client was away. The snapshot
     // in this same frame is the whole state, so nothing was lost: this is a note
     // that the transcript was rebuilt, not a warning about missing data.
@@ -514,7 +522,13 @@ function handle(ev) {
   switch (ev.type) {
     case 'snapshot': renderSnapshot(ev); break;
     case 'run_start': set({ busy: true }); break;
-    case 'run_end': set({ busy: false, live: null }); break;
+    case 'run_end':
+      set({ busy: false, live: null });
+      // The context estimate is the kernel's, not something the deltas carry, so
+      // it is refetched when a turn ends -- otherwise the bar sits at whatever it
+      // showed when the page loaded, and every turn makes that more wrong.
+      refreshState().catch(() => {});
+      break;
 
     case 'message_start':
       if (ev.message?.role === 'assistant') set({ live: { text: textOf(ev.message), think: thinkingSegments(ev.message) } });
@@ -634,7 +648,10 @@ async function refreshState() {
       contextTokens: s.contextTokens ?? state.contextTokens ?? 0,
       // The inbox arrives as the pi.inbox DOCUMENT, whose shape is {items:[...]}.
       inbox: s.inbox?.items ?? (Array.isArray(s.inbox) ? s.inbox : []),
-      sessionName: s.sessionName ?? 'Main',
+  sessionName: s.sessionName ?? 'Main',
+      // The id is what the sessions sheet marks as current. Matching on the name
+      // was wrong: sessions created without one all report 'Main'.
+      sessionId: s.sessionId ?? null,
       error: null,
     });
   } catch (e) {
@@ -715,6 +732,9 @@ async function openSheet(which) {
       // usage directly. They are different shapes, so they get different fields.
       const u = await get('/api/usage');
       set({ usageTotal: u.total ?? null, usageSession: u.session ?? null });
+    } else if (which === 'menu') {
+      // The menu shows which pi is installed, so it has to know before it paints.
+      await refreshPi();
     } else if (which === 'extensions') {
       await refreshExtensions();
     }
@@ -890,7 +910,6 @@ function StatusStrip() {
 
   return html`
     <div class=${`strip ${tone}`}>
-      <span class="dot"></span>
       <span>${label}</span>
       ${queued && !state.busy ? html`<span>· ${queued} waiting</span>` : null}
     </div>`;
@@ -1063,6 +1082,62 @@ function Scrim() {
   return html`<div class="scrim" onClick=${closeSheet}></div>`;
 }
 
+// ── pi itself ────────────────────────────────
+async function refreshPi() {
+  try {
+    set({ pi: await get('/api/pi-update') });
+  } catch {
+    // The bridge is restarting to load what was just installed: there is nobody
+    // to ask right now, and the reconnect will bring the new version.
+  }
+}
+
+/**
+ * Ask for an update, then follow it until it stops moving.
+ *
+ * The bridge answers at once (`started`) and does the install in the background,
+ * so the outcome has to be polled -- that is the whole reason this used to look
+ * like it did nothing: the tap set a one-line notice, the menu never rendered it,
+ * and the install's only visible effect was a restart.
+ */
+async function updatePi() {
+  try {
+    const r = await post('/api/pi-update');
+    if (r.started === false) { set({ notice: r.reason || 'an update is already running' }); redraw(); return; }
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+    redraw();
+    return;
+  }
+  set({ pi: { ...(state.pi ?? {}), running: true, done: false, ok: false, error: null, log: [], startedFrom: state.pi?.installed ?? null }, notice: null });
+  redraw();
+  for (let i = 0; i < 600; i++) {                       // npm takes seconds, not minutes
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const s = await get('/api/pi-update');
+      set({ pi: { ...s, startedFrom: state.pi?.startedFrom ?? null } });
+      redraw();
+      if (!s.running) return;
+    } catch {
+      // A restart is the success path: the bridge exits to load the new modules.
+      set({ pi: { ...(state.pi ?? {}), running: false, done: true, ok: true, restarting: true } });
+      redraw();
+      return;
+    }
+  }
+}
+
+function piHint() {
+  const pi = state.pi;
+  if (!pi) return '';
+  if (pi.running) return 'updating…';
+  if (pi.restarting) return 'bridge restarted';
+  if (pi.error) return 'failed';
+  if (pi.done && pi.ok && pi.changed) return `updated to ${pi.version}`;
+  if (pi.done && pi.ok) return `up to date (${pi.installed ?? pi.version ?? '?'})`;
+  return pi.installed ? `v${pi.installed}` : '';
+}
+
 function MenuSheet() {
   const level = state.thinking?.level ?? 'off';
   const pending = pendingProposals().length;
@@ -1086,22 +1161,22 @@ function MenuSheet() {
             <span class="grow">${it.label}</span>
             <small>${it.hint}</small>
           </button>`)}
-        <button class="row" onClick=${async () => { await post('/api/sessions/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
+        <button class="row" onClick=${async () => { await post('/api/sessions/new').catch(() => {}); await refreshState().catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">New session</span>
         </button>
-        <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); set({ sheet: null }); redraw(); }}>
+        <button class="row" onClick=${async () => { await post('/api/new').catch(() => {}); await refreshState().catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">Reset this conversation</span>
         </button>
         <button class="row" onClick=${async () => { await post('/api/compact').catch(() => {}); set({ sheet: null }); redraw(); }}>
           <span class="grow">Compact context</span>
         </button>
-        <button class="row" onClick=${async () => {
-          try { const r = await post('/api/pi-update'); set({ notice: r.message || 'updating' }); }
-          catch (e) { set({ notice: String(e.message || e) }); }
-          redraw();
-        }}>
+        <button class="row" onClick=${() => updatePi()}>
           <span class="grow">Update pi</span>
+          <small>${piHint()}</small>
         </button>
+        ${state.pi?.error ? html`<div class="row"><span class="grow pi-error">${state.pi.error}</span></div>` : null}
+        ${state.pi?.log?.length ? html`<pre class="pi-log">${state.pi.log.slice(-8).join('\n')}</pre>` : null}
+        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
       </div>
     </div>`;
 }
@@ -1331,7 +1406,7 @@ function Sheet() {
       ? sessions.map((s) => {
           const id = s.id ?? s;
           return html`<button class="row" key=${id} onClick=${() => chooseSession(id)}>
-            <span class="grow">${s.name ?? id}${s.id === state.sessionId || s.name === state.sessionName ? ' ·' : ''}</span>
+            <span class="grow">${s.name ?? id}${String(s.id) === String(state.sessionId) ? ' ·' : ''}</span>
             ${s.cwd ? html`<small>${s.cwd}</small>` : null}
           </button>`;
         })
