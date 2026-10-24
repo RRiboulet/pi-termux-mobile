@@ -133,6 +133,73 @@ function startPiUpdate() {
   return { started: true, from: before };
 }
 
+// --- what the bridge is doing, for the phone to show ---------------------------------
+// Android cannot see inside node, and node cannot post a notification. What they
+// can share is a file: this one, rewritten when the state changes, read by
+// PiService so the ongoing notification can say "working · read" and a turn that
+// ends while the app is in the background can reach the person who asked for it.
+//
+// It is fed by the kernel's own event stream, not by polling the view: with no
+// client attached -- the case that matters, the app in the background -- there are
+// no per-client streams, and a poll interval long enough to be cheap is also long
+// enough to miss a short turn entirely.
+const STATUS_PATH = path.join(STATE_DIR, 'status.json');
+const status = { state: 'idle', tool: null, session: null, since: Date.now(), finishedAt: 0 };
+let statusWatch = null;
+
+function writeStatus() {
+  try { writeFileAtomic(STATUS_PATH, JSON.stringify(status), 0o600); } catch {}
+}
+
+/** Fold one kernel event into the status, and write only when it changed. */
+function noteStatus(event) {
+  const before = `${status.state}|${status.tool}|${status.session}`;
+  switch (event?.type) {
+    case 'run_start':
+      status.state = 'working'; status.tool = null; status.since = Date.now();
+      break;
+    case 'tool_execution_start':
+      status.state = 'working'; status.tool = event.toolName ?? null;
+      break;
+    case 'tool_execution_end':
+      status.tool = null;
+      break;
+    case 'run_end':
+      if (status.state === 'working') status.finishedAt = Date.now();
+      status.state = 'idle'; status.tool = null;
+      break;
+    case 'compaction_start':
+      status.state = 'working'; status.tool = 'compaction';
+      break;
+    case 'compaction_end':
+      status.state = 'idle'; status.tool = null; status.finishedAt = Date.now();
+      break;
+    default:
+      return;
+  }
+  if (status.state === 'working') status.since = status.since || Date.now();
+  if (`${status.state}|${status.tool}|${status.session}` !== before) writeStatus();
+}
+
+/** One watch per conversation, independent of whether a client is attached. */
+async function watchStatus(conversation) {
+  const previous = statusWatch;
+  statusWatch = null;
+  if (previous) { try { await previous.stop(); } catch {} }
+  status.state = 'idle'; status.tool = null;
+  status.session = conversation ? String(conversation.id) : null;
+  status.since = Date.now();
+  writeStatus();
+  if (!conversation) return;
+  try {
+    const stream = await watchEvents(harness, conversation.id, ctx);
+    statusWatch = stream;
+    stream.start((events) => { for (const e of events) noteStatus(e); });
+  } catch {
+    statusWatch = null;                         // the next activate tries again
+  }
+}
+
 // --- backups -------------------------------------------------------------------------
 // The one thing a phone cannot recover: the sessions and the API keys in $HOME,
 // which a reinstall deletes without asking. The archive lands inside the tree the
@@ -378,6 +445,8 @@ async function activate(conversation, { persist = true } = {}) {
   active = conversation;
   if (persist) await sessions.setActive(conversation.id);
   for (const client of sseClients) await attachSse(client);
+  // The phone's notification follows whatever is active.
+  watchStatus(conversation).catch(() => {});
 }
 
 async function currentModel(conv) {

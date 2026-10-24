@@ -60,6 +60,20 @@ public final class MainActivity extends Activity {
         startWaiting();
     }
 
+    // PiService decides whether a finished turn deserves a notification; it needs to
+    // know whether anyone is looking.
+    @Override
+    protected void onResume() {
+        super.onResume();
+        PiService.appVisible = true;
+    }
+
+    @Override
+    protected void onPause() {
+        PiService.appVisible = false;
+        super.onPause();
+    }
+
     private void startWaiting() {
         if (waiting.compareAndSet(false, true)) new Thread(this::waitForBridge, "pi-bridge-wait").start();
     }
