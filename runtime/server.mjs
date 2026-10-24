@@ -3,7 +3,7 @@
 // $HOME/.pi-mobile/port), PI_WORKDIR (agent cwd), PI_SHELL (bash path).
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, fstatSync, openSync, readFileSync, readSync, statSync, unlinkSync } from 'node:fs';
 import { copyFile, mkdir as mkdirP, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -216,6 +216,48 @@ async function listBackups() {
       return { name, bytes: st.size, at: st.mtime.toISOString(), path: path.join(BACKUP_DIR, name) };
     }));
   } catch { return []; }
+}
+
+// --- the service log -----------------------------------------------------------------
+// PiService appends node's stdout to files/log/node.log (rotating at 4 MB) and its
+// own failures to files/log/service-error.txt. Until now nothing in the app could
+// read either, so "lost the connection — retrying" was all a user ever got.
+//
+// Two files, by name, never a path: the whitelist is the whole traversal defence.
+const LOG_DIR = process.env.PI_LOG_DIR || path.join(path.dirname(ROOT), 'log');
+const LOG_FILES = { node: 'node.log', service: 'service-error.txt' };
+
+/**
+ * The last `maxLines` lines of a file, read from the end.
+ *
+ * A phone log is allowed to be 4 MB; reading it whole to show the last screenful
+ * would be a stall on the one page that exists to explain stalls.
+ */
+function tailLines(file, maxLines) {
+  let fd = null;
+  try {
+    fd = openSync(file, 'r');
+  } catch {
+    return { lines: [], missing: true, bytes: 0, truncated: false };
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const window = 256 * 1024;
+    const start = Math.max(0, size - window);
+    const buf = Buffer.alloc(size - start);
+    if (buf.length) readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString('utf8');
+    // A window that starts mid-line starts with half a line: drop it.
+    if (start > 0) {
+      const nl = text.indexOf('\n');
+      text = nl === -1 ? '' : text.slice(nl + 1);
+    }
+    const lines = text.split('\n');
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    return { lines: lines.slice(-maxLines), bytes: size, truncated: start > 0 };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 const MIME = {
@@ -635,6 +677,16 @@ async function handleApi(req, res, url, p) {
     }
     await sessions.setArchived(id, body.archived !== false);
     return json(res, 200, { ok: true, id: String(id), archived: body.archived !== false });
+  }
+  if (p === '/api/log' && req.method === 'GET') {
+    const which = url.searchParams.get('file') === 'service' ? 'service' : 'node';
+    const tail = Math.min(Math.max(Number(url.searchParams.get('tail')) || 200, 1), 2000);
+    const file = path.join(LOG_DIR, LOG_FILES[which]);
+    const out = tailLines(file, tail);
+    return json(res, 200, {
+      file: which, path: file,
+      lines: out.lines, bytes: out.bytes, missing: Boolean(out.missing), truncated: out.truncated,
+    });
   }
   if (p === '/api/backup' && req.method === 'GET') {
     return json(res, 200, { dir: BACKUP_DIR, backups: await listBackups(), running: backupState.running, error: backupState.error });

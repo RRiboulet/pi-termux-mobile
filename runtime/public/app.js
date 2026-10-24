@@ -305,6 +305,8 @@ const state = {
   renaming: null,       // {id, name} while the rename sheet is open
   backup: null,         // /api/backup: the last one, and where it is
   compacting: false,    // a compaction task is in flight
+  log: null,            // /api/log: the last lines the bridge or the service wrote
+  logFile: 'node',      // which of the two files the log sheet is showing
   pi: null,             // /api/pi-update: the version installed, and any update in flight
   entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
   copied: new Set(),   // keys of assistant messages whose copy feedback is showing
@@ -754,6 +756,8 @@ async function openSheet(which) {
       // usage directly. They are different shapes, so they get different fields.
       const u = await get('/api/usage');
       set({ usageTotal: u.total ?? null, usageSession: u.session ?? null });
+    } else if (which === 'log') {
+      await refreshLog();
     } else if (which === 'menu') {
       // The menu shows which pi is installed and when the last backup was, so it
       // has to know both before it paints.
@@ -1194,6 +1198,32 @@ async function toggleArchive(id, archived) {
   redraw();
 }
 
+function LogSheet() {
+  const log = state.log ?? { lines: [] };
+  const tab = (file, label) => html`<button class="row" aria-pressed=${state.logFile === file}
+    onClick=${() => { set({ logFile: file, log: null }); refreshLog().then(() => redraw()); }}>${label}</button>`;
+  const body = log.lines?.length
+    ? html`<pre class="pi-log log-view">${log.lines.join('\n')}</pre>`
+    : html`<div class="empty">${log.error ?? 'Nothing written yet.'}</div>`;
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <h2>Log</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        ${tab('node', 'Bridge')}
+        ${tab('service', 'Service')}
+        ${body}
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">${log.path ?? ''}</span></div>
+        <button class="row" onClick=${() => refreshLog().then(() => redraw())}>
+          <span class="grow">Refresh</span>
+        </button>
+      </div>
+    </div>`;
+}
+
 function RenameSheet() {
   const r = state.renaming ?? { id: '', name: '' };
   const save = (el) => saveSessionName(r.id, el.closest('.row').querySelector('input').value);
@@ -1217,6 +1247,15 @@ function RenameSheet() {
 }
 
 // ── backups ──────────────────────────────────────────────────────────────
+async function refreshLog() {
+  try {
+    const r = await get(`/api/log?file=${encodeURIComponent(state.logFile)}&tail=400`);
+    set({ log: r });
+  } catch (e) {
+    set({ log: { file: state.logFile, lines: [], error: String(e.message || e) } });
+  }
+}
+
 async function refreshBackup() {
   try {
     const r = await get('/api/backup');
@@ -1329,6 +1368,7 @@ function MenuSheet() {
     { label: 'Provider', hint: state.providers?.length ? `${state.providers.length} key${state.providers.length > 1 ? 's' : ''}` : 'not set', go: () => openSheet('provider') },
     { label: 'Sessions', hint: state.sessionName, go: () => openSheet('sessions') },
     { label: 'Usage', hint: usageShort(state.usage), go: () => openSheet('usage') },
+    { label: 'Log', hint: state.log ? (state.log.bytes ? `${Math.round(state.log.bytes / 1024)} KB` : 'empty') : '', go: () => openSheet('log') },
     { label: 'Extensions', hint: pending ? `${pending} to review` : (state.extensions?.installed?.length ? `${state.extensions.installed.length} installed` : 'none'), go: () => openSheet('extensions') },
   ];
   return html`
@@ -1575,6 +1615,7 @@ function Sheet() {
   if (which === 'oauth') return html`<${Scrim} /><${OauthSheet} />`;
   if (which === 'extensions') return html`<${Scrim} /><${ExtensionsSheet} />`;
   if (which === 'rename') return html`<${Scrim} /><${RenameSheet} />`;
+  if (which === 'log') return html`<${Scrim} /><${LogSheet} />`;
   const title = which === 'model' ? 'Model' : which === 'sessions' ? 'Sessions' : 'Usage';
   let body;
   if (which === 'model') {
