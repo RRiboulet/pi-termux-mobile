@@ -31,20 +31,40 @@ const store = {
 // The Activity loads /?token=...; keep it in localStorage and take it out of
 // the address bar, so it is not left in a screenshot or a history entry.
 const params = new URLSearchParams(location.search);
+// A token may arrive once, in the URL (the Android host launches the WebView with
+// one). It is exchanged for an HttpOnly cookie and then dropped: nothing that runs in
+// the page can read it back, and the stream no longer carries it in its query.
 let token = params.get('token') || store.get('pi-token') || '';
-if (token) {
-  store.set('pi-token', token);
-  if (params.get('token')) {
-    params.delete('token');
-    history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
-  }
+let pairing = params.get('pair') || '';
+if (params.get('token') || params.get('pair')) {
+  params.delete('token');
+  params.delete('pair');
+  history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
+}
+if (token) store.set('pi-token', token);
+
+/** Ask the bridge to sign this browser in. Runs before the first API call. */
+async function signIn() {
+  const body = pairing ? { code: pairing, name: navigator.userAgent.includes('Android') ? 'phone' : 'browser' }
+    : token ? { token } : null;
+  if (!body) return false;
+  try {
+    const r = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) return false;
+    const j = await r.json();
+    token = '';
+    pairing = '';
+    store.set('pi-token', '');
+    set({ signedIn: true, deviceName: j.device?.name ?? null });
+    return true;
+  } catch { return false; }
 }
 
 // ── api ──────────────────────────────────────────────────────────────────
-const headers = () => ({ 'content-type': 'application/json', 'x-token': token });
+const headers = () => ({ 'content-type': 'application/json' });
 
 async function get(path) {
-  const r = await fetch(path, { headers: { 'x-token': token } });
+  const r = await fetch(path);
   if (!r.ok) throw new Error(`http ${r.status}`);
   return r.json();
 }
@@ -305,6 +325,9 @@ const state = {
   renaming: null,       // {id, name} while the rename sheet is open
   backup: null,         // /api/backup: the last one, and where it is
   compacting: false,    // a compaction task is in flight
+  pairNeeded: false,    // no cookie yet: this browser has to sign in
+  pairing: null,        // {url, code, expiresAt} for a device that is joining
+  deviceName: null,
   log: null,            // /api/log: the last lines the bridge or the service wrote
   logFile: 'node',      // which of the two files the log sheet is showing
   pi: null,             // /api/pi-update: the version installed, and any update in flight
@@ -618,7 +641,7 @@ let failures = 0;
 function subscribe() {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   const since = state.lastSeq > 0 ? `&since=${encodeURIComponent(state.lastSeq)}` : '';
-  const source = new EventSource(`/api/events?token=${encodeURIComponent(token)}${since}`);
+  const source = new EventSource(`/api/events${since ? '?' + since.slice(1) : ''}`);
   live = source;
   source.onmessage = (m) => {
     try { handle(JSON.parse(m.data)); } catch { /* a malformed frame is not worth crashing over */ }
@@ -1152,6 +1175,72 @@ function closeSheet() {
   redraw();
 }
 
+function PairScreen() {
+  const go = (el) => {
+    const code = el.closest('.pair-card').querySelector('input').value.trim();
+    if (!code) return;
+    pairing = code;
+    token = '';
+    signIn().then((ok) => {
+      if (!ok) { set({ notice: 'that code is expired or already used' }); return; }
+      set({ pairNeeded: false });
+      refreshState();
+      subscribe();
+      redraw();
+    });
+  };
+  return html`
+    <div class="sheet pair-sheet">
+      <div class="grab"></div>
+      <header><h2>Sign in</h2></header>
+      <div class="body">
+        <div class="row pair-card" style="display:block">
+          <input class="keyin" type="text" placeholder="code from the other device" autocomplete="off" spellcheck=${false}
+            onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); go(e.target); } }} />
+          <button class="savekey" onClick=${(e) => go(e.target)}>Sign in</button>
+        </div>
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">
+          On a device that is already signed in: Menu → Sign in another device.
+        </span></div>
+      </div>
+    </div>`;
+}
+
+async function pairDevice() {
+  try {
+    const [r, d] = await Promise.all([post('/api/pair'), get('/api/devices')]);
+    const n = (d.devices ?? []).length;
+    set({ pairing: r, devices: n, notice: `open that address on the other device, or type the code there (${n} signed in)` });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  redraw();
+}
+
+/**
+ * Replace every token but this device's.
+ *
+ * The way out when a phone is lost or a link leaked: the bridge issues this device a
+ * new cookie and forgets every other one, including the bootstrap token the Android
+ * host was launched with.
+ */
+async function rotateTokens() {
+  try {
+    await post('/api/token/rotate');
+    set({ pairing: null, notice: 'every other device is signed out' });
+    redraw();
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+    redraw();
+  }
+}
+
+async function signOut() {
+  try { await post('/api/logout'); } catch {}
+  set({ pairNeeded: true, sheet: null });
+  redraw();
+}
+
 function NoticeToast() {
   if (!state.notice) return null;
   return html`<div class="notice-toast" role="status" onClick=${() => notify(null)}>${state.notice}</div>`;
@@ -1395,6 +1484,19 @@ function MenuSheet() {
         <button class="row" onClick=${() => updatePi()}>
           <span class="grow">Update pi</span>
           <small>${piHint()}</small>
+        </button>
+        <button class="row" onClick=${() => pairDevice()}>
+          <span class="grow">Sign in another device</span>
+          <small>${state.pairing ? 'code ready' : 'a code, for 15 minutes'}</small>
+        </button>
+        ${state.pairing ? html`<div class="row"><span class="grow" style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-all">${state.pairing.url}</span></div>` : null}
+        ${state.pairing ? html`<div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">expires ${state.pairing.expiresAt}</span></div>` : null}
+        <button class="row" onClick=${() => rotateTokens()}>
+          <span class="grow">Sign out every other device</span>
+          <small>new tokens; this one keeps working</small>
+        </button>
+        <button class="row" onClick=${() => signOut()}>
+          <span class="grow">Sign out this device</span>
         </button>
         <button class="row" onClick=${() => reloadClient()}>
           <span class="grow">Reload client</span>
@@ -1691,6 +1793,7 @@ function Sheet() {
 }
 
 function App() {
+  if (state.pairNeeded) return html`<div class="top"><div class="top-row"><div class="brand"><b>pi</b></div></div></div><${PairScreen} /><${NoticeToast} />`;
   return html`
     <div class="top">
       <div class="top-row">
@@ -1830,7 +1933,16 @@ function rememberScroll() {
 // every render as a stray line below the composer. Drop it once, before the
 // first render; subsequent redraws diff against the tree Preact owns.
 doc.getElementById('app').replaceChildren();
-subscribe();
-refreshState();
-refreshExtensions();
-redraw();
+// The cookie is what the bridge accepts; a token or a pairing code in the URL is
+// exchanged for one here, before the first request that needs it.
+(async () => {
+  const ok = await signIn();
+  if (!ok) {
+    const probe = await fetch('/api/session').then((r) => r.json()).catch(() => ({ ok: false }));
+    set({ pairNeeded: !probe.ok });
+  }
+  subscribe();
+  refreshState();
+  refreshExtensions();
+  redraw();
+})();
