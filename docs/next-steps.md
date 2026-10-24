@@ -1,13 +1,14 @@
 # Next steps — hand-off
 
-*2026-10-24, `dev@4f673bf`. Written at the end of a long session that got
-expensive; the "paying less" section is the point of half this file.*
+*2026-10-24, `dev@4f673bf`, updated as items were done (1, 2, 3, 6, 8). Written at
+the end of a long session that got expensive; the "paying less" section is the
+point of half this file.*
 
 ## Where things stand
 
-- **`dev` is green.** `node scripts/run-tests.mjs` runs 14 test files: DOM tests
-  for the client, e2e against a booted bridge for SSE, sessions/backup and static
-  assets, plus the textual client↔server contract check.
+- **`dev` is green**, and now gated: `.github/workflows/tests.yml` runs
+  `node scripts/run-tests.mjs` — 16 test files — on every push to `dev` and every
+  pull request. It does not build the APK (item 9).
 - **The phone runs a hand-copied runtime, not the APK.** `files/runtime/` holds
   `dev@4f673bf`'s `server.mjs`, `common.mjs`, `watermark.mjs` and `public/`.
   `server.mjs.bak` and `common.mjs.bak` are the previous copies. The APK's own
@@ -24,37 +25,29 @@ expensive; the "paying less" section is the point of half this file.*
 
 Ordered by value per unit of work. One item per session.
 
-1. **Put the token bill on screen.** `/api/usage` and the `pi.usage` ledger carry
-   `input`/`cacheRead`/`output`/`cost`, and the Usage sheet shows only tokens and
-   `$`. A session's spend is its prefix × tool rounds, so show per-model
-   `in · cacheRead · out · $` and the session's own total, and add a hint in the
-   composer when the last call's `cacheRead` passes ~150k: "context is large —
-   compact". Cheap, and it is the number that made this session cost $0.75.
-2. **A log view.** `files/log/node.log` and `files/log/service-error.txt` are
-   written by PiService and nothing reads them. Add `GET /api/log?tail=N` and a
-   sheet, so "lost the connection — retrying" comes with a reason. While there:
-   `service-error.txt` records intentional stops as `node exited 0; restarting` —
-   filter those out at the source.
-3. **Stuck-state audit of the client.** The reload-once-after-twelve-failures
-   fallback exists; the Activity still only loads a page in `onCreate`. Add a
-   "Reload client" row to the menu (`location.reload()`), and make sure every
-   failure path ends somewhere the user can act.
+1. ~~**Put the token bill on screen.**~~ Done: per-model `in · cached · out`
+   and money in the Usage sheet, and a `compact` pill in the composer past 60% of
+   the window.
+2. ~~**A log view.**~~ Done: `GET /api/log?file=node|service&tail=N`, a Log sheet,
+   and the service log no longer records exit 0 as a failure (that half is Java and
+   ships with the next APK).
+3. ~~**Stuck-state audit of the client.**~~ Done: one toast for every notice,
+   `connecting…` instead of a false `idle`, and a "Reload client" row in the menu.
 4. **A notification when a turn finishes.** The foreground notification is a
    static "agent runtime running". Needs Java (`PiService`), so it ships with an
    APK — pair it with 9.
 5. **Attachments.** Images and files from the phone. Biggest item here: check
    what pi-durable accepts as content before designing the UI.
-6. **CI.** There is none. A workflow that runs `node scripts/run-tests.mjs` on
-   every push is the cheapest quality win in the repo: the branch merged as #22
-   was red when it was picked up, and nothing said so.
+6. ~~**CI.**~~ Done: `.github/workflows/tests.yml`, green on `dev` and on pull
+   requests. It does not build the APK — that is item 9.
 7. **Store size.** Nothing ever deletes rows; the store is 15 MB with 22
    conversations and 4,556 entries and only grows. Two routes: a "purge archived
    sessions" maintenance command (SQL in one transaction, forced backup first,
    `VACUUM` after), or upstream a conversation-delete in the kernel.
-8. **Document restore.** Backup exists (menu → Back up sessions); restore is a
-   manual procedure that has to happen with the database closed. Write it down in
-   `docs/` — the archive contains `harness.sqlite`, `backup.json` and
-   `~/.pi/agent/{auth,models}.json`.
+8. ~~**Document restore.**~~ Done: `docs/backup-and-restore.md`, and
+   `test/restore-e2e.test.mjs` runs the procedure (back up, kill, delete the
+   database, extract, boot, check) so the document cannot rot. It also made the
+   archive's layout a contract: paths inside are relative to `$HOME`.
 9. **Prove the APK path.** `prepare-runtime.py` + `gradlew` in the devcontainer,
    then boot it. `test/packaging.test.mjs` only proves the *list*; a real build is
    the only thing that proves the payload.

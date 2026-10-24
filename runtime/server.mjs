@@ -159,6 +159,12 @@ function run(cmd, args, opts = {}) {
  * The database is copied with SQLite's own backup rather than `copyFile`: the
  * bridge is writing to it, and a copy of a file mid-write restores into a broken
  * app. `copyFile` is the fallback, and the manifest records which one was used.
+ *
+ * Paths inside the archive are relative to $HOME -- `.pi-mobile/harness.sqlite`,
+ * `.pi/agent/*`, `.pi-mobile/backup.json` -- because that is what makes a restore
+ * one line: `tar -xzf <archive> -C files/home`. The layout is the contract;
+ * docs/backup-and-restore.md is what depends on it, and test/restore-e2e.test.mjs
+ * follows that document to the letter.
  */
 async function makeBackup() {
   if (backupState.running) return { started: false, reason: 'a backup is already running' };
@@ -166,8 +172,11 @@ async function makeBackup() {
   backupState.error = null;
   const staging = await mkdtemp(path.join(os.tmpdir(), 'pi-backup-'));
   try {
+    // The archive is laid out relative to $HOME, so restoring it is one command:
+    // extract it there and every file lands where the bridge expects it.
     const db = path.join(STATE_DIR, 'harness.sqlite');
-    const copied = path.join(staging, 'harness.sqlite');
+    const copied = path.join(staging, '.pi-mobile', 'harness.sqlite');
+    await mkdirP(path.dirname(copied), { recursive: true });
     const sqlite = process.env.PREFIX ? path.join(process.env.PREFIX, 'bin', 'sqlite3') : 'sqlite3';
     const res = await run(sqlite, [db, `.backup '${copied}'`]);
     if (res.code !== 0 || !existsSync(copied)) {
@@ -182,7 +191,7 @@ async function makeBackup() {
       await copyFile(from, path.join(staging, rel));
     }
     const at = new Date().toISOString();
-    await writeFile(path.join(staging, 'backup.json'), JSON.stringify({
+    await writeFile(path.join(staging, '.pi-mobile', 'backup.json'), JSON.stringify({
       at, app: 'pi-mobile', dbBytes: (await stat(copied)).size,
       database: backupState.error ?? 'sqlite3 .backup',
     }, null, 2));

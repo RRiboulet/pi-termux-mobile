@@ -107,6 +107,10 @@ test('a backup is a readable archive of the database', async () => {
   const tar = gunzipSync(readFileSync(info.path));
   assert.ok(tar.includes('harness.sqlite'), 'the database is not in the archive');
   assert.ok(tar.includes('backup.json'), 'the manifest is not in the archive');
+  // The layout is a contract: paths are relative to $HOME, so restoring is one
+  // `tar -xzf … -C files/home`. docs/backup-and-restore.md depends on this.
+  assert.ok(tar.includes('.pi-mobile/harness.sqlite'), 'the database is not at the $HOME-relative path a restore needs');
+  assert.ok(tar.includes('.pi-mobile/backup.json'), 'the manifest is not inside .pi-mobile');
 
   // And the list agrees with what is on disk.
   const listed = await (await bd.api('/api/backup')).json();
