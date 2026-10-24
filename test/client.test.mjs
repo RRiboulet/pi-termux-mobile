@@ -21,6 +21,8 @@ async function mount({
   state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {}, sessions = {},
   // What /api/backup lists, and what pi-update answers poll by poll.
   backup = { dir: '/x/backups', running: false, backups: [] },
+  // What /api/session answers: null means a bridge that predates sign-in.
+  session = { ok: true },
   // Paths that answer with an error instead, so a failure path can be driven.
   fail = {},
   // What /api/log answers, per file.
@@ -80,9 +82,11 @@ async function mount({
       : u.includes('/api/extensions') ? extensions
       : u.includes('/api/sessions') ? sessions
       : u.includes('/api/pi-update') ? (opts?.method === 'POST' ? piStart : nextPiStatus())
+      : u.includes('/api/session') ? (session)
       : u.includes('/api/log') ? (log[u.match(/file=([a-z]+)/)?.[1]] ?? log.node)
       : u.includes('/api/backup') ? (opts?.method === 'POST' ? { started: true, name: 'pi-backup-x.tar.gz', path: '/x/b', bytes: 1 } : backup)
       : {};
+    if (u.includes('/api/session') && session === null) return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
     const refusal = Object.entries(fail).find(([path]) => u.includes(path));
     if (refusal) return { ok: false, status: refusal[1].status ?? 500, json: async () => refusal[1].body ?? { error: 'refused' } };
     return { ok: true, status: 200, json: async () => body };
@@ -1213,4 +1217,18 @@ test('an empty log says so instead of showing nothing', async () => {
     .dispatchEvent(new window.Event('click', { bubbles: true }));
   await app.settle();
   assert.match(app.text(), /nothing written yet/i, 'an empty log renders as a blank sheet');
+});
+
+test('a client survives a bridge that has no sign-in', async () => {
+  // Deploy order hazard: the client can reach the phone before the bridge restarts.
+  // It must fall back to the token the old bridge understands instead of showing a
+  // sign-in screen to a device that is already signed in.
+  const app = await mount({ session: null });
+  await app.settle();
+  app.send({ type: 'bridge_snapshot', seq: 3, snapshot: { entries: [], run: null } });
+  await app.settle();
+  assert.equal(app.document.querySelector('.pair-sheet'), null, 'an old bridge was treated as "not signed in"');
+  const state = app.fetches.find(([u]) => String(u).includes('/api/state'));
+  assert.equal(state?.[1]?.headers?.['x-token'], 'test-token', 'the fallback stopped sending the token');
+  assert.match(app.sources[0].url, /token=test-token/, 'the stream lost its token on an old bridge');
 });
