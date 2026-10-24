@@ -301,6 +301,9 @@ const state = {
   inbox: [],
   sessionName: 'Main',
   sessionId: null,      // which session /api/state says is active
+  showArchived: false,  // the sessions sheet hides archived rows until asked
+  renaming: null,       // {id, name} while the rename sheet is open
+  backup: null,         // /api/backup: the last one, and where it is
   pi: null,             // /api/pi-update: the version installed, and any update in flight
   entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
   copied: new Set(),   // keys of assistant messages whose copy feedback is showing
@@ -608,6 +611,7 @@ function handle(ev) {
 let live = null;
 let retryTimer = null;
 let retryMs = 500;
+let failures = 0;
 function subscribe() {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   const since = state.lastSeq > 0 ? `&since=${encodeURIComponent(state.lastSeq)}` : '';
@@ -619,15 +623,33 @@ function subscribe() {
   source.onerror = () => {
     if (live !== source) return;
     live = null;
+    failures += 1;
     set({ error: 'lost the connection — retrying' });
     redraw();
     try { source.close(); } catch {}
+    // The bridge picks a fixed port, so a restart is normally just a reconnect.
+    // If the port really did move (something else held it), retrying this URL
+    // cannot ever work -- the new port lives only in the file the Android host
+    // reads. Reloading makes the next main-frame load fail, and
+    // MainActivity.onReceivedError is what re-reads that file and loads the page
+    // again. Once every few minutes, so a bridge that is simply down does not
+    // turn into a reload loop.
+    if (failures >= 12 && typeof location.reload === 'function') {
+      let last = 0;
+      try { last = Number(sessionStorage.getItem('pi-reloaded-at') || 0); } catch {}
+      if (!last || Date.now() - last > 300000) {
+        try { sessionStorage.setItem('pi-reloaded-at', String(Date.now())); } catch {}
+        location.reload();
+        return;
+      }
+    }
     const wait = retryMs;
     retryMs = Math.min(retryMs * 2, 15000);
     retryTimer = setTimeout(() => { retryTimer = null; if (!live) subscribe(); }, wait);
   };
   source.onopen = () => {
     retryMs = 500;
+    failures = 0;
     set({ error: null, ready: true });
     redraw();
   };
@@ -725,16 +747,17 @@ async function openSheet(which) {
       const o = await get('/api/oauth/providers');
       set({ oauthProviders: o.providers ?? [] });
     } else if (which === 'sessions') {
-      const r = await get('/api/sessions');
-      set({ sessions: r.sessions ?? r ?? [] });
+      await refreshSessions();
     } else if (which === 'usage') {
       // /api/usage returns {session, total}; /api/state returns the session
       // usage directly. They are different shapes, so they get different fields.
       const u = await get('/api/usage');
       set({ usageTotal: u.total ?? null, usageSession: u.session ?? null });
     } else if (which === 'menu') {
-      // The menu shows which pi is installed, so it has to know before it paints.
+      // The menu shows which pi is installed and when the last backup was, so it
+      // has to know both before it paints.
       await refreshPi();
+      await refreshBackup();
     } else if (which === 'extensions') {
       await refreshExtensions();
     }
@@ -1082,6 +1105,98 @@ function Scrim() {
   return html`<div class="scrim" onClick=${closeSheet}></div>`;
 }
 
+// ── sessions: name them, and get them out of the way ─────────────────────
+async function refreshSessions() {
+  try {
+    const r = await get('/api/sessions');
+    set({ sessions: r.sessions ?? r ?? [] });
+  } catch { /* the sheet shows what it has */ }
+}
+
+async function saveSessionName(id, name) {
+  try {
+    await post('/api/sessions/rename', { id, name });
+    await refreshSessions();
+    set({ sheet: 'sessions', renaming: null, notice: null });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  redraw();
+}
+
+/**
+ * Hide a session from the list, or bring it back.
+ *
+ * pi-durable cannot delete a conversation and the transcript is the only copy of
+ * it, so this hides the row and keeps the history. The outline is in the sheet's
+ * own copy ("archived, kept on disk") rather than left to be discovered.
+ */
+async function toggleArchive(id, archived) {
+  try {
+    await post('/api/sessions/archive', { id, archived: !archived });
+    await refreshSessions();
+    set({ notice: null });
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  redraw();
+}
+
+function RenameSheet() {
+  const r = state.renaming ?? { id: '', name: '' };
+  const save = (el) => saveSessionName(r.id, el.closest('.row').querySelector('input').value);
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header>
+        <button class="icon" onClick=${() => openSheet('sessions')} aria-label="Back">‹</button>
+        <h2>Session name</h2>
+        <button class="icon" onClick=${() => { set({ sheet: null, renaming: null }); redraw(); }} aria-label="Close">✕</button>
+      </header>
+      <div class="body">
+        <div class="row" style="display:block">
+          <input class="keyin" type="text" value=${r.name} placeholder="name" maxlength="100" autocomplete="off"
+            onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); saveSessionName(r.id, e.target.value); } }} />
+          <button class="savekey" onClick=${(e) => save(e.target)}>Save</button>
+        </div>
+        <div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">An empty name shows the session number.</span></div>
+      </div>
+    </div>`;
+}
+
+// ── backups ──────────────────────────────────────────────────────────────
+async function refreshBackup() {
+  try {
+    const r = await get('/api/backup');
+    // Merge, not replace: the path of the backup just made comes from the POST.
+    set({ backup: { ...(state.backup ?? {}), ...r, latest: r.backups?.[0] ?? null } });
+  } catch { /* nothing to show; the row still works */ }
+}
+
+async function backUpNow() {
+  set({ notice: null });
+  redraw();
+  try {
+    const r = await post('/api/backup');
+    if (r.started === false) {
+      set({ notice: r.reason || 'a backup is already running' });
+    } else {
+      set({ notice: `saved ${r.name}`, backup: { ...(state.backup ?? {}), path: r.path, warning: r.warning } });
+      await refreshBackup();   // the list is what knows when it happened
+    }
+  } catch (e) {
+    set({ notice: String(e.message || e) });
+  }
+  redraw();
+}
+
+function backupHint() {
+  const b = state.backup?.latest;
+  if (!b?.at) return 'never';
+  const when = new Date(b.at).toISOString().slice(0, 16).replace('T', ' ');
+  return `${when} · ${Math.round(b.bytes / 1024)} KB`;
+}
+
 // ── pi itself ────────────────────────────────
 async function refreshPi() {
   try {
@@ -1174,6 +1289,12 @@ function MenuSheet() {
           <span class="grow">Update pi</span>
           <small>${piHint()}</small>
         </button>
+        <button class="row" onClick=${() => backUpNow()}>
+          <span class="grow">Back up sessions</span>
+          <small>${backupHint()}</small>
+        </button>
+        ${state.backup?.path ? html`<pre class="pi-log">${state.backup.path}</pre>` : null}
+        ${state.backup?.path ? html`<div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">Pull it off the phone (adb pull / scp) — an uninstall deletes this copy too.</span></div>` : null}
         ${state.pi?.error ? html`<div class="row"><span class="grow pi-error">${state.pi.error}</span></div>` : null}
         ${state.pi?.log?.length ? html`<pre class="pi-log">${state.pi.log.slice(-8).join('\n')}</pre>` : null}
         ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
@@ -1386,6 +1507,7 @@ function Sheet() {
   if (which === 'addkey') return html`<${Scrim} /><${AddKeySheet} />`;
   if (which === 'oauth') return html`<${Scrim} /><${OauthSheet} />`;
   if (which === 'extensions') return html`<${Scrim} /><${ExtensionsSheet} />`;
+  if (which === 'rename') return html`<${Scrim} /><${RenameSheet} />`;
   const title = which === 'model' ? 'Model' : which === 'sessions' ? 'Sessions' : 'Usage';
   let body;
   if (which === 'model') {
@@ -1402,15 +1524,22 @@ function Sheet() {
       : html`<div class="empty">No models yet — add a provider key in the menu.</div>`;
   } else if (which === 'sessions') {
     const sessions = state.sessions?.sessions ?? state.sessions ?? [];
-    body = sessions.length
-      ? sessions.map((s) => {
+    const archived = sessions.filter((s) => s.archived);
+    const shown = state.showArchived ? sessions : sessions.filter((s) => !s.archived);
+    body = shown.length
+      ? html`${shown.map((s) => {
           const id = s.id ?? s;
-          return html`<button class="row" key=${id} onClick=${() => chooseSession(id)}>
-            <span class="grow">${s.name ?? id}${String(s.id) === String(state.sessionId) ? ' ·' : ''}</span>
-            ${s.cwd ? html`<small>${s.cwd}</small>` : null}
-          </button>`;
-        })
-      : html`<div class="empty">No sessions yet.</div>`;
+          const current = String(id) === String(state.sessionId);
+          return html`<div class="row session" key=${id}>
+            <button class="grow session-name" onClick=${() => chooseSession(id)}>${s.name ?? `#${id}`}${current ? ' ·' : ''}</button>
+            <button class="icon small" aria-label="Rename" onClick=${() => { set({ sheet: 'rename', renaming: { id, name: s.name ?? '' }, notice: null }); redraw(); }}>✎</button>
+            <button class="icon small" aria-label=${s.archived ? 'Unarchive' : 'Archive'} onClick=${() => toggleArchive(id, Boolean(s.archived))}>${s.archived ? '↩' : '⌫'}</button>
+          </div>`;
+        })}
+        ${archived.length ? html`<button class="row" onClick=${() => { set({ showArchived: !state.showArchived }); redraw(); }}>
+          <span class="grow">${state.showArchived ? 'Hide archived' : `Show archived (${archived.length})`}</span>
+        </button>` : null}`
+      : html`<div class="empty">${state.showArchived ? 'No sessions yet.' : 'No sessions yet — archived ones are under “Show archived”.'}</div>`;
   } else {
     // /api/usage returns {session, total}; the session usage has the same shape
     // as /api/state's.

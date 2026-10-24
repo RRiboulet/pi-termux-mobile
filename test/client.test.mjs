@@ -19,6 +19,8 @@ const PUBLIC = new URL('../runtime/public/', import.meta.url);
 /** Mount the client in a fresh DOM and return the handles the test needs. */
 async function mount({
   state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {}, sessions = {},
+  // What /api/backup lists, and what pi-update answers poll by poll.
+  backup = { dir: '/x/backups', running: false, backups: [] },
   // What /api/pi-update answers, poll by poll, and what starting one answers.
   piStatus = [{ installed: '1.4.0', running: false }], piStart = { started: true },
   // What localStorage already holds, as a reload would find it.
@@ -74,6 +76,7 @@ async function mount({
       : u.includes('/api/extensions') ? extensions
       : u.includes('/api/sessions') ? sessions
       : u.includes('/api/pi-update') ? (opts?.method === 'POST' ? piStart : nextPiStatus())
+      : u.includes('/api/backup') ? (opts?.method === 'POST' ? { started: true, name: 'pi-backup-x.tar.gz', path: '/x/b', bytes: 1 } : backup)
       : {};
     return { ok: true, status: 200, json: async () => body };
   };
@@ -906,10 +909,10 @@ test('the sessions sheet marks the session that is active', async () => {
   sessionsRow.dispatchEvent(new window.Event('click', { bubbles: true }));
   await app.settle();
 
-  const rows = [...app.document.querySelectorAll('button.row')].map((b) => b.textContent.replace(/\s+/g, ' ').trim());
+  const rows = [...app.document.querySelectorAll('.row.session')].map((b) => b.textContent.replace(/\s+/g, ' ').trim());
   const marked = rows.filter((r) => r.includes('·'));
   assert.equal(marked.length, 1, `expected one marked session, got ${JSON.stringify(rows)}`);
-  assert.match(marked[0], /^13\b/, `the marker is on the wrong session: ${JSON.stringify(rows)}`);
+  assert.match(marked[0], /^#?13\b/, `the marker is on the wrong session: ${JSON.stringify(rows)}`);
 });
 
 // ── updating pi from the menu ────────────────────────────────────────────
@@ -971,4 +974,78 @@ test("a failed update shows npm's error and its last words", async () => {
   piRow(app).dispatchEvent(new window.Event('click', { bubbles: true }));
   await waitForText(app, /npm exited with code 1/);
   assert.match(app.text(), /E404/, "npm's own output is not shown");
+});
+
+// ── sessions you can name, and put away ──────────────────────────────────
+const openSessions = async (app) => {
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const row = [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Sessions'));
+  row.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+};
+
+test('a session can be renamed from the sessions sheet', async () => {
+  const app = await mount({
+    state: { sessionId: '13', sessionName: 'Main' },
+    sessions: [{ id: '13', name: 'Main' }, { id: '20' }],
+  });
+  await app.settle();
+  await openSessions(app);
+
+  const rename = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Rename');
+  assert.ok(rename, 'no rename affordance on a session row');
+  rename.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const input = app.document.querySelector('.sheet input');
+  assert.ok(input, 'the rename sheet has no input');
+  input.value = 'refactor the gate';
+  [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save')
+    .dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const post = app.fetches.find(([url, opts]) => String(url).includes('/api/sessions/rename') && opts?.method === 'POST');
+  assert.ok(post, 'no rename request was sent');
+  assert.deepEqual(JSON.parse(post[1].body), { id: '13', name: 'refactor the gate' });
+});
+
+test('an archived session leaves the list, and the list says where it went', async () => {
+  const app = await mount({
+    state: { sessionId: '13', sessionName: 'Main' },
+    sessions: [{ id: '13', name: 'Main' }, { id: '20', name: 'old spike' }],
+  });
+  await app.settle();
+  await openSessions(app);
+  assert.match(app.text(), /old spike/, 'the second session is not listed');
+
+  const row = [...app.document.querySelectorAll('.row.session')].find((r) => r.textContent.includes('old spike'));
+  const archive = row?.querySelector('button[aria-label="Archive"]');
+  assert.ok(archive, 'no archive affordance on that session row');
+  archive.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const post = app.fetches.find(([url, opts]) => String(url).includes('/api/sessions/archive') && opts?.method === 'POST');
+  assert.ok(post, 'no archive request was sent');
+  assert.deepEqual(JSON.parse(post[1].body), { id: '20', archived: true });
+});
+
+test('the menu says when the last backup was, and where it went', async () => {
+  const app = await mount({
+    backup: { dir: '/x/backups', running: false, backups: [{ name: 'pi-backup-2026-10-24T12-00-00.tar.gz', bytes: 8192, at: '2026-10-24T12:00:00.000Z', path: '/x/backups/pi-backup-2026-10-24T12-00-00.tar.gz' }] },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.match(app.text(), /2026-10-24 12:00/, 'the menu does not say when the last backup was');
+  assert.match(app.text(), /8 KB/);
+
+  [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Back up sessions'))
+    .dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const post = app.fetches.find(([url, opts]) => String(url).includes('/api/backup') && opts?.method === 'POST');
+  assert.ok(post, 'no backup request was sent');
+  assert.match(app.text(), /pull it off the phone/i, 'the sheet does not say where the archive has to go');
 });
