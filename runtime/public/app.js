@@ -763,7 +763,7 @@ async function openSheet(which) {
       await refreshExtensions();
     }
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   redraw();
 }
@@ -777,7 +777,7 @@ async function saveKey(key) {
     // After the sheet opened: openSheet resets the notice, so setting it before was pointless.
     set({ addKeyFor: null, notice: `${provider} key saved` });
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
     redraw();
   }
 }
@@ -786,9 +786,9 @@ async function deleteKey(provider) {
   try {
     await post('/api/auth', { provider, delete: true });
     await openSheet('provider');
-    set({ notice: `${provider} key removed` });
+    notify(`${provider} key removed`);
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
     redraw();
   }
 }
@@ -798,7 +798,7 @@ async function setThinking(level) {
     await post('/api/thinking', { level });
     set({ thinking: { ...state.thinking, level }, sheet: 'menu' });
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   redraw();
 }
@@ -810,7 +810,7 @@ async function startOauth(provider) {
     set({ oauth: { id: r.id, prompt: null, done: false, error: null, events: [] }, sheet: 'oauth' });
     pollOauth();
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
     redraw();
   }
 }
@@ -846,7 +846,7 @@ async function answerOauth(value) {
     set({ oauth: { ...o, prompt: null } });
     pollOauth();
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
     redraw();
   }
 }
@@ -875,7 +875,7 @@ async function chooseModel(m) {
     set({ model: { provider: m.provider, modelId: m.modelId } });
     set({ sheet: 'menu' });
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   redraw();
 }
@@ -908,9 +908,9 @@ const pendingProposals = () => (state.extensions?.proposals ?? [])
 async function installExtension(p) {
   try {
     await post('/api/extensions/install', { key: p.key, hash: p.hash });
-    set({ notice: `${p.key} installed` });
+    notify(`${p.key} installed`);
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   await refreshExtensions();
   redraw();
@@ -919,9 +919,9 @@ async function installExtension(p) {
 async function rejectExtension(p) {
   try {
     await post('/api/extensions/reject', { key: p.key, hash: p.hash });
-    set({ notice: `${p.key} refused` });
+    notify(`${p.key} refused`);
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   await refreshExtensions();
   redraw();
@@ -930,9 +930,9 @@ async function rejectExtension(p) {
 async function uninstallExtension(p) {
   try {
     await post('/api/extensions/uninstall', { key: p.key });
-    set({ notice: `${p.key} removed` });
+    notify(`${p.key} removed`);
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   await refreshExtensions();
   redraw();
@@ -942,8 +942,10 @@ async function uninstallExtension(p) {
 function StatusStrip() {
   const queued = state.inbox?.length ?? 0;
   let tone = '';
-  let label = state.busy ? 'working' : 'idle';
-  if (state.error) { tone = 'bad'; label = state.error; }
+  // "idle" is a claim about the bridge, and this client cannot make it until the
+  // stream is up: a page loaded while the bridge is down used to read "idle".
+  let label = state.error ? state.error : !state.ready ? 'connecting…' : state.busy ? 'working' : 'idle';
+  if (state.error) tone = 'bad';
   else if (state.busy) {
     const running = [...state.tools.values()].find((t) => t.status === 'run');
     if (running) label = `working · ${running.name}`;
@@ -1117,12 +1119,38 @@ function eventText(e) {
   return e.message ?? e.text ?? JSON.stringify(e);
 }
 
+/**
+ * One-line messages: what just happened, or what failed.
+ *
+ * They used to be rendered by four sheets out of nine, so anything raised from
+ * the other five was invisible -- which is how "Update pi does nothing" happened.
+ * There is one toast now, above the sheet, and it clears itself.
+ */
+let noticeTimer = null;
+function notify(text, ms = 7000) {
+  const message = text == null || text === '' ? null : String(text);
+  set({ notice: message });
+  if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+  if (message && ms > 0) {
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null;
+      if (state.notice === message) { set({ notice: null }); redraw(); }
+    }, ms);
+  }
+  redraw();
+}
+
 function closeSheet() {
   if (state.sheet !== null && typeof history.back === 'function') {
     try { history.back(); return; } catch { /* fall through */ }
   }
   set({ sheet: null });
   redraw();
+}
+
+function NoticeToast() {
+  if (!state.notice) return null;
+  return html`<div class="notice-toast" role="status" onClick=${() => notify(null)}>${state.notice}</div>`;
 }
 
 function Scrim() {
@@ -1143,7 +1171,7 @@ async function saveSessionName(id, name) {
     await refreshSessions();
     set({ sheet: 'sessions', renaming: null, notice: null });
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   redraw();
 }
@@ -1161,7 +1189,7 @@ async function toggleArchive(id, archived) {
     await refreshSessions();
     set({ notice: null });
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   redraw();
 }
@@ -1197,19 +1225,34 @@ async function refreshBackup() {
   } catch { /* nothing to show; the row still works */ }
 }
 
+/**
+ * Fetch the client again.
+ *
+ * The Activity only loads a page in onCreate, so a page can outlive the code it
+ * was served with, and a bridge that comes back on a different port leaves it
+ * retrying a socket nobody owns. This is the manual version of the automatic
+ * reload, and the only control that fixes either from inside the app.
+ */
+function reloadClient() {
+  notify('reloading…', 0);
+  if (typeof location.reload === 'function') { location.reload(); return; }
+  location.href = location.href;   // when reload() is not there, navigating is
+}
+
 async function backUpNow() {
   set({ notice: null });
   redraw();
   try {
     const r = await post('/api/backup');
     if (r.started === false) {
-      set({ notice: r.reason || 'a backup is already running' });
+      notify(r.reason || 'a backup is already running');
     } else {
-      set({ notice: `saved ${r.name}`, backup: { ...(state.backup ?? {}), path: r.path, warning: r.warning } });
+      set({ backup: { ...(state.backup ?? {}), path: r.path, warning: r.warning } });
+      notify(`saved ${r.name}`);
       await refreshBackup();   // the list is what knows when it happened
     }
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
   }
   redraw();
 }
@@ -1244,7 +1287,7 @@ async function updatePi() {
     const r = await post('/api/pi-update');
     if (r.started === false) { set({ notice: r.reason || 'an update is already running' }); redraw(); return; }
   } catch (e) {
-    set({ notice: String(e.message || e) });
+    notify(String(e.message || e));
     redraw();
     return;
   }
@@ -1313,6 +1356,10 @@ function MenuSheet() {
           <span class="grow">Update pi</span>
           <small>${piHint()}</small>
         </button>
+        <button class="row" onClick=${() => reloadClient()}>
+          <span class="grow">Reload client</span>
+          <small>fetches the page again</small>
+        </button>
         <button class="row" onClick=${() => backUpNow()}>
           <span class="grow">Back up sessions</span>
           <small>${backupHint()}</small>
@@ -1321,7 +1368,6 @@ function MenuSheet() {
         ${state.backup?.path ? html`<div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">Pull it off the phone (adb pull / scp) — an uninstall deletes this copy too.</span></div>` : null}
         ${state.pi?.error ? html`<div class="row"><span class="grow pi-error">${state.pi.error}</span></div>` : null}
         ${state.pi?.log?.length ? html`<pre class="pi-log">${state.pi.log.slice(-8).join('\n')}</pre>` : null}
-        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
       </div>
     </div>`;
 }
@@ -1360,7 +1406,6 @@ function ProviderSheet() {
         <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">
-        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
         ${configured.length
           ? configured.map((p) => html`
               <button class="row" key=${p.provider} onClick=${() => deleteKey(p.provider)}>
@@ -1397,7 +1442,6 @@ function AddKeySheet() {
             onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); const v = e.target.value; saveKey(v); } }} />
           <button class="savekey" onClick=${(e) => saveKey(e.target.closest('.row').querySelector('input').value)}>Save</button>
         </div>
-        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
       </div>
     </div>`;
 }
@@ -1468,7 +1512,6 @@ function ExtensionsSheet() {
         <button class="icon" onClick=${() => { set({ sheet: null }); redraw(); }} aria-label="Close">✕</button>
       </header>
       <div class="body">
-        ${state.notice ? html`<div class="row"><span class="grow">${state.notice}</span></div>` : null}
         ${problems.length ? html`
           <div class="row"><span class="grow" style="color:var(--muted);font-size:12px">Problems</span></div>
           ${problems.map((p) => html`
@@ -1621,7 +1664,8 @@ function App() {
     <${Transcript} />
     <${Composer} />
     <${BottomBar} />
-    <${Sheet} />`;
+    <${Sheet} />
+    <${NoticeToast} />`;
 }
 
 async function copyResponse(key, text) {
