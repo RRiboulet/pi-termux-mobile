@@ -539,3 +539,7 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
   box-shadow: 0 8px 24px rgba(0,0,0,.35);
   font-size: 13px; color: var(--text);
 }
+
+/* The log is the one place where a long, dense block is the point: give it room,
+   and let it scroll on its own. */
+.sheet .pi-log.log-view { max-height: 56vh; }

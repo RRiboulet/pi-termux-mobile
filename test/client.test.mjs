@@ -23,6 +23,8 @@ async function mount({
   backup = { dir: '/x/backups', running: false, backups: [] },
   // Paths that answer with an error instead, so a failure path can be driven.
   fail = {},
+  // What /api/log answers, per file.
+  log = { node: { file: 'node', path: '/l/node.log', bytes: 0, lines: [] } },
   // What /api/pi-update answers, poll by poll, and what starting one answers.
   piStatus = [{ installed: '1.4.0', running: false }], piStart = { started: true },
   // What localStorage already holds, as a reload would find it.
@@ -78,6 +80,7 @@ async function mount({
       : u.includes('/api/extensions') ? extensions
       : u.includes('/api/sessions') ? sessions
       : u.includes('/api/pi-update') ? (opts?.method === 'POST' ? piStart : nextPiStatus())
+      : u.includes('/api/log') ? (log[u.match(/file=([a-z]+)/)?.[1]] ?? log.node)
       : u.includes('/api/backup') ? (opts?.method === 'POST' ? { started: true, name: 'pi-backup-x.tar.gz', path: '/x/b', bytes: 1 } : backup)
       : {};
     const refusal = Object.entries(fail).find(([path]) => u.includes(path));
@@ -1167,4 +1170,47 @@ test('the menu offers a reload for a page that outlived its bridge', async () =>
   row.dispatchEvent(new window.Event('click', { bubbles: true }));
   await app.settle();
   assert.equal(reloaded, 1, 'the reload row did not reload');
+});
+
+// ── the log, from inside the app ─────────────────────────────────────────
+// "lost the connection — retrying" was all the client ever said, and the reason
+// was in files/log where only a shell could read it.
+
+test('the log sheet shows the bridge log, and the service log on request', async () => {
+  const app = await mount({
+    log: {
+      node: { file: 'node', path: '/files/log/node.log', bytes: 2048, lines: ['bridge started', 'sse: dropped a client'] },
+      service: { file: 'service', path: '/files/log/service-error.txt', bytes: 120, lines: ['node exited 1; restarting'] },
+    },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  const row = [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Log'));
+  row.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  assert.match(app.text(), /bridge started/, 'the bridge log is not shown');
+  assert.match(app.text(), /sse: dropped a client/);
+  assert.match(app.text(), /\/files\/log\/node\.log/, 'the sheet does not say which file it is showing');
+
+  const service = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Service');
+  service.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.match(app.text(), /node exited 1; restarting/, 'the service log is not shown');
+  const asked = app.fetches.map(([u]) => String(u)).filter((u) => u.includes('/api/log'));
+  assert.ok(asked.some((u) => u.includes('file=service')), `no request for the service log: ${JSON.stringify(asked)}`);
+});
+
+test('an empty log says so instead of showing nothing', async () => {
+  const app = await mount({ log: { node: { file: 'node', path: '/files/log/node.log', bytes: 0, lines: [] } } });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Log'))
+    .dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.match(app.text(), /nothing written yet/i, 'an empty log renders as a blank sheet');
 });

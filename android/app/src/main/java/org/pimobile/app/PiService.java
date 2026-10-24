@@ -88,7 +88,9 @@ public final class PiService extends Service {
                 synchronized (lock) { nodeProcess = p; }
                 try {
                     int code = p.waitFor();
-                    if (!stopping) logError("node exited " + code + "; restarting", null);
+                    // Exit 0 is a deliberate stop (an update swapping its modules in),
+                    // not a failure: logging it as one buried the exits that mattered.
+                    if (!stopping && code != 0) logError("node exited " + code + "; restarting", null);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return;
