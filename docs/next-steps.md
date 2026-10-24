@@ -85,6 +85,13 @@ Ordered by value per unit of work. One item per session.
 - The debug keystore lives in the devcontainer. A fresh container cannot update an
   installed APK → uninstall → HOME is gone → **back up first**.
 
+## Done since this was written
+
+Device sign-in and access modes (`docs/access.md`): hashed per-device tokens, an
+HttpOnly cookie, one-time pairing codes, rotation, and `PI_ACCESS=local|tailscale|lan`
+with a Host allow-list. The next step for multi-device is per-client sessions —
+`active` is still one global on the bridge.
+
 ## Paying less
 
 A session's cost is its prefix × its tool rounds; both are under your control.

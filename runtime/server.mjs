@@ -576,6 +576,8 @@ setInterval(() => {
 
 // --- HTTP helpers -------------------------------------------------------------------
 
+// The bootstrap token: what the app's WebView was launched with, and what a
+// script uses. It is one of the tokens the bridge accepts, not the only one.
 const token = existsSync(TOKEN_FILE)
   ? (await readFile(TOKEN_FILE, 'utf8')).trim()
   : await (async () => {
@@ -583,19 +585,123 @@ const token = existsSync(TOKEN_FILE)
       await writeFile(TOKEN_FILE, t, { mode: 0o600 });
       return t;
     })();
-const tokenBuf = Buffer.from(token);
+
+// --- devices -------------------------------------------------------------------------
+// Every device signs in once and gets its own token. Only the SHA-256 of a token is
+// stored, so the file is useless if it leaks, and one device can be signed out
+// without touching the others. The token lives in an HttpOnly cookie: a page's own
+// script cannot read it, which is what keeps it out of localStorage and out of any
+// URL that reaches a log.
+const DEVICES_FILE = path.join(STATE_DIR, 'devices.json');
+const COOKIE = 'pi';
+const PAIR_TTL_MS = 15 * 60 * 1000;
+const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+
+const devices = { list: [] };
+function loadDevices() {
+  try {
+    const raw = JSON.parse(readFileSync(DEVICES_FILE, 'utf8'));
+    devices.list = Array.isArray(raw?.devices) ? raw.devices : [];
+  } catch { devices.list = []; }
+  // The bootstrap token is a device too, so the WebView keeps working.
+  if (!devices.list.some((d) => d.hash === sha256(token))) {
+    devices.list.push({ id: 'bootstrap', name: 'this app', hash: sha256(token), created: new Date().toISOString() });
+    saveDevices();
+  }
+}
+function saveDevices() {
+  try { writeFileAtomic(DEVICES_FILE, JSON.stringify({ version: 1, devices: devices.list }, null, 2), 0o600); } catch {}
+}
+function addDevice(name) {
+  const secret = crypto.randomBytes(24).toString('base64url');
+  const device = { id: crypto.randomBytes(6).toString('hex'), name: String(name || 'device').slice(0, 40),
+    hash: sha256(secret), created: new Date().toISOString() };
+  devices.list.push(device);
+  saveDevices();
+  return { secret, device };
+}
+const tokenMatches = (given) => {
+  const h = Buffer.from(sha256(given));
+  return devices.list.some((d) => {
+    const want = Buffer.from(String(d.hash));
+    return want.length === h.length && crypto.timingSafeEqual(h, want);
+  });
+};
+function cookieOf(req) {
+  const raw = String(req.headers.cookie || '');
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === COOKIE) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return '';
+}
+function setCookie(res, value, { clear = false } = {}) {
+  const attrs = [`${COOKIE}=${clear ? '' : encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', 'SameSite=Strict'];
+  if (clear) attrs.push('Max-Age=0');
+  res.setHeader('set-cookie', attrs.join('; '));
+}
+// One-time pairing codes, in memory: a pair URL is good for 15 minutes or one use.
+const pairings = new Map();
+function makePairing(base) {
+  const code = crypto.randomBytes(18).toString('base64url');
+  pairings.set(code, Date.now() + PAIR_TTL_MS);
+  return { code, url: `${base}/?pair=${encodeURIComponent(code)}`, expiresAt: new Date(Date.now() + PAIR_TTL_MS).toISOString() };
+}
+function claimPairing(code) {
+  const expires = pairings.get(code);
+  if (!expires || expires < Date.now()) { pairings.delete(code); return null; }
+  pairings.delete(code);
+  return true;
+}
+loadDevices();
 
 function authed(req) {
   const url = new URL(req.url, 'http://localhost');
-  const given = String(req.headers['x-token'] || url.searchParams.get('token') || '');
-  const buf = Buffer.from(given);
-  return buf.length === tokenBuf.length && crypto.timingSafeEqual(buf, tokenBuf);
+  // The cookie is the normal path; the header and the query stay for scripts, tests
+  // and the first exchange that turns one into the other.
+  const given = cookieOf(req) || String(req.headers['x-token'] || url.searchParams.get('token') || '');
+  return Boolean(given) && tokenMatches(given);
 }
 let listenPort = 0;
-// DNS-rebinding guard: only the loopback names the WebView uses
+// --- access --------------------------------------------------------------------------
+// local: loopback only. tailscale: the tailnet address the phone already has, so a
+// laptop or another phone that is on the same tailnet reaches it and nothing on the
+// LAN does. lan: everything bound, which is what "just let my other devices in" means
+// and is the only mode that has to be asked for.
+//
+// The Host check stays, because DNS rebinding is a real attack against a server whose
+// only credential is a cookie: a name that is not one of ours must not reach the app,
+// even from a browser on the same machine. A peer that is on the tailnet is the
+// exception — it cannot be reached by a hostile page at all.
+const ACCESS = ['local', 'tailscale', 'lan'].includes(String(process.env.PI_ACCESS))
+  ? String(process.env.PI_ACCESS)
+  : 'local';
+function tailnetAddress() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.internal) continue;
+      if (a.family === 'IPv4' && /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a.address)) return a.address;
+    }
+  }
+  return null;
+}
+const TAILNET = tailnetAddress();
+const boundAddresses = ACCESS === 'tailscale' ? (TAILNET ?? '127.0.0.1') : ACCESS === 'lan' ? '0.0.0.0' : '127.0.0.1';
+const extraHosts = String(process.env.PI_HOSTNAME || '').split(',').map((h) => h.trim()).filter(Boolean);
+
 function hostAllowed(req) {
-  const h = String(req.headers.host || '');
-  return h === `127.0.0.1:${listenPort}` || h === `localhost:${listenPort}`;
+  const host = String(req.headers.host || '');
+  if (host === `127.0.0.1:${listenPort}` || host === `localhost:${listenPort}`) return true;
+  // The tailnet address or name, whichever the client used, needs the port too.
+  for (const a of [TAILNET, ...boundAddresses.split(','), ...extraHosts].filter(Boolean)) {
+    if (host === `${a}:${listenPort}` || host === a) return true;
+  }
+  if (ACCESS === 'tailscale') {
+    const peer = String(req.socket?.remoteAddress || '');
+    if (peer === TAILNET || /^(::ffff:)?100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(peer)) return true;
+  }
+  return false;
 }
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -715,6 +821,54 @@ async function handleApi(req, res, url, p) {
   }
   if (p === '/api/pi-update' && req.method === 'POST') {
     return json(res, 200, startPiUpdate());
+  }
+  // --- signing in ------------------------------------------------------------------
+  // A token in the query is exchanged for an HttpOnly cookie, so the browser's own
+  // script never holds it and it never has to be in a URL again. The same route takes
+  // a one-time pairing code, which is how a second device joins.
+  if (p === '/api/session' && req.method === 'POST') {
+    const code = str(body.code);
+    const given = str(body.token) || code;
+    let device = null;
+    if (code) {
+      if (!claimPairing(code)) return json(res, 401, { error: 'that code is expired or already used' });
+      const made = addDevice(str(body.name, 40) || 'device');
+      setCookie(res, made.secret);
+      return json(res, 200, { ok: true, device: { id: made.device.id, name: made.device.name } });
+    }
+    if (!given || !tokenMatches(given)) return json(res, 401, { error: 'unauthorized' });
+    setCookie(res, given);
+    return json(res, 200, { ok: true, device: { id: 'known' } });
+  }
+  if (p === '/api/session' && req.method === 'GET') {
+    return json(res, 200, { ok: authed(req) });
+  }
+  if (p === '/api/logout' && req.method === 'POST') {
+    setCookie(res, '', { clear: true });
+    return json(res, 200, { ok: true });
+  }
+  if (p === '/api/pair' && req.method === 'POST') {
+    if (!authed(req)) return json(res, 401, { error: 'unauthorized' });
+    const base = `http://${String(req.headers.host || `127.0.0.1:${listenPort}`)}`;
+    return json(res, 200, makePairing(base));
+  }
+  if (p === '/api/devices' && req.method === 'GET') {
+    return json(res, 200, { devices: devices.list.map((d) => ({ id: d.id, name: d.name, created: d.created })), access: ACCESS, tailnet: TAILNET });
+  }
+  if (p === '/api/token/rotate' && req.method === 'POST') {
+    // Every token but the caller's is replaced: the way out when a device is lost, or
+    // when a link leaked. The caller is issued a new one and keeps working; the new
+    // bootstrap token is in the answer, so a script can pick it up.
+    const fresh = crypto.randomBytes(24).toString('base64url');
+    await writeFile(TOKEN_FILE, fresh, { mode: 0o600 });
+    const made = addDevice('this device');
+    devices.list = [
+      { id: 'bootstrap', name: 'this app', hash: sha256(fresh), created: new Date().toISOString() },
+      made.device,
+    ];
+    saveDevices();
+    setCookie(res, made.secret);
+    return json(res, 200, { ok: true, token: fresh, device: { id: made.device.id, name: made.device.name } });
   }
   if (p === '/api/state') return json(res, 200, await activeState());
 
@@ -968,7 +1122,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p.startsWith('/api/')) {
-    if (!authed(req)) return json(res, 401, { error: 'unauthorized' });
+    // Signing in cannot itself require being signed in: /api/session is where a
+    // token or a pairing code becomes a cookie, and where a browser asks whether it
+    // has one yet.
+    const reachingForTheDoor = p === '/api/session';
+    if (!reachingForTheDoor && !authed(req)) return json(res, 401, { error: 'unauthorized' });
     try {
       return await handleApi(req, res, url, p);
     } catch (e) {
@@ -1010,7 +1168,7 @@ async function listenOnFirstFreePort() {
         const onListening = () => { server.off('error', onError); resolve(); };
         server.once('error', onError);
         server.once('listening', onListening);
-        server.listen(port, '127.0.0.1');
+        server.listen(port, boundAddresses);
       });
       return true;
     } catch (e) {
