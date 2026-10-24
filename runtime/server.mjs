@@ -4,6 +4,8 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { copyFile, mkdir as mkdirP, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -129,6 +131,91 @@ function startPiUpdate() {
   });
   child.on('error', (e) => { piUpdate.running = false; piUpdate.done = true; piUpdate.ok = false; piUpdate.error = e.message; });
   return { started: true, from: before };
+}
+
+// --- backups -------------------------------------------------------------------------
+// The one thing a phone cannot recover: the sessions and the API keys in $HOME,
+// which a reinstall deletes without asking. The archive lands inside the tree the
+// user already pulls off the device (adb pull / scp / git), and the UI says where.
+const BACKUP_DIR = path.join(STATE_DIR, 'backups');
+const KEEP_BACKUPS = 10;
+const backupState = { running: false, error: null };
+
+/** Run a program and wait for it, collecting what it said. */
+function run(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    let out = '';
+    const child = spawn(cmd, args, opts);
+    child.stdout?.on('data', (d) => { out += d; });
+    child.stderr?.on('data', (d) => { out += d; });
+    child.on('error', (e) => resolve({ code: -1, out: e.message }));
+    child.on('close', (code) => resolve({ code: code ?? -1, out }));
+  });
+}
+
+/**
+ * One archive: a consistent copy of the database plus the credentials.
+ *
+ * The database is copied with SQLite's own backup rather than `copyFile`: the
+ * bridge is writing to it, and a copy of a file mid-write restores into a broken
+ * app. `copyFile` is the fallback, and the manifest records which one was used.
+ */
+async function makeBackup() {
+  if (backupState.running) return { started: false, reason: 'a backup is already running' };
+  backupState.running = true;
+  backupState.error = null;
+  const staging = await mkdtemp(path.join(os.tmpdir(), 'pi-backup-'));
+  try {
+    const db = path.join(STATE_DIR, 'harness.sqlite');
+    const copied = path.join(staging, 'harness.sqlite');
+    const sqlite = process.env.PREFIX ? path.join(process.env.PREFIX, 'bin', 'sqlite3') : 'sqlite3';
+    const res = await run(sqlite, [db, `.backup '${copied}'`]);
+    if (res.code !== 0 || !existsSync(copied)) {
+      await copyFile(db, copied);
+      backupState.error = `sqlite3 backup failed (${res.out.trim() || res.code}); copied the file instead`;
+    }
+    // Credentials and model choices: small, and missed the moment they are gone.
+    for (const rel of [path.join('.pi', 'agent', 'auth.json'), path.join('.pi', 'agent', 'models.json')]) {
+      const from = path.join(HOME_DIR, rel);
+      if (!existsSync(from)) continue;
+      await mkdirP(path.dirname(path.join(staging, rel)), { recursive: true });
+      await copyFile(from, path.join(staging, rel));
+    }
+    const at = new Date().toISOString();
+    await writeFile(path.join(staging, 'backup.json'), JSON.stringify({
+      at, app: 'pi-mobile', dbBytes: (await stat(copied)).size,
+      database: backupState.error ?? 'sqlite3 .backup',
+    }, null, 2));
+    await mkdirP(BACKUP_DIR, { recursive: true });
+    const name = `pi-backup-${at.replace(/[:.]/g, '-').slice(0, 19)}.tar.gz`;
+    const target = path.join(BACKUP_DIR, name);
+    const tar = await run('tar', ['-czf', target, '-C', staging, '.']);
+    if (tar.code !== 0) throw new Error(`tar failed: ${tar.out.trim() || tar.code}`);
+    await pruneBackups();
+    return { started: true, name, path: target, at, bytes: (await stat(target)).size, warning: backupState.error ?? undefined };
+  } finally {
+    backupState.running = false;
+    await rm(staging, { recursive: true, force: true });
+  }
+}
+
+async function pruneBackups() {
+  try {
+    const names = (await readdir(BACKUP_DIR)).filter((n) => n.startsWith('pi-backup-') && n.endsWith('.tar.gz')).sort();
+    for (const name of names.slice(0, Math.max(0, names.length - KEEP_BACKUPS))) {
+      await rm(path.join(BACKUP_DIR, name), { force: true });
+    }
+  } catch {}
+}
+
+async function listBackups() {
+  try {
+    const names = (await readdir(BACKUP_DIR)).filter((n) => n.startsWith('pi-backup-') && n.endsWith('.tar.gz')).sort().reverse();
+    return await Promise.all(names.map(async (name) => {
+      const st = await stat(path.join(BACKUP_DIR, name));
+      return { name, bytes: st.size, at: st.mtime.toISOString(), path: path.join(BACKUP_DIR, name) };
+    }));
+  } catch { return []; }
 }
 
 const MIME = {
@@ -532,6 +619,33 @@ async function handleApi(req, res, url, p) {
     await activate(conversation);
     return json(res, 200, { ok: true, activeId: String(conversation.id) });
   }
+  if (p === '/api/sessions/rename' && req.method === 'POST') {
+    const id = str(body.id);
+    if (!(await sessions.get(id))) return json(res, 404, { error: 'unknown session' });
+    await sessions.rename(id, body.name);
+    return json(res, 200, { ok: true, id: String(id), name: str(body.name, 100).trim() || null });
+  }
+  if (p === '/api/sessions/archive' && req.method === 'POST') {
+    const id = str(body.id);
+    if (!(await sessions.get(id))) return json(res, 404, { error: 'unknown session' });
+    // Only archiving is refused while it is open -- bringing one back must work
+    // even though opening it made it the active one.
+    if (body.archived !== false && String(active?.id) === String(id)) {
+      return json(res, 400, { error: 'cannot archive the session that is open' });
+    }
+    await sessions.setArchived(id, body.archived !== false);
+    return json(res, 200, { ok: true, id: String(id), archived: body.archived !== false });
+  }
+  if (p === '/api/backup' && req.method === 'GET') {
+    return json(res, 200, { dir: BACKUP_DIR, backups: await listBackups(), running: backupState.running, error: backupState.error });
+  }
+  if (p === '/api/backup' && req.method === 'POST') {
+    try {
+      return json(res, 200, await makeBackup());
+    } catch (e) {
+      return json(res, 500, { started: false, error: String(e?.message || e) });
+    }
+  }
 
   // --- the install gate
   if (p === '/api/extensions' && req.method === 'GET') {
@@ -749,11 +863,41 @@ try {
   releaseLock();
   process.exit(1);
 }
-server.listen(Number(process.env.PI_PORT || 0), '127.0.0.1', async () => {
-  listenPort = server.address().port;
-  writeFileAtomic(PORT_FILE, String(listenPort), 0o600);
-  console.log(`pi-mobile durable bridge on 127.0.0.1:${listenPort}`);
-});
+// A stable port, not an ephemeral one. The WebView's URL is the origin, and
+// its modules, its EventSource and its localStorage all live under it: a bridge
+// that comes back on a new port leaves the page retrying a socket that is gone
+// for good, with no way to learn the new one (only the Android host knows, and
+// it only reloads the page when a `loadUrl` fails). Reusing the port means a
+// restart is just a reconnect.
+const PORT_CANDIDATES = process.env.PI_PORT
+  ? [Number(process.env.PI_PORT)]
+  : [8787, 8788, 8789, 8790, 8791, 0];
+async function listenOnFirstFreePort() {
+  for (const port of PORT_CANDIDATES) {
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = (e) => { server.off('listening', onListening); reject(e); };
+        const onListening = () => { server.off('error', onError); resolve(); };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(port, '127.0.0.1');
+      });
+      return true;
+    } catch (e) {
+      if (e?.code !== 'EADDRINUSE' && e?.code !== 'EACCES') throw e;
+      console.error(`bridge: port ${port} is taken (${e.code}); trying the next one`);
+    }
+  }
+  return false;
+}
+if (!(await listenOnFirstFreePort())) {
+  console.error('bridge: no port available');
+  releaseLock();
+  process.exit(1);
+}
+listenPort = server.address().port;
+writeFileAtomic(PORT_FILE, String(listenPort), 0o600);
+console.log(`pi-mobile durable bridge on 127.0.0.1:${listenPort}`);
 
 let stopping = false;
 async function shutdown(signal) {

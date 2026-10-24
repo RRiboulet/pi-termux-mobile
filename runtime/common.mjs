@@ -288,6 +288,25 @@ export function sessionStore(harness, ctx) {
     async get(id) { return (await registryOf()).sessions[String(id)]; },
     async activeId() { return (await registryOf()).activeId; },
     setActive: (id) => commit((reg) => { reg.activeId = String(id); }),
+    /** Rename one session. An empty name drops back to the id the bridge shows. */
+    rename: (id, name) => commit((reg) => {
+      const entry = reg.sessions[String(id)];
+      if (!entry) return;
+      const clean = String(name ?? '').trim().slice(0, 100);
+      if (clean) entry.name = clean; else delete entry.name;
+    }),
+    /**
+     * Hide a session from the list without touching its history.
+     *
+     * pi-durable has no way to delete a conversation, and the transcripts are the
+     * only copy of them, so "delete" here means "stop showing it" -- reversible,
+     * and argued about in the UI copy rather than silently done.
+     */
+    setArchived: (id, archived) => commit((reg) => {
+      const entry = reg.sessions[String(id)];
+      if (!entry) return;
+      if (archived) entry.archived = true; else delete entry.archived;
+    }),
     /** Register metadata for an existing conversation (root, migration). */
     register: (id, meta) => commit((reg) => {
       if (!reg.sessions[String(id)]) reg.sessions[String(id)] = { created: new Date().toISOString(), ...defined(meta) };

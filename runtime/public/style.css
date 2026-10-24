@@ -506,3 +506,13 @@ button { background: none; border: 0; cursor: pointer; touch-action: manipulatio
   border-bottom: 1px solid var(--line-soft);
 }
 .sheet .pi-error { color: var(--bad); }
+
+/* A session row carries actions of its own, so it is a row of buttons rather
+   than one big button: rename and archive sit at the right, out of the way. */
+.sheet .row.session { padding: 6px 8px 6px 0; gap: 4px; }
+.sheet .row.session .session-name {
+  padding: 8px 8px 8px 16px; text-align: left; font-size: 15px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sheet .icon.small { width: 34px; height: 34px; font-size: 15px; }
+.sheet .icon.small[aria-label="Archive"] { color: var(--muted); }
