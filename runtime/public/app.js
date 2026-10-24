@@ -304,6 +304,7 @@ const state = {
   showArchived: false,  // the sessions sheet hides archived rows until asked
   renaming: null,       // {id, name} while the rename sheet is open
   backup: null,         // /api/backup: the last one, and where it is
+  compacting: false,    // a compaction task is in flight
   pi: null,             // /api/pi-update: the version installed, and any update in flight
   entries: [],          // { kind: 'user'|'assistant'|'sys', text?, blocks?, thinking?, tone? }
   copied: new Set(),   // keys of assistant messages whose copy feedback is showing
@@ -526,7 +527,7 @@ function handle(ev) {
     case 'snapshot': renderSnapshot(ev); break;
     case 'run_start': set({ busy: true }); break;
     case 'run_end':
-      set({ busy: false, live: null });
+      set({ busy: false, live: null, compacting: false });
       // The context estimate is the kernel's, not something the deltas carry, so
       // it is refetched when a turn ends -- otherwise the bar sits at whatever it
       // showed when the page loaded, and every turn makes that more wrong.
@@ -589,8 +590,8 @@ function handle(ev) {
     case 'agent_changed': set({ model: ev.agent?.model ?? null }); break;
     case 'usage_changed': set({ usage: ev.usage }); break;
     case 'inbox_update': set({ inbox: ev.items ?? [] }); break;
-    case 'compaction_start': sys('compacting…'); break;
-    case 'compaction_end': sys('compaction finished'); break;
+    case 'compaction_start': set({ compacting: true }); sys('compacting…'); break;
+    case 'compaction_end': set({ compacting: false }); sys('compaction finished'); break;
     case 'auto_retry_start': sys(`retry ${ev.attempt}: ${ev.errorMessage || ''}`, 'bad'); break;
     case 'task_failed': sys(`error (${ev.kind}): ${ev.message}`, 'bad'); break;
     case 'submission': {
@@ -850,6 +851,24 @@ async function answerOauth(value) {
   }
 }
 
+/**
+ * Compact the conversation from the composer.
+ *
+ * The context estimate is what each model call re-sends, so this is the one
+ * control that changes the price of the next turn. It runs as a task, so the
+ * button says "compacting…" until the run ends and the estimate drops.
+ */
+async function compactNow() {
+  set({ compacting: true });
+  redraw();
+  try {
+    await post('/api/compact');
+  } catch (e) {
+    set({ compacting: false, notice: String(e.message || e) });
+    redraw();
+  }
+}
+
 async function chooseModel(m) {
   try {
     await post('/api/model', { provider: m.provider, modelId: m.modelId });
@@ -1047,6 +1066,11 @@ function BottomBar() {
       <div class="context-row">
         <div class="context-bar"><div class="context-fill" style="width: ${pct}%"></div></div>
         <button class="context-label" onClick=${() => toggleContextFormat()}>${contextLabel(used, maxCtx)}</button>
+        ${state.compacting
+          ? html`<span class="context-compact">compacting…</span>`
+          : pct >= 60 && !state.busy
+            ? html`<button class="context-compact" onClick=${() => compactNow()}>compact</button>`
+            : null}
       </div>
     </div>`;
 }
@@ -1543,19 +1567,29 @@ function Sheet() {
   } else {
     // /api/usage returns {session, total}; the session usage has the same shape
     // as /api/state's.
+    //
+    // The number that decides what a session costs is `cacheRead`: every model
+    // call re-sends the conversation as a cached prefix, and the prompt cache is
+    // what turns a $3/M input into cents. It was the one figure the sheet did not
+    // show -- you had to read the provider's dashboard to see it.
     const session = state.usageSession ?? state.usage ?? {};
     const rows = Object.entries(session.models ?? {});
     const total = state.usageTotal;
+    const sessionSum = sumUsage(session);
     body = rows.length || total
       ? [
           ...rows.map(([m, u]) => html`<div class="row" key=${m}>
-            <span class="grow">${m}</span>
-            <span>${(u.totalTokens ?? 0).toLocaleString()} tok${u.cost?.total ? ` · $${u.cost.total.toFixed(3)}` : ''}</span>
+            <span class="grow">${m}<small>${usageDetail(u)}</small></span>
+            <span>${money(u)}</span>
           </div>`),
+          html`<div class="row" key=${'session'}>
+            <span class="grow">This session<small>${usageDetail(sessionSum)}</small></span>
+            <span>${money(sessionSum)}</span>
+          </div>`,
           total
             ? html`<div class="row" key=${'total'}>
-                <span class="grow">Everything</span>
-                <span>${(total.totalTokens ?? 0).toLocaleString()} tok${total.cost?.total ? ` · $${total.cost.total.toFixed(3)}` : ''}</span>
+                <span class="grow">Everything<small>${usageDetail(total)}</small></span>
+                <span>${money(total)}</span>
               </div>`
             : null,
         ]
@@ -1620,6 +1654,52 @@ function usageShort(usage) {
   }
   if (!tokens) return '–';
   return `${tokens.toLocaleString()} tok${cost ? ` · $${cost.toFixed(3)}` : ''}`;
+}
+
+// ── usage, in the units that decide the bill ─────────────────────────────
+/** 1.2M / 68.2M / 283k — a token count short enough for a sheet row. */
+function fmtTokens(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e3) return `${Math.round(v / 1e3)}k`;
+  return String(v);
+}
+
+/** `2.5M in · 68.2M cached (96%) · 283k out` — the cache share is the useful part. */
+function usageDetail(u) {
+  const input = Number(u?.input) || 0;
+  const cached = Number(u?.cacheRead) || 0;
+  const out = Number(u?.output) || 0;
+  const denom = input + cached;
+  if (!denom && !out) return 'nothing yet';
+  const share = denom ? ` (${Math.round(cached / denom * 100)}%)` : '';
+  return `${fmtTokens(input)} in · ${fmtTokens(cached)} cached${share} · ${fmtTokens(out)} out`;
+}
+
+function money(u) {
+  return `$${(Number(u?.cost?.total) || 0).toFixed(3)}`;
+}
+
+/** Add up a usage document (`{models, tools}` of Usage) or a flat Usage. */
+function sumUsage(usage) {
+  const out = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } };
+  const add = (u) => {
+    if (!u) return;
+    out.input += Number(u.input) || 0;
+    out.output += Number(u.output) || 0;
+    out.cacheRead += Number(u.cacheRead) || 0;
+    out.cacheWrite += Number(u.cacheWrite) || 0;
+    out.totalTokens += Number(u.totalTokens) || 0;
+    out.cost.total += Number(u.cost?.total) || 0;
+  };
+  if (usage?.models || usage?.tools) {
+    for (const u of Object.values(usage.models ?? {})) add(u);
+    for (const u of Object.values(usage.tools ?? {})) add(u);
+  } else {
+    add(usage);
+  }
+  return out;
 }
 
 function cacheHitRate(usage, model) {

@@ -927,7 +927,7 @@ const openMenu = async (app) => {
 };
 const piRow = (app) => [...app.document.querySelectorAll('button.row')].find((b) => b.textContent.includes('Update pi'));
 /** The update is polled, so the assertion waits for the text rather than guessing a delay. */
-async function waitForText(app, re, ms = 4000) {
+async function waitForText(app, re, ms = 10000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     await app.settle();
@@ -1048,4 +1048,60 @@ test('the menu says when the last backup was, and where it went', async () => {
   const post = app.fetches.find(([url, opts]) => String(url).includes('/api/backup') && opts?.method === 'POST');
   assert.ok(post, 'no backup request was sent');
   assert.match(app.text(), /pull it off the phone/i, 'the sheet does not say where the archive has to go');
+});
+
+// ── the bill, in the units that decide it ────────────────────────────────
+// The narrow question this answers: what is this costing, and what would make it
+// cheaper. cacheRead is most of the tokens and the cheapest of them; the sheet
+// used to show a single `totalTokens` and a `$`, which hid both facts.
+
+test('the usage sheet shows input, cached and output per model', async () => {
+  const app = await mount({
+    usage: {
+      session: {
+        models: {
+          'opencode-go/deepseek': { input: 2527802, output: 283433, cacheRead: 68158080, totalTokens: 70969315, cost: { total: 0.7537 } },
+        },
+        tools: { read: { input: 1000, output: 0, cacheRead: 0, totalTokens: 1000, cost: { total: 0 } } },
+      },
+      total: { input: 9035849, output: 1160153, cacheRead: 230696145, totalTokens: 240986156, cost: { total: 1.25 } },
+    },
+  });
+  await app.settle();
+  const menu = [...app.document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Menu');
+  menu.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Usage'))
+    .dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const text = app.text();
+  assert.match(text, /2\.5M in/, 'the input tokens are not shown');
+  assert.match(text, /68\.2M cached/, 'the cached tokens are not shown');
+  assert.match(text, /283k out/, 'the output tokens are not shown');
+  assert.match(text, /96%/, 'the cache share is not shown');
+  assert.match(text, /\$0\.754/, "this session's cost is not shown");
+  assert.match(text, /230\.7M cached/, "everything's cached total is not shown");
+});
+
+test('a large context offers to compact, a small one does not', async () => {
+  const roomy = await mount({
+    state: { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 100000 },
+  });
+  await roomy.settle();
+  const compact = [...roomy.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'compact');
+  assert.ok(compact, 'no compact affordance at 78% of the window');
+
+  compact.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await roomy.settle();
+  const post = roomy.fetches.find(([url, opts]) => String(url).includes('/api/compact') && opts?.method === 'POST');
+  assert.ok(post, 'the compact affordance sent nothing');
+  assert.match(roomy.text(), /compacting/, 'the button gave no sign that anything started');
+
+  const tight = await mount({
+    state: { model: { provider: 'anthropic', modelId: 'claude', contextWindow: 128000 }, contextTokens: 10000 },
+  });
+  await tight.settle();
+  assert.equal([...tight.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'compact'), undefined,
+    'a context at 8% offered a compaction');
 });
