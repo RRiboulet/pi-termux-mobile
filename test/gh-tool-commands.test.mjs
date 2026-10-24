@@ -130,13 +130,17 @@ test('a request without a token carries no Authorization header', async () => {
   // this suite runs on has a real token in it.
   const home = mkdtempSync(path.join(tmpdir(), 'gh-home-'));
   try {
-    await withApi({ 'GET /repos/RRiboulet/pi-termux-mobile/pulls/1': { body: { number: 1, title: 'x', head: { ref: 'a' }, base: { ref: 'b' } } } },
-      async ({ requests, base }) => {
-        await run(['pr', 'diff', '1'], { env: { GITHUB_API_URL: base, HOME: home } });
-        // "Bearer undefined" is a 401 from GitHub: a public repository needs no
-        // token, and the header must not be there at all.
-        assert.equal(requests[0].headers.authorization, undefined);
-      });
+    // A checkout of its own: the tool reads owner/repo from the git remote, and
+    // the suite must not depend on what the developer cloned.
+    await withCheckout(async (dir) => {
+      await withApi({ 'GET /repos/RRiboulet/pi-termux-mobile/pulls/1': { body: { number: 1, title: 'x', head: { ref: 'a' }, base: { ref: 'b' } } } },
+        async ({ requests, base }) => {
+          await run(['pr', 'diff', '1'], { cwd: dir, env: { GITHUB_API_URL: base, HOME: home } });
+          // "Bearer undefined" is a 401 from GitHub: a public repository needs no
+          // token, and the header must not be there at all.
+          assert.equal(requests[0].headers.authorization, undefined);
+        });
+    });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -151,9 +155,11 @@ test('a token that is not a token is refused, and is not printed', async () => {
 // ── the pull request number ─────────────────────────────────────────────────
 
 test('a pull request number is a number', async () => {
-  const result = await runFails(['pr', 'comment', '../../otherowner/otherrepo/issues/5', '--body', 'hello'],
-    { env: { GH_TOKEN: 'ghp_faketokenvalue' } });
-  assert.match(result.stderr, /positive integer/);
+  await withCheckout(async (dir) => {
+    const result = await runFails(['pr', 'comment', '../../otherowner/otherrepo/issues/5', '--body', 'hello'],
+      { cwd: dir, env: { GH_TOKEN: 'ghp_faketokenvalue' } });
+    assert.match(result.stderr, /positive integer/);
+  });
 });
 
 // ── creating a pull request ────────────────────────────────────────────────
@@ -261,11 +267,13 @@ test('text from a pull request cannot drive the terminal', async () => {
 // ── the error channel ──────────────────────────────────────────────────────
 
 test('a failure is a JSON envelope with a kind', async () => {
-  await withApi({}, async ({ base }) => {
-    const result = await runFails(['repo', 'view'], { env: { GH_TOKEN: 'ghp_faketokenvalue', GITHUB_API_URL: base } });
-    const envelope = JSON.parse(result.stderr);
-    assert.equal(envelope.error.kind, 'not_found');
-    assert.equal(result.status, 3);
+  await withCheckout(async (dir) => {
+    await withApi({}, async ({ base }) => {
+      const result = await runFails(['repo', 'view'], { cwd: dir, env: { GH_TOKEN: 'ghp_faketokenvalue', GITHUB_API_URL: base } });
+      const envelope = JSON.parse(result.stderr);
+      assert.equal(envelope.error.kind, 'not_found');
+      assert.equal(result.status, 3);
+    });
   });
 });
 
