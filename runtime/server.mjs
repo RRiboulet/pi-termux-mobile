@@ -421,7 +421,37 @@ for (const restored of await gate.restore()) {
   if (!restored.ok) console.error(`extension ${restored.key} was not restored: ${restored.error}`);
 }
 const sessions = sessionStore(harness, ctx);
-let active = null; // the conversation the chat page shows
+function deviceIdOf(req) {
+  try {
+    const url = new URL(req.url, 'http://localhost');
+    const given = cookieOf(req) || String(req.headers['x-token'] || url.searchParams.get('token') || '');
+    if (!given) return 'bootstrap';
+    const h = sha256(given);
+    const dev = devices.list.find((d) => d.hash === h);
+    return dev ? dev.id : 'bootstrap';
+  } catch { return 'bootstrap'; }
+}
+async function conversationForDevice(deviceId) {
+  const id = clientActive.get(deviceId ?? 'bootstrap');
+  if (id !== undefined && Number.isFinite(id)) {
+    try {
+      const conv = await harness.conversation(Number(id), ctx);
+      if (conv) return conv;
+    } catch {}
+  }
+  // Bootstrap is the fallback for a device that has not chosen its own session.
+  if (deviceId !== 'bootstrap') {
+    const bid = clientActive.get('bootstrap');
+    if (bid !== undefined && Number.isFinite(bid)) {
+      try {
+        const conv = await harness.conversation(Number(bid), ctx);
+        if (conv) return conv;
+      } catch {}
+    }
+  }
+  return active;
+}
+let active = null; // the conversation the chat page shows (bootstrap device)
 
 async function initHarness() {
   const root = await harness.root(ctx, { agent: { model: await pickModel(models) } });
@@ -441,12 +471,21 @@ async function initHarness() {
   harness.resume(); // continue runs the last process left unfinished
 }
 
-async function activate(conversation, { persist = true } = {}) {
-  active = conversation;
-  if (persist) await sessions.setActive(conversation.id);
-  for (const client of sseClients) await attachSse(client);
-  // The phone's notification follows whatever is active.
-  watchStatus(conversation).catch(() => {});
+async function activate(conversation, { persist = true, deviceId = 'bootstrap' } = {}) {
+  const dev = deviceId || 'bootstrap';
+  clientActive.set(dev, Number(conversation.id));
+  saveClientActive();
+  if (dev === 'bootstrap') {
+    active = conversation;
+    if (persist) await sessions.setActive(conversation.id);
+    // The phone's notification follows whatever is active.
+    watchStatus(conversation).catch(() => {});
+  }
+  // Only this device's clients move: a laptop selecting a session must not drag
+  // the phone's view along with it, and vice versa.
+  for (const client of [...sseClients]) {
+    if ((client.deviceId || 'bootstrap') === dev) await attachSse(client);
+  }
 }
 
 async function currentModel(conv) {
@@ -527,15 +566,17 @@ async function attachSse(client) {
   const previous = client.stream;
   client.stream = null;
   if (previous) { try { await previous.stop(); } catch {} }
-  if (!active || client.closed) return;
-  const conversationId = active.id;
+  if (client.closed) return;
+  const conversation = await conversationForDevice(client.deviceId || 'bootstrap');
+  if (!conversation) return;
+  const conversationId = conversation.id;
   const stream = await watchEvents(harness, conversationId, ctx);
   if (client.closed) { await stream.stop(); return; }
   client.stream = stream;
   const meta = await sessions.get(conversationId);
   let contextTokens = 0;
-  try { const cview = await active.context(ctx); contextTokens = estimateContext(cview, []) || 0; } catch {}
-  const _view = active ? await active.viewState(ctx) : null;
+  try { const cview = await conversation.context(ctx); contextTokens = estimateContext(cview, []) || 0; } catch {}
+  const _view = await conversation.viewState(ctx);
   const modelRef = _view ? agentOf(_view).model : null;
   try { _view?.dispose?.(); } catch {}
   const contextWindow = modelByRef(modelRef)?.contextWindow ?? 128000;
@@ -654,7 +695,22 @@ function claimPairing(code) {
   pairings.delete(code);
   return true;
 }
+const CLIENT_SESSIONS_FILE = path.join(STATE_DIR, 'client-sessions.json');
+const clientActive = new Map();
+function loadClientActive() {
+  try {
+    const raw = JSON.parse(readFileSync(CLIENT_SESSIONS_FILE, 'utf8'));
+    for (const [k, v] of Object.entries(raw ?? {})) {
+      const n = Number(v);
+      if (Number.isFinite(n)) clientActive.set(String(k), n);
+    }
+  } catch {}
+}
+function saveClientActive() {
+  try { writeFileAtomic(CLIENT_SESSIONS_FILE, JSON.stringify(Object.fromEntries(clientActive), null, 2), 0o600); } catch {}
+}
 loadDevices();
+loadClientActive();
 
 function authed(req) {
   const url = new URL(req.url, 'http://localhost');
@@ -700,13 +756,28 @@ function tailnetAddress() {
 }
 const TAILNET = tailnetAddress();
 const boundAddresses = ACCESS === 'tailscale' ? (TAILNET ?? '127.0.0.1') : ACCESS === 'lan' ? '0.0.0.0' : '127.0.0.1';
-const extraHosts = String(process.env.PI_HOSTNAME || '').split(',').map((h) => h.trim()).filter(Boolean);
+function extraHosts() {
+  const out = [];
+  const push = (v) => {
+    if (Array.isArray(v)) { for (const x of v) push(x); return; }
+    if (typeof v === 'string') { for (const x of v.split(',')) { const t = x.trim(); if (t) out.push(t); } return; }
+    if (v != null) { const t = String(v).trim(); if (t) out.push(t); }
+  };
+  push(process.env.PI_HOSTNAME);
+  for (const file of ['access.json', 'hostname.json', 'host.json', 'hosts.json']) {
+    try {
+      const saved = JSON.parse(readFileSync(path.join(STATE_DIR, file), 'utf8'));
+      push(saved?.hostname ?? saved?.host ?? saved?.hostnames ?? saved?.hosts ?? saved?.PI_HOSTNAME);
+    } catch {}
+  }
+  return [...new Set(out)];
+}
 
 function hostAllowed(req) {
   const host = String(req.headers.host || '');
   if (host === `127.0.0.1:${listenPort}` || host === `localhost:${listenPort}`) return true;
   // The tailnet address or name, whichever the client used, needs the port too.
-  for (const a of [TAILNET, ...boundAddresses.split(','), ...extraHosts].filter(Boolean)) {
+  for (const a of [TAILNET, ...boundAddresses.split(','), ...extraHosts()].filter(Boolean)) {
     if (host === `${a}:${listenPort}` || host === a) return true;
   }
   if (ACCESS === 'tailscale') {
@@ -792,17 +863,18 @@ function modelByRef(ref) {
   try { return models.getModel(ref.provider, ref.modelId); } catch { return undefined; }
 }
 
-async function activeState() {
-  const view = active ? await active.viewState(ctx) : null;
+async function activeState(conv) {
+  const target = conv ?? active;
+  const view = target ? await target.viewState(ctx) : null;
   try {
-    const meta = active ? await sessions.get(active.id) : null;
-    const modelRef = agentOf(view).model ?? null;
+    const meta = target ? await sessions.get(target.id) : null;
+    const modelRef = target ? (agentOf(view).model ?? null) : null;
     const modelObj = modelRef ? { ...modelRef, contextWindow: modelByRef(modelRef)?.contextWindow ?? 128000 } : null;
     // Current context size (tokens) for the active conversation, via the kernel's estimator.
     let contextTokens = 0;
-    if (active) {
+    if (target) {
       try {
-        const cview = await active.context(ctx);
+        const cview = await target.context(ctx);
         contextTokens = estimateContext(cview, []) || 0;
       } catch {}
     }
@@ -814,13 +886,15 @@ async function activeState() {
       usage: view?.value?.docs?.['pi.usage'] ?? null,
       contextTokens,
       cwd: agentOf(view).cwd ?? WORKDIR,
-      sessionId: active ? String(active.id) : null,
+      sessionId: target ? String(target.id) : null,
       sessionName: meta?.name ?? 'Main',
     };
   } finally { view?.dispose?.(); }
 }
 
 async function handleApi(req, res, url, p) {
+  const deviceId = deviceIdOf(req);
+  const active = await conversationForDevice(deviceId);
   const body = req.method === 'POST' ? await readBody(req) : {};
   if (!active && !p.startsWith('/api/oauth') && p !== '/api/auth' && p !== '/api/providers') {
     throw Object.assign(new Error('harness not ready'), { status: 503 });
@@ -865,12 +939,24 @@ async function handleApi(req, res, url, p) {
     return json(res, 200, makePairing(base));
   }
   if (p === '/api/access' && req.method === 'POST') {
-    const mode = str(body.mode, 20);
-    if (!ACCESS_MODES.includes(mode)) return json(res, 400, { error: `mode must be one of ${ACCESS_MODES.join(', ')}` });
-    try { writeFileAtomic(ACCESS_FILE, JSON.stringify({ mode }, null, 2), 0o600); } catch (e) {
+    let saved = {};
+    try { saved = JSON.parse(readFileSync(ACCESS_FILE, 'utf8')); } catch {}
+    const mode = body.mode !== undefined ? str(body.mode, 20) : (ACCESS_MODES.includes(saved?.mode) ? saved.mode : ACCESS);
+    if (body.mode !== undefined && !ACCESS_MODES.includes(mode)) return json(res, 400, { error: `mode must be one of ${ACCESS_MODES.join(', ')}` });
+    const hostInput = body.hostname ?? body.host ?? body.hostnames ?? body.hosts;
+    let hosts;
+    if (hostInput !== undefined) {
+      hosts = Array.isArray(hostInput) ? hostInput.map((x) => String(x).trim()).filter(Boolean)
+        : String(hostInput).split(',').map((x) => x.trim()).filter(Boolean);
+    } else if (Array.isArray(saved?.hostnames)) hosts = saved.hostnames;
+    else if (typeof saved?.hostname === 'string') hosts = saved.hostname.split(',').map((x) => x.trim()).filter(Boolean);
+    else if (Array.isArray(saved?.hosts)) hosts = saved.hosts;
+    const next = { mode };
+    if (hosts && hosts.length) next.hostname = hosts.join(',');
+    try { writeFileAtomic(ACCESS_FILE, JSON.stringify(next, null, 2), 0o600); } catch (e) {
       return json(res, 500, { error: String(e?.message || e) });
     }
-    return json(res, 200, { ok: true, mode, active: ACCESS, restart: mode !== ACCESS });
+    return json(res, 200, { ok: true, mode, active: ACCESS, restart: mode !== ACCESS, hostnames: hosts ?? [] });
   }
   if (p === '/api/devices' && req.method === 'GET') {
     return json(res, 200, { devices: devices.list.map((d) => ({ id: d.id, name: d.name, created: d.created })), access: ACCESS, tailnet: TAILNET });
@@ -890,7 +976,7 @@ async function handleApi(req, res, url, p) {
     setCookie(res, made.secret);
     return json(res, 200, { ok: true, token: fresh, device: { id: made.device.id, name: made.device.name } });
   }
-  if (p === '/api/state') return json(res, 200, await activeState());
+  if (p === '/api/state') return json(res, 200, await activeState(active));
 
   // --- local sessions
   if (p === '/api/sessions' && req.method === 'GET') {
@@ -902,7 +988,7 @@ async function handleApi(req, res, url, p) {
       { name: str(body.name, 100) || undefined },
       { agent: { model: (await currentModel(active)) ?? await pickModel(models) } },
     );
-    await activate(conversation);
+    await activate(conversation, { deviceId });
     return json(res, 200, { ok: true, activeId: String(conversation.id) });
   }
   if (p === '/api/sessions/select' && req.method === 'POST') {
@@ -910,7 +996,7 @@ async function handleApi(req, res, url, p) {
     if (!(await sessions.get(id))) return json(res, 404, { error: 'unknown session' });
     const conversation = await harness.conversation(Number(id), ctx);
     if (!conversation) return json(res, 404, { error: 'session unavailable' });
-    await activate(conversation);
+    await activate(conversation, { deviceId });
     return json(res, 200, { ok: true, activeId: String(conversation.id) });
   }
   if (p === '/api/sessions/rename' && req.method === 'POST') {
@@ -1000,7 +1086,7 @@ async function handleApi(req, res, url, p) {
     return json(res, 200, { ok: true, taskId });
   }
   if (p === '/api/usage' && req.method === 'GET') {
-    return json(res, 200, { session: (await activeState()).usage, total: await harness.usage(ctx) });
+    return json(res, 200, { session: (await activeState(active)).usage, total: await harness.usage(ctx) });
   }
   if (p === '/api/models' && req.method === 'GET') {
     const avail = await models.getAvailable();
@@ -1129,6 +1215,7 @@ const server = http.createServer(async (req, res) => {
       since: url.searchParams.get('since'),
       base: watermark.current(),
       attached: false,
+      deviceId: deviceIdOf(req),
     };
     res.write(`data: ${JSON.stringify(watermark.stamp({ type: 'bridge_connected', epoch: EPOCH }))}\n\n`);
     sseClients.add(client);

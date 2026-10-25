@@ -516,6 +516,7 @@ function handle(ev) {
   if (ev.type === 'bridge_snapshot') {
     renderSnapshot(ev.snapshot);
     if (ev.sessionName) set({ sessionName: ev.sessionName });
+    if (ev.sessionId) set({ sessionId: String(ev.sessionId) });
     // The context estimate rides on the FRAME, not inside the kernel's snapshot
     // (pi-durable's SnapshotEvent has no such field), and this frame is the
     // authoritative state after an attach: a session switch, a new session, or a
