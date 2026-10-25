@@ -674,9 +674,21 @@ let listenPort = 0;
 // only credential is a cookie: a name that is not one of ours must not reach the app,
 // even from a browser on the same machine. A peer that is on the tailnet is the
 // exception — it cannot be reached by a hostile page at all.
-const ACCESS = ['local', 'tailscale', 'lan'].includes(String(process.env.PI_ACCESS))
-  ? String(process.env.PI_ACCESS)
-  : 'local';
+// The mode is a file, not only an env var: on the phone there is nowhere to put an
+// env var (PiService starts node), and a rebuild to change an access mode is absurd.
+// A change needs a restart, because it decides what the server binds.
+const ACCESS_FILE = path.join(STATE_DIR, 'access.json');
+const ACCESS_MODES = ['local', 'tailscale', 'lan'];
+function readAccess() {
+  const fromEnv = String(process.env.PI_ACCESS || '');
+  if (ACCESS_MODES.includes(fromEnv)) return fromEnv;
+  try {
+    const saved = JSON.parse(readFileSync(ACCESS_FILE, 'utf8'));
+    if (ACCESS_MODES.includes(saved?.mode)) return saved.mode;
+  } catch {}
+  return 'local';
+}
+const ACCESS = readAccess();
 function tailnetAddress() {
   for (const list of Object.values(os.networkInterfaces())) {
     for (const a of list ?? []) {
@@ -851,6 +863,14 @@ async function handleApi(req, res, url, p) {
     if (!authed(req)) return json(res, 401, { error: 'unauthorized' });
     const base = `http://${String(req.headers.host || `127.0.0.1:${listenPort}`)}`;
     return json(res, 200, makePairing(base));
+  }
+  if (p === '/api/access' && req.method === 'POST') {
+    const mode = str(body.mode, 20);
+    if (!ACCESS_MODES.includes(mode)) return json(res, 400, { error: `mode must be one of ${ACCESS_MODES.join(', ')}` });
+    try { writeFileAtomic(ACCESS_FILE, JSON.stringify({ mode }, null, 2), 0o600); } catch (e) {
+      return json(res, 500, { error: String(e?.message || e) });
+    }
+    return json(res, 200, { ok: true, mode, active: ACCESS, restart: mode !== ACCESS });
   }
   if (p === '/api/devices' && req.method === 'GET') {
     return json(res, 200, { devices: devices.list.map((d) => ({ id: d.id, name: d.name, created: d.created })), access: ACCESS, tailnet: TAILNET });

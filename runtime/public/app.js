@@ -331,6 +331,7 @@ const state = {
   pairNeeded: false,    // no cookie yet: this browser has to sign in
   pairing: null,        // {url, code, expiresAt} for a device that is joining
   deviceName: null,
+  access: 'local',       // what the bridge is bound to (docs/access.md)
   log: null,            // /api/log: the last lines the bridge or the service wrote
   logFile: 'node',      // which of the two files the log sheet is showing
   pi: null,             // /api/pi-update: the version installed, and any update in flight
@@ -1239,6 +1240,23 @@ async function rotateTokens() {
   }
 }
 
+const ACCESS_MODES = ['local', 'tailscale', 'lan'];
+/**
+ * Pick how other devices reach the bridge. It is a file on the bridge, because on the
+ * phone there is nowhere to put an environment variable — and a change needs a
+ * restart, since it decides what the server binds.
+ */
+async function setAccess() {
+  const next = ACCESS_MODES[(ACCESS_MODES.indexOf(state.access) + 1) % ACCESS_MODES.length];
+  try {
+    const r = await post('/api/access', { mode: next });
+    set({ access: r.restart ? state.access : r.mode });
+    notify(r.restart ? `${next}: restart the bridge to apply` : `access: ${next}`);
+  } catch (e) {
+    notify(String(e.message || e));
+  }
+}
+
 async function signOut() {
   try { await post('/api/logout'); } catch {}
   set({ pairNeeded: true, sheet: null });
@@ -1488,6 +1506,10 @@ function MenuSheet() {
         <button class="row" onClick=${() => updatePi()}>
           <span class="grow">Update pi</span>
           <small>${piHint()}</small>
+        </button>
+        <button class="row" onClick=${() => setAccess()}>
+          <span class="grow">Access</span>
+          <small>${state.access}${state.access === 'local' ? ' · this phone only' : ''}</small>
         </button>
         <button class="row" onClick=${() => pairDevice()}>
           <span class="grow">Sign in another device</span>
@@ -1950,5 +1972,6 @@ doc.getElementById('app').replaceChildren();
   subscribe();
   refreshState();
   refreshExtensions();
+  fetch('/api/devices').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d?.access) set({ access: d.access }); redraw(); }).catch(() => {});
   redraw();
 })();
