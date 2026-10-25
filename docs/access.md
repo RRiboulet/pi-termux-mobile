@@ -5,7 +5,14 @@ Everything here is about keeping that reachable by *you* and by nobody else.
 
 ## The three modes
 
-Set `PI_ACCESS` when the bridge starts (`PI_ACCESS=tailscale node runtime/server.mjs`):
+Set it in the app (**Menu → Access**, which writes `$HOME/.pi-mobile/access.json`) or with
+`PI_ACCESS` when the bridge starts (`PI_ACCESS=tailscale node runtime/server.mjs`). A change
+needs a restart: it decides what the server binds.
+
+The file is what makes the mode reachable from the phone — there is nowhere to put an
+environment variable when PiService starts node, and rebuilding an APK to change an
+access mode would be absurd. The env var still wins when it is set, so a dev run can
+override whatever the app last chose.
 
 | mode | binds | who can reach it |
 |---|---|---|

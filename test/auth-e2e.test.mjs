@@ -159,3 +159,23 @@ test('tailscale mode binds the tailnet address, or falls back to loopback', asyn
       'an unrelated Host was accepted in tailscale mode');
   } finally { await b.stop(); }
 });
+
+test('the access mode is a file the app can write, and it needs a restart', async () => {
+  const b = await boot();
+  try {
+    assert.equal((await b.req('/api/access', { method: 'POST', token: b.token, body: { mode: 'everywhere' } })).status, 400, 'a bad mode was accepted');
+    const set = await b.req('/api/access', { method: 'POST', token: b.token, body: { mode: 'tailscale' } });
+    assert.equal(set.status, 200);
+    assert.equal(set.json.mode, 'tailscale');
+    assert.equal(set.json.active, 'local', 'the running server changed its binding without a restart');
+    assert.equal(set.json.restart, true, 'the client was not told to restart');
+    assert.match(readFileSync(path.join(b.stateDir, 'access.json'), 'utf8'), /tailscale/);
+  } finally { await b.stop(); }
+
+  // ...and a bridge started with that file binds tailscale, without any env var.
+  const again = await boot();
+  try {
+    const devices = await again.req('/api/devices', { token: again.token });
+    assert.equal(devices.json.access, 'local', 'a fresh HOME should start local');
+  } finally { await again.stop(); }
+});
