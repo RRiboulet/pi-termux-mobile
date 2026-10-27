@@ -45,23 +45,25 @@ answers once the scan finishes. Do not raise `-P` and do not widen the range.
 
 ## When adb cannot be made to work at all
 
-It is not always necessary. The app is debuggable, so a copy pushed over
-`ssh`/`scp` to `/storage/emulated/0/Download/` installs from the phone's own file
-manager, and the phone's own Termux can read the app's files. This is the case
-`docs/device-verification.md` records, where the wireless handshake never
-completed and everything was checked over ssh instead.
+It is not always necessary. The APK can be copied over `ssh`/`scp` to
+`/storage/emulated/0/Download/` and installed from the phone's own file
+manager. That is the route [device-verification.md](device-verification.md)
+records, where the wireless handshake never completed and everything was
+checked over ssh instead.
 
-With adb working, the same state is one command away — `run-as` reaches the
-app's files because the build is debuggable:
+For the app's own files, a **debuggable** build plus adb is required: `adb
+shell run-as` reaches them, and Termux cannot run `run-as` at all (SELinux
+denies executing it from an app). With such a build:
 
 ```bash
 adb shell run-as app.pidabl cat files/log/node.log          # the bridge's log
 adb shell run-as app.pidabl cat files/home/.pi-mobile/port  # the port it chose
 ```
 
-The port is ephemeral and changes on every restart, so read it rather than
-remembering it. Without adb, the phone-side `pistatus` helper answers the same
-questions over ssh (see `docs/device-verification.md`).
+The bridge prefers **8787** and falls back to 8788–8791, then an ephemeral
+port, so the file is the truth when it fell back. Without adb, probe
+`curl http://127.0.0.1:8787/` over ssh. Do **not** rely on `pistatus`
+for this: it scans `32768–60999`, which misses 8787.
 
 ## Windows
 

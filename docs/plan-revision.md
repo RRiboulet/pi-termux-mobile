@@ -245,6 +245,10 @@ reason to upgrade *when S4 is built*, not before.
 
 ## 3. The new critical path
 
+> **Status 2026-10-27:** items 1–3 are done — the agent is installed and current,
+> the install gate landed, and the watermark plus overflow→resnapshot are in
+> `runtime/watermark.mjs`. Items 4–6 remain; `next-steps.md` has the live queue.
+
 1. **Install the merged build** and use the agent. The client is now contract-
    correct: the transcript loads, the composer keeps your draft, "New session"
    creates a session, and the thinking blocks show.

@@ -1,25 +1,28 @@
 # Next steps — hand-off
 
-*2026-10-24, `dev@4f673bf`, updated as items were done (1, 2, 3, 6, 8). Written at
+*Started 2026-10-24 at `dev@4f673bf`; updated 2026-10-27 at `dev@fc0591b`
+(items 1–3, 6, 8 done; the notification's code half landed in #32; #33–#36 added
+device auth, the access file, restore docs and per-client sessions). Written at
 the end of a long session that got expensive; the "paying less" section is the
 point of half this file.*
 
 ## Where things stand
 
-- **`dev` is green**, and now gated: `.github/workflows/tests.yml` runs
-  `node scripts/run-tests.mjs` — 16 test files — on every push to `dev` and every
+- **`dev` is green**, and gated: `.github/workflows/tests.yml` runs
+  `node scripts/run-tests.mjs` — 18 test files — on every push to `dev` and every
   pull request. It does not build the APK (item 9).
-- **The phone runs a hand-copied runtime, not the APK.** `files/runtime/` holds
-  `dev@4f673bf`'s `server.mjs`, `common.mjs`, `watermark.mjs` and `public/`.
-  `server.mjs.bak` and `common.mjs.bak` are the previous copies. The APK's own
-  payload is older; **installing a different APK wipes `files/runtime`** (HOME and
-  WORK survive).
-- **The bridge is on a stable port now: `127.0.0.1:8787`** (8787→8791, then
+- **The phone runs pi mobile** (package `app.pidabl`, label "pi mobile"). The
+  bridge is on `127.0.0.1:8787` and the served client is current: `app.js` and
+  `style.css` from the bridge hash-match `runtime/public/` at `dev`'s tip
+  (`fc0591b`); `index.html` differs only by the `?v=<mtime>` cache-busters the
+  bridge adds. The **server** was hand-copied too; the APK's Java half is older,
+  and installing a different APK wipes `files/runtime` (HOME and WORK survive).
+- **The bridge is on a stable port: `127.0.0.1:8787`** (8788–8791, then
   ephemeral). The WebView's origin is that port, so a bridge restart reconnects in
   place instead of stranding the page on a dead URL. Live since 2026-10-24 12:54.
-- `scripts/ui-dump.mjs` is in the working tree, untracked: it mounts the real
-  client in linkedom **against the live bridge** and prints what the user would
-  see as text. Commit it as a tool or delete it — don't leave it rotting.
+  `pistatus` still scans `32768–60999` and cannot see 8787 — probe 8787 directly
+  or read `files/home/.pi-mobile/port` (only via `adb shell run-as`; Termux cannot
+  run `run-as` itself).
 
 ## The queue
 
@@ -33,13 +36,14 @@ Ordered by value per unit of work. One item per session.
    ships with the next APK).
 3. ~~**Stuck-state audit of the client.**~~ Done: one toast for every notice,
    `connecting…` instead of a false `idle`, and a "Reload client" row in the menu.
-4. **A notification when a turn finishes.** Code done, **needs a build**:
-   the bridge writes `$HOME/.pi-mobile/status.json` (`state`, `tool`, `session`,
-   `finishedAt`) from the kernel's own event stream — no client needed — and
-   PiService polls it to put `working · <tool>` in the ongoing notification and to
-   post "pi finished" when a turn ends with the app in the background
-   (`MainActivity` reports `appVisible`). `test/status-e2e.test.mjs` covers the
-   bridge half; the Java half is unverified until it compiles, which is item 9.
+4. **A notification when a turn finishes.** Code merged (#32), **needs a
+   build**: the bridge writes `$HOME/.pi-mobile/status.json` (`state`, `tool`,
+   `session`, `finishedAt`) from the kernel's own event stream — no client
+   needed — and PiService polls it to put `working · <tool>` in the ongoing
+   notification and to post "pi finished" when a turn ends with the app in the
+   background (`MainActivity` reports `appVisible`).
+   `test/status-e2e.test.mjs` covers the bridge half; the Java half is
+   unverified until it compiles, which is item 9.
 5. **Attachments.** Images and files from the phone. Biggest item here: check
    what pi-durable accepts as content before designing the UI.
 6. ~~**CI.**~~ Done: `.github/workflows/tests.yml`, green on `dev` and on pull
@@ -87,10 +91,17 @@ Ordered by value per unit of work. One item per session.
 
 ## Done since this was written
 
-Device sign-in and access modes (`docs/access.md`): hashed per-device tokens, an
-HttpOnly cookie, one-time pairing codes, rotation, and `PI_ACCESS=local|tailscale|lan`
-with a Host allow-list. The next step for multi-device is per-client sessions —
-`active` is still one global on the bridge.
+Device sign-in and access modes (#33/#35, `docs/access.md`): hashed per-device
+tokens, an HttpOnly cookie, one-time pairing codes, rotation, and
+`PI_ACCESS=local|tailscale|lan` with a Host allow-list. The allow-list can also
+come from `access.json`, `hostname.json`, `host.json` or `hosts.json`, not only
+`PI_HOSTNAME`.
+
+Per-client active sessions (#36): `client-sessions.json` maps each device to its
+conversation, a device without one falls back to `bootstrap`, and a session
+picked on a laptop no longer drags the phone — the ongoing notification follows
+the phone's own (bootstrap) session. The old global `active` remains the final
+fallback.
 
 ## Paying less
 
@@ -104,7 +115,7 @@ A session's cost is its prefix × its tool rounds; both are under your control.
 - **Never paste a whole diff or a whole log into the conversation** — it stays in
   the prefix for every later call. `git diff --stat`, then the hunks you need.
 - **Test the file you touched** (`node scripts/run-tests.mjs client`) while
-  iterating; the full 14-file run once before a push (≈2 min, 20 s of it is
-  `sse-stall`). A DOM test is ~50 ms; each e2e bridge boot is ~6–8 s.
+  iterating; the full suite once before a push (≈2 min, most of it `sse-stall`). A
+  DOM test is ~50 ms; each e2e bridge boot is ~6–8 s.
 - **One PR per concern**: branch off `dev`, tests in the same commit, merge with a
   merge commit. Leave nothing half-pushed.

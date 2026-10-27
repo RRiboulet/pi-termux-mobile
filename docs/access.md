@@ -21,9 +21,12 @@ override whatever the app last chose.
 | `lan` | `0.0.0.0` | anything on the network. Ring the bell before using it |
 
 `PI_HOSTNAME` adds names to the Host allow-list (`PI_HOSTNAME=phone.tailnet.ts.net`),
-which is what makes a MagicDNS name work. In `tailscale` mode a peer that is itself
-on the tailnet is allowed whatever Host it sends: it cannot be reached by a hostile
-page, and the cookie is host-only anyway.
+which is what makes a MagicDNS name work. The app's **Menu → Access** sheet writes
+the same value into `access.json`; the bridge also reads `hostname.json`,
+`host.json` and `hosts.json` there, so a name can be set without an environment
+variable. In `tailscale` mode a peer that is itself on the tailnet is allowed
+whatever Host it sends: it cannot be reached by a hostile page, and the cookie is
+host-only anyway.
 
 The Host check is not ceremony. A DNS-rebinding attack works by pointing a domain at
 your address and letting the browser send the *attacker's* name; on a server whose
@@ -59,3 +62,20 @@ bootstrap token the response returns.
 Everything. There are no roles: whoever is signed in can steer the agent, which means
 running commands as you, reading your files and your keys. Invite nobody you would not
 hand your phone to.
+
+## The app's own token is still in the URL
+
+The Activity launches the WebView as `/?token=…`, and the client keeps that
+bootstrap token in `localStorage`; EventSource then carries it in the query,
+because the SSE handshake cannot set a header. It is loopback-only and the page's
+origin is the bridge, but the plan's R11 — a one-time ticket instead of a
+reusable token in the query string — is still open.
+
+## Active sessions are per device
+
+`client-sessions.json` maps each device id to the conversation it is looking at. A
+device that has not chosen one falls back to the `bootstrap` device — the app's
+WebView — and then to the bridge's global `active`. Choosing a session on a laptop
+therefore does not move the phone, and the ongoing notification follows the phone's
+own session. The file is a plain JSON map; deleting it is safe (each device falls
+back until it picks a session again).

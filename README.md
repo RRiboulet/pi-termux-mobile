@@ -1,17 +1,22 @@
-# pi-termux-mobile
+# pi mobile
+
+**pidabl** — the phone-native Pi Durable agent, and the app the phone runs.
 
 > **Experimental software:** This is a personal prototype under active
 > development. The embedded Termux runtime and Android background-process
 > handling may still change or fail on individual devices.
 >
 > **Version 0.0.5** — still quick & dirty, see the [changelog](#changelog).
+> (The build still reports `versionName 0.0.4` / `versionCode 5`; upstream never
+> bumped it for 0.0.5, and the fork has not either.)
 
-Minimal Android app that embeds Termux-built binaries (Node.js 26.4.0, bash,
+Minimal Android app that embeds Termux-built binaries (Node.js 26.12.1, bash,
 coreutils, git, ripgrep, fd, npm, …) plus a **pi-durable** harness
 (`@earendil-works/pi-durable` 1.0.3 + pi-ai/chord) behind a tiny HTTP/SSE
 bridge (`runtime/server.mjs`). UI is a local WebView on
-`http://127.0.0.1:<port>` (ephemeral port → `files/home/.pi-mobile/port`,
-token → `…/token`).
+`http://127.0.0.1:<port>` (the bridge prefers **8787**, falls back to
+8788–8791, then an ephemeral port; the chosen one is in
+`files/home/.pi-mobile/port`, token → `…/token`).
 
 The durable harness gives: SQLite-backed conversations
 (`files/home/.pi-mobile/harness.sqlite` — survive process death,
@@ -32,8 +37,18 @@ What changed here, and why, is written down in
 
 - **[`docs/plan-revision.md`](docs/plan-revision.md)** — the plan this app came
   out of, and what changed when it moved to this lineage. **Start here.**
+- **[`docs/next-steps.md`](docs/next-steps.md)** — the living queue: what works
+  now, what is next, and the facts that cost hours.
 - **[`docs/device-verification.md`](docs/device-verification.md)** — what was
   actually run on a Galaxy S21 Ultra (Android 15).
+- **[`docs/access.md`](docs/access.md)** — sign-in, devices, and the
+  `local`/`tailscale`/`lan` access modes.
+- **[`docs/install-gate.md`](docs/install-gate.md)** — an agent-written
+  extension is a proposal until the user taps **Install**.
+- **[`docs/updating-the-runtime.md`](docs/updating-the-runtime.md)** — deploying
+  a runtime change without building an APK.
+- **[`docs/backup-and-restore.md`](docs/backup-and-restore.md)** — what the
+  archive contains, and how to restore it.
 - **[`docs/reviews/ui-review.md`](docs/reviews/ui-review.md)** — the client
   review, and the defects it found.
 - **[`docs/gh-tool.md`](docs/gh-tool.md)** — `scripts/gh`, the small GitHub CLI
@@ -323,6 +338,13 @@ binaries this APK redistributes.
 adb install android/app/build/outputs/apk/debug/app-debug.apk
 # or wireless: ./install-wifi.sh (pairs via mDNS, installs, starts)
 ```
+
+Without adb, copy the APK to `/storage/emulated/0/Download/` over `ssh`/`scp`
+and install it from the phone's own file manager. That is the route used on
+the S21 Ultra; [docs/device-verification.md](docs/device-verification.md)
+records it. As of 2026-10-27 the phone is running this build — the bridge is on
+`127.0.0.1:8787`, and the served client (`app.js`, `style.css`) is byte-
+identical to `runtime/public/` at `dev`'s tip.
 
 The package id is `app.pidabl`, so an install over an older
 `org.pimobile.app` build fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`:
