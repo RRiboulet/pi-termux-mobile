@@ -282,10 +282,16 @@ export function sessionStore(harness, ctx) {
     async list() {
       const reg = await registryOf();
       return Object.entries(reg.sessions)
+        // A purged entry is a tombstone between "the user approved this" and
+        // "the rows are gone"; only the purge route looks at it.
+        .filter(([, s]) => !s.purged)
         .map(([id, s]) => ({ id, ...s }))
         .sort((a, b) => String(b.created ?? '').localeCompare(String(a.created ?? '')));
     },
-    async get(id) { return (await registryOf()).sessions[String(id)]; },
+    async get(id) {
+      const entry = (await registryOf()).sessions[String(id)];
+      return entry?.purged ? undefined : entry;
+    },
     async activeId() { return (await registryOf()).activeId; },
     setActive: (id) => commit((reg) => { reg.activeId = String(id); }),
     /** Rename one session. An empty name drops back to the id the bridge shows. */
@@ -298,14 +304,34 @@ export function sessionStore(harness, ctx) {
     /**
      * Hide a session from the list without touching its history.
      *
-     * pi-durable has no way to delete a conversation, and the transcripts are the
-     * only copy of them, so "delete" here means "stop showing it" -- reversible,
-     * and argued about in the UI copy rather than silently done.
+     * pi-durable has no way to delete a conversation, and the transcript is the
+     * only copy of it, so archiving is reversible. Purging archived sessions is a
+     * separate, explicit step: it marks the entries here and deletes their rows
+     * (see purge.mjs and the purge route).
      */
     setArchived: (id, archived) => commit((reg) => {
       const entry = reg.sessions[String(id)];
-      if (!entry) return;
+      if (!entry || entry.purged) return;
       if (archived) entry.archived = true; else delete entry.archived;
+    }),
+    /** Mark sessions as approved for deletion, before the rows are touched. */
+    markPurged: (ids, meta = {}) => commit((reg) => {
+      for (const id of ids) {
+        const entry = reg.sessions[String(id)];
+        if (!entry) continue;
+        entry.purged = { at: meta.at ?? new Date().toISOString(), ...defined(meta) };
+      }
+    }),
+    /** The tombstones: sessions whose rows may still be there after a failed purge. */
+    purged: async () => Object.entries((await registryOf()).sessions)
+      .filter(([, s]) => s.purged)
+      .map(([id, s]) => ({ id, ...s })),
+    /** Forget a purged session once its rows are gone. */
+    forget: (ids) => commit((reg) => {
+      for (const id of ids) {
+        delete reg.sessions[String(id)];
+        if (String(reg.activeId) === String(id)) reg.activeId = null;
+      }
     }),
     /** Register metadata for an existing conversation (root, migration). */
     register: (id, meta) => commit((reg) => {

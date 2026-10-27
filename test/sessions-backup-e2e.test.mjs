@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { DatabaseSync } from 'node:sqlite';
 import { nodeBinaryOrNode } from '../runtime/node-bin.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -117,4 +118,74 @@ test('a backup is a readable archive of the database', async () => {
   assert.equal(listed.dir, path.dirname(info.path));
   assert.ok(listed.backups.some((x) => x.name === info.name), 'the new backup is not in the list');
   assert.ok(listed.backups[0].bytes > 0);
+});
+
+test('archived sessions can be purged, after a backup, and the rows are gone', async () => {
+  const bd = await b();
+  const before = await (await bd.api('/api/sessions')).json();
+  const openId = before.activeId;
+
+  // A session with a real transcript, then archived while another one is open.
+  const created = await (await bd.api('/api/sessions/new', { method: 'POST', body: '{}' })).json();
+  const id = created.activeId;
+  await bd.api('/api/prompt', { method: 'POST', body: JSON.stringify({ message: 'a turn worth purging' }) });
+  await sleep(3500);
+  await bd.api('/api/sessions/select', { method: 'POST', body: JSON.stringify({ id: openId }) });
+  const archived = await bd.api('/api/sessions/archive', { method: 'POST', body: JSON.stringify({ id }) });
+  assert.equal(archived.status, 200);
+
+  const planResponse = await bd.api('/api/sessions/purge');
+  assert.equal(planResponse.status, 200);
+  const plan = await planResponse.json();
+  assert.ok(plan.ready.some((s) => String(s.id) === String(id)), 'the archived session is not a purge candidate');
+  const candidate = plan.ready.find((s) => String(s.id) === String(id));
+  assert.ok(candidate.entries > 0, 'the transcript has no entries to purge');
+  assert.ok(!plan.skipped.some((s) => String(s.id) === String(id)), `the archived session was skipped: ${JSON.stringify(plan.skipped)}`);
+  assert.ok(plan.dbBytes > 0);
+
+  // The route refuses a request that did not carry the one confirmation.
+  const refused = await bd.api('/api/sessions/purge', { method: 'POST', body: '{}' });
+  assert.equal(refused.status, 400, 'a purge without confirm:true was accepted');
+
+  const purged = await bd.api('/api/sessions/purge', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+  assert.equal(purged.status, 200);
+  const result = await purged.json();
+  assert.ok(result.purged.some((s) => String(s.id) === String(id)), 'the candidate was not reported as purged');
+  assert.ok(result.backup?.path && existsSync(result.backup.path), 'no backup was taken before the purge');
+  assert.ok(result.after <= result.before, `the store grew: ${result.before} -> ${result.after}`);
+
+  // It is gone from the list, and from the store: the conversation, its entries
+  // and its row in the id allocator's registry.
+  const after = await (await bd.api('/api/sessions')).json();
+  assert.ok(!after.sessions.some((s) => String(s.id) === String(id)), 'the purged session is still listed');
+  const db = new DatabaseSync(path.join(bd.tmp, 'home', '.pi-mobile', 'harness.sqlite'));
+  try {
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM conversations WHERE id = ?').get(Number(id)).n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries WHERE conversation_id = ?').get(Number(id)).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM record_ids WHERE record_type = 'conversation' AND id = ?").get(Number(id)).n, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('the open session is skipped, not purged', async () => {
+  const bd = await b();
+  const listed = await (await bd.api('/api/sessions')).json();
+  const openId = listed.activeId;
+
+  // Create a session, archive it, then open it again: it is archived, but a
+  // device is looking at it, so it is not a purge candidate.
+  const created = await (await bd.api('/api/sessions/new', { method: 'POST', body: '{}' })).json();
+  const id = created.activeId;
+  await bd.api('/api/sessions/select', { method: 'POST', body: JSON.stringify({ id: openId }) });
+  await bd.api('/api/sessions/archive', { method: 'POST', body: JSON.stringify({ id }) });
+  await bd.api('/api/sessions/select', { method: 'POST', body: JSON.stringify({ id }) });
+
+  const plan = await (await bd.api('/api/sessions/purge')).json();
+  assert.ok(!plan.ready.some((s) => String(s.id) === String(id)), 'an open archived session is a purge candidate');
+  assert.ok(plan.skipped.some((s) => String(s.id) === String(id) && /open/.test(s.reason)), `the open session was not skipped: ${JSON.stringify(plan.skipped)}`);
+
+  const purged = await (await bd.api('/api/sessions/purge', { method: 'POST', body: JSON.stringify({ confirm: true }) })).json();
+  assert.ok(!purged.purged.some((s) => String(s.id) === String(id)), 'an open session was purged');
+  await bd.api('/api/sessions/select', { method: 'POST', body: JSON.stringify({ id: openId }) });
 });

@@ -11,6 +11,9 @@ test disagree, the document is wrong.
 
 ## Taking a backup
 
+Purging archived sessions takes a backup first (`Menu → Sessions → Purge
+archived`), so the archive is also the way back from that.
+
 **Menu → Back up sessions.** It writes
 `$HOME/.pi-mobile/backups/pi-backup-<UTC stamp>.tar.gz` and shows you the path.
 Ten are kept; older ones are deleted.

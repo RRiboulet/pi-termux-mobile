@@ -95,7 +95,7 @@ a sheet that slides up from the **☰** menu or the model button in the top bar.
   Browser flows open in the Android browser and return through the app's
   loopback callback; device flows show the verification URL and code in the
   app. A finished credential is available to the model picker immediately.
-- **Sessions** — the local durable sessions: open one, or start a new one.
+- **Sessions** — the local durable sessions: open one, start a new one, archive one, or **purge archived** sessions (a backup is taken first; the open session and anything still running are skipped).
 - **Usage** — tokens and cost, this session and everything so far.
 
 Plus **New session**, **Reset this conversation**, **Compact context** and
@@ -172,7 +172,7 @@ they are now removed as well:
 | `runtime/pi-spaces.mjs` (704 KB), `runtime/spaces-mobile.mjs`, `runtime/space-keystore.mjs` | the federation/spaces service |
 | the `/pty` WebSocket and the util-linux `script` PTY | the embedded pi TUI |
 | `/api/remote/*`, `/api/clients`, `/api/sshkey`, `/api/spaces/*` | the endpoints of those pages |
-| `/api/sessions/{rename,delete,fork}`, `/api/result`, `/api/pi-version`, `/api/pi-update-status` | endpoints the current client never calls |
+| `/api/sessions/{delete,fork}`, `/api/result`, `/api/pi-version`, `/api/pi-update-status` | endpoints the current client never calls |
 | `@earendil-works/pi-coding-agent`, `pi-client`, `pi-server`, `ws`, `xterm` (~46 MB of `node_modules`) | the CLI, the tunnel client, the host daemon, the PTY |
 
 They are not lost: the `feature/remote-subsystem` branch and the
@@ -189,6 +189,7 @@ file back.
   `models-config.mjs` (the reader for `~/.pi/agent/models.json`),
   `node-bin.mjs` (the node binary to spawn: on Android `process.execPath` is
   the dynamic linker, not node),
+  `purge.mjs` (deleting archived conversations: the rows, in one transaction),
   `gate.mjs` (the install gate: the agent's proposals, the user's approval),
   `public/` (the single-screen client), package.json for prod node_modules
 - `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
@@ -411,6 +412,14 @@ not a boundary: an extension runs inside the bridge process, with the
 bridge's permissions, and the agent can read the bridge's token — it can
 already edit the bridge's own source. What the gate does is make the
 ordinary path, write an extension and propose it, need a tap.
+
+Added: **purge archived sessions.** Archiving hides a session and keeps its
+history; the Sessions sheet's **Purge archived** deletes the rows of the ones
+that are not open and have no work in flight — the conversation, its child
+conversations, entries, tasks, submissions, scoped documents and the id
+registry — in one SQLite transaction, after taking a backup, then `VACUUM`s
+the store. It is the only path in the app that deletes rows; "Reset this
+conversation" still appends a marker.
 
 Fixed: the node binary to spawn. `process.execPath` is the dynamic linker on
 Android — termux-exec re-execs every process through it, and `PiService` has

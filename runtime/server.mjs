@@ -22,6 +22,7 @@ import {
 import { applySseBudget, writeSseChunk } from './sse.mjs';
 import { createWatermark } from './watermark.mjs';
 import { gateExtension, InstallGate } from './gate.mjs';
+import { describePurge, purgeConversations } from './purge.mjs';
 import { nodeBinaryOrNode } from './node-bin.mjs';
 
 const ctx = BACKGROUND_CONTEXT;
@@ -31,6 +32,7 @@ const WORKDIR = process.env.PI_WORKDIR || HOME_DIR;
 const AGENT_DIR = path.join(HOME_DIR, '.pi', 'agent');
 const AUTH_PATH = path.join(AGENT_DIR, 'auth.json');
 const STATE_DIR = path.join(HOME_DIR, '.pi-mobile');
+const DB_PATH = path.join(STATE_DIR, 'harness.sqlite');
 const PORT_FILE = path.join(STATE_DIR, 'port');
 const TOKEN_FILE = path.join(STATE_DIR, 'token');
 const LEGACY_SESSIONS_FILE = path.join(STATE_DIR, 'sessions.json');
@@ -241,7 +243,7 @@ async function makeBackup() {
   try {
     // The archive is laid out relative to $HOME, so restoring it is one command:
     // extract it there and every file lands where the bridge expects it.
-    const db = path.join(STATE_DIR, 'harness.sqlite');
+    const db = DB_PATH;
     const copied = path.join(staging, '.pi-mobile', 'harness.sqlite');
     await mkdirP(path.dirname(copied), { recursive: true });
     const sqlite = process.env.PREFIX ? path.join(process.env.PREFIX, 'bin', 'sqlite3') : 'sqlite3';
@@ -399,7 +401,7 @@ function startOAuthLogin(providerId) {
 
 // --- harness + durable session registry ---------------------------------------------
 
-const { harness, registry } = await openHarness({ dbPath: path.join(STATE_DIR, 'harness.sqlite'), models, env: envFor, extensions: [Subagent] }, ctx);
+const { harness, registry } = await openHarness({ dbPath: DB_PATH, models, env: envFor, extensions: [Subagent] }, ctx);
 
 // The install gate. The agent writes an extension into the workspace and
 // proposes it; the user is shown the file, its hash and its diff, and taps
@@ -452,9 +454,11 @@ async function conversationForDevice(deviceId) {
   return active;
 }
 let active = null; // the conversation the chat page shows (bootstrap device)
+let rootId = null; // never purge the harness's root conversation
 
 async function initHarness() {
   const root = await harness.root(ctx, { agent: { model: await pickModel(models) } });
+  rootId = String(root.id);
   // one-time import of the old JSON side file
   const legacy = readJson(LEGACY_SESSIONS_FILE, null)?.sessions;
   if (legacy && Object.keys(legacy).length) {
@@ -568,8 +572,9 @@ async function attachSse(client) {
   if (previous) { try { await previous.stop(); } catch {} }
   if (client.closed) return;
   const conversation = await conversationForDevice(client.deviceId || 'bootstrap');
-  if (!conversation) return;
+  if (!conversation) { client.conversationId = null; return; }
   const conversationId = conversation.id;
+  client.conversationId = String(conversationId);
   const stream = await watchEvents(harness, conversationId, ctx);
   if (client.closed) { await stream.stop(); return; }
   client.stream = stream;
@@ -892,6 +897,46 @@ async function activeState(conv) {
   } finally { view?.dispose?.(); }
 }
 
+/**
+ * The archived sessions that may be purged, split into ready and skipped.
+ *
+ * A conversation is never purged while it can still be written to: the root
+ * conversation, the bootstrap-active one, any session a device is pointing at or
+ * watching over SSE, and anything with a task or submission in flight. The last
+ * check reads the store, so the caller must not trust a plan across a slow step
+ * (the purge route takes the backup first, then asks again).
+ */
+async function preparePurge() {
+  const listed = await sessions.list();
+  const tombstones = await sessions.purged();
+  const byId = new Map();
+  for (const entry of [...listed, ...tombstones]) byId.set(String(entry.id), entry);
+
+  const open = new Set([...clientActive.values()].map((value) => String(value)));
+  for (const client of sseClients) if (client.conversationId) open.add(String(client.conversationId));
+
+  const candidates = [];
+  const skipped = [];
+  for (const entry of byId.values()) {
+    if (!entry.archived && !entry.purged) continue;
+    const id = String(entry.id);
+    if (id === rootId) skipped.push({ id, name: entry.name, reason: 'the root session' });
+    else if (String(active?.id) === id) skipped.push({ id, name: entry.name, reason: 'open' });
+    else if (open.has(id)) skipped.push({ id, name: entry.name, reason: 'open on a device' });
+    else candidates.push({ id, name: entry.name, purged: Boolean(entry.purged) });
+  }
+
+  const inspection = describePurge(DB_PATH, candidates.map((entry) => entry.id));
+  const ready = [];
+  for (const candidate of candidates) {
+    const row = inspection.byId[candidate.id] ?? {};
+    if (row.runningTasks) skipped.push({ ...candidate, reason: 'a task is still running' });
+    else if (row.pendingSubmissions) skipped.push({ ...candidate, reason: 'a submission is queued' });
+    else ready.push({ ...candidate, ...row });
+  }
+  return { ready, skipped, dbBytes: inspection.dbBytes };
+}
+
 async function handleApi(req, res, url, p) {
   const deviceId = deviceIdOf(req);
   const active = await conversationForDevice(deviceId);
@@ -980,7 +1025,13 @@ async function handleApi(req, res, url, p) {
 
   // --- local sessions
   if (p === '/api/sessions' && req.method === 'GET') {
-    return json(res, 200, { activeId: active ? String(active.id) : null, sessions: await sessions.list() });
+    return json(res, 200, {
+      activeId: active ? String(active.id) : null,
+      sessions: await sessions.list(),
+      // A failed purge leaves hidden tombstones; the sheet needs to know there
+      // is something to retry even when no archived row is left.
+      purgePending: (await sessions.purged()).length,
+    });
   }
   if (p === '/api/sessions/new' && req.method === 'POST') {
     // a new session starts with the model the current one uses
@@ -1015,6 +1066,77 @@ async function handleApi(req, res, url, p) {
     }
     await sessions.setArchived(id, body.archived !== false);
     return json(res, 200, { ok: true, id: String(id), archived: body.archived !== false });
+  }
+  if (p === '/api/sessions/purge' && req.method === 'GET') {
+    return json(res, 200, await preparePurge());
+  }
+  if (p === '/api/sessions/purge' && req.method === 'POST') {
+    if (body.confirm !== true) {
+      return json(res, 400, { error: 'confirm: true is required to purge sessions' });
+    }
+    // A backup first, and then ask again: the backup can take a moment, and a
+    // device may have opened an archived session while it ran.
+    const initial = await preparePurge();
+    if (!initial.ready.length) {
+      return json(res, 200, { ok: true, purged: [], skipped: initial.skipped, dbBytes: initial.dbBytes });
+    }
+    let backup;
+    try {
+      backup = await makeBackup();
+    } catch (e) {
+      return json(res, 500, { error: `could not back up before purging: ${e?.message || e}` });
+    }
+    if (!backup.started) return json(res, 409, { error: backup.reason || 'a backup is already running' });
+
+    // Only the sessions the user saw are candidates: one archived while the
+    // backup ran waits for the next purge, and one opened while it ran is now
+    // ineligible. Re-check eligibility, but do not widen the set.
+    const fresh = await preparePurge();
+    const stillReady = new Map(fresh.ready.map((entry) => [entry.id, entry]));
+    const ready = initial.ready.map((entry) => stillReady.get(entry.id)).filter(Boolean);
+    if (!ready.length) {
+      return json(res, 200, { ok: true, purged: [], skipped: fresh.skipped, backup: { name: backup.name, path: backup.path }, dbBytes: fresh.dbBytes });
+    }
+    const ids = ready.map((entry) => entry.id);
+    // The tombstone comes first: if the SQL below fails, the sessions stay hidden
+    // and the next purge includes them, rather than a listed session with no data.
+    await sessions.markPurged(ids, { at: new Date().toISOString(), reason: 'purge archived sessions' });
+    let result;
+    try {
+      result = purgeConversations(DB_PATH, ids);
+    } catch (e) {
+      return json(res, 500, {
+        error: `purge failed: ${e?.message || e}`,
+        backup: { name: backup.name, path: backup.path },
+        pending: ids,
+      });
+    }
+    let forgotten = true;
+    try {
+      await sessions.forget(ids);
+    } catch (e) {
+      forgotten = false;
+      console.error('purge: could not remove the registry entries:', e?.message || e);
+    }
+    let moved = false;
+    for (const [device, conversationId] of clientActive) {
+      if (ids.includes(String(conversationId))) { clientActive.delete(device); moved = true; }
+    }
+    if (moved) saveClientActive();
+    return json(res, 200, {
+      ok: true,
+      purged: ready.map((entry) => ({
+        id: entry.id, name: entry.name,
+        entries: result.byId[entry.id]?.entries ?? 0,
+        conversations: result.byId[entry.id]?.conversations ?? 0,
+      })),
+      skipped: fresh.skipped,
+      backup: { name: backup.name, path: backup.path },
+      before: result.beforeBytes, after: result.afterBytes,
+      freed: Math.max(0, result.beforeBytes - result.afterBytes), dbBytes: result.afterBytes,
+      totals: result.totals, vacuumed: result.vacuumed, vacuumError: result.vacuumError,
+      forgotten,
+    });
   }
   if (p === '/api/log' && req.method === 'GET') {
     const which = url.searchParams.get('file') === 'service' ? 'service' : 'node';

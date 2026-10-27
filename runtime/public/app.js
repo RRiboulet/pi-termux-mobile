@@ -327,6 +327,10 @@ const state = {
   showArchived: false,  // the sessions sheet hides archived rows until asked
   renaming: null,       // {id, name} while the rename sheet is open
   backup: null,         // /api/backup: the last one, and where it is
+  purge: null,          // /api/sessions/purge: what is archived, and what blocks it
+  purgePending: 0,      // tombstones from a purge that did not finish
+  purgeResult: null,    // the last purge's counts, backup and freed bytes
+  purging: false,       // a purge request is in flight
   compacting: false,    // a compaction task is in flight
   pairNeeded: false,    // no cookie yet: this browser has to sign in
   pairing: null,        // {url, code, expiresAt} for a device that is joining
@@ -344,6 +348,7 @@ const state = {
   tools: new Map(),     // callId -> { name, brief, out, status: 'run'|'queued'|'done'|'err', child }
   sheet: null,          // null | 'menu' | 'model' | 'thinking' | 'provider'
                         //      | 'addkey' | 'oauth' | 'sessions' | 'usage' | 'extensions'
+                        //      | 'rename' | 'log' | 'purge'
   models: [],
   sessions: [],
   extensions: { installed: [], proposals: [], problems: [] },  // the install gate's state
@@ -780,6 +785,9 @@ async function openSheet(which) {
       set({ oauthProviders: o.providers ?? [] });
     } else if (which === 'sessions') {
       await refreshSessions();
+    } else if (which === 'purge') {
+      set({ purge: null, purgeResult: null });
+      await refreshPurge();
     } else if (which === 'usage') {
       // /api/usage returns {session, total}; /api/state returns the session
       // usage directly. They are different shapes, so they get different fields.
@@ -1277,7 +1285,7 @@ function Scrim() {
 async function refreshSessions() {
   try {
     const r = await get('/api/sessions');
-    set({ sessions: r.sessions ?? r ?? [] });
+    set({ sessions: r.sessions ?? r ?? [], purgePending: r.purgePending ?? 0 });
   } catch { /* the sheet shows what it has */ }
 }
 
@@ -1295,9 +1303,9 @@ async function saveSessionName(id, name) {
 /**
  * Hide a session from the list, or bring it back.
  *
- * pi-durable cannot delete a conversation and the transcript is the only copy of
- * it, so this hides the row and keeps the history. The outline is in the sheet's
- * own copy ("archived, kept on disk") rather than left to be discovered.
+ * pi-durable cannot delete a conversation, so archiving is reversible and keeps
+ * the history. Deleting the rows is the separate, explicit purge below: it takes
+ * a backup first and says how much it removed.
  */
 async function toggleArchive(id, archived) {
   try {
@@ -1308,6 +1316,93 @@ async function toggleArchive(id, archived) {
     notify(String(e.message || e));
   }
   redraw();
+}
+
+// ── purging archived sessions ─────────────────────────────────────────────
+// Archiving hides a session; purging deletes its rows. The bridge decides what
+// is safe to delete (never the open session, one a device is watching, or one
+// with work in flight), takes a backup, and then does the SQL. The client only
+// shows the plan and asks for the one confirmation.
+
+async function refreshPurge() {
+  try {
+    set({ purge: await get('/api/sessions/purge') });
+  } catch (e) {
+    notify(String(e.message || e));
+  }
+}
+
+async function purgeArchived() {
+  set({ purging: true, purgeResult: null });
+  redraw();
+  try {
+    const result = await post('/api/sessions/purge', { confirm: true });
+    set({ purging: false, purgeResult: result });
+    await refreshSessions();
+    await refreshPurge();
+    if (result.purged?.length) {
+      notify(`purged ${result.purged.length} session${result.purged.length === 1 ? '' : 's'} · freed ${bytesLabel(result.freed)}`);
+    } else {
+      notify(result.skipped?.length ? 'nothing purged — those sessions are still open or running' : 'nothing to purge');
+    }
+  } catch (e) {
+    set({ purging: false });
+    notify(String(e.message || e));
+  }
+  redraw();
+}
+
+function bytesLabel(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+function PurgeSheet() {
+  const info = state.purge;
+  const result = state.purgeResult;
+  const ready = info?.ready ?? [];
+  const skipped = info?.skipped ?? [];
+  const entries = ready.reduce((sum, session) => sum + (session.entries ?? 0), 0);
+  const skippedNote = skipped.length
+    ? html`<div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">
+        skipped ${skipped.length}: ${skipped.map((s) => `${s.name ?? `#${s.id}`} (${s.reason})`).join(', ')}
+      </span></div>`
+    : null;
+  let body;
+  if (!info) {
+    body = html`<div class="empty">Checking the store…</div>`;
+  } else if (result) {
+    body = html`
+      <div class="row"><span class="grow">
+        ${result.purged?.length
+          ? `Purged ${result.purged.length} session${result.purged.length === 1 ? '' : 's'} · freed ${bytesLabel(result.freed)}`
+          : 'Nothing was purged.'}
+      </span></div>
+      ${result.backup?.name ? html`<div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">backup: ${result.backup.name}</span></div>` : null}
+      ${result.vacuumError ? html`<div class="row"><span class="grow" style="color:var(--warn);font-size:12.5px">vacuum: ${result.vacuumError}</span></div>` : null}
+      ${result.forgotten === false ? html`<div class="row"><span class="grow" style="color:var(--warn);font-size:12.5px">the store was cleaned, but the session entries could not be removed</span></div>` : null}
+      <button class="row" onClick=${closeSheet}>
+        <span class="grow">Back to sessions</span>
+      </button>`;
+  } else if (!ready.length) {
+    body = html`<div class="empty">Nothing to purge.</div>${skippedNote}`;
+  } else {
+    body = html`
+      <div class="row"><span class="grow">Delete ${ready.length} archived session${ready.length === 1 ? '' : 's'} — ${entries.toLocaleString()} entries.</span></div>
+      <div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">A backup is taken first; pull it off the phone if you want the transcripts. This cannot be undone.</span></div>
+      ${skippedNote}
+      <button class="row danger" disabled=${state.purging} onClick=${() => purgeArchived()}>
+        <span class="grow">${state.purging ? 'Purging…' : `Purge ${ready.length} session${ready.length === 1 ? '' : 's'}`}</span>
+      </button>`;
+  }
+  return html`
+    <div class="sheet">
+      <div class="grab"></div>
+      <header><h2>Purge archived</h2><button class="icon" onClick=${closeSheet} aria-label="Close">✕</button></header>
+      <div class="body">${body}</div>
+    </div>`;
 }
 
 function LogSheet() {
@@ -1745,6 +1840,7 @@ function Sheet() {
   if (which === 'extensions') return html`<${Scrim} /><${ExtensionsSheet} />`;
   if (which === 'rename') return html`<${Scrim} /><${RenameSheet} />`;
   if (which === 'log') return html`<${Scrim} /><${LogSheet} />`;
+  if (which === 'purge') return html`<${Scrim} /><${PurgeSheet} />`;
   const title = which === 'model' ? 'Model' : which === 'sessions' ? 'Sessions' : 'Usage';
   let body;
   if (which === 'model') {
@@ -1762,6 +1858,7 @@ function Sheet() {
   } else if (which === 'sessions') {
     const sessions = state.sessions?.sessions ?? state.sessions ?? [];
     const archived = sessions.filter((s) => s.archived);
+    const purgePending = state.purgePending ?? 0;
     const shown = state.showArchived ? sessions : sessions.filter((s) => !s.archived);
     body = shown.length
       ? html`${shown.map((s) => {
@@ -1775,6 +1872,10 @@ function Sheet() {
         })}
         ${archived.length ? html`<button class="row" onClick=${() => { set({ showArchived: !state.showArchived }); redraw(); }}>
           <span class="grow">${state.showArchived ? 'Hide archived' : `Show archived (${archived.length})`}</span>
+        </button>` : null}
+        ${archived.length || purgePending ? html`<button class="row" onClick=${() => openSheet('purge')}>
+          <span class="grow">Purge archived…</span>
+          <small>${archived.length ? `${archived.length} archived` : `${purgePending} pending cleanup`} · a backup first</small>
         </button>` : null}`
       : html`<div class="empty">${state.showArchived ? 'No sessions yet.' : 'No sessions yet — archived ones are under “Show archived”.'}</div>`;
   } else {
