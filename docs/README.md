@@ -28,20 +28,17 @@ why the app looks the way it does.
 | [backup-and-restore.md](backup-and-restore.md) | The archive contract (paths relative to `$HOME`) and the restore procedure the e2e test runs. |
 | [adb-wireless-install.md](adb-wireless-install.md) | Installing over wireless adb, and the no-adb fallback used on the phone. |
 | [install-gate.md](install-gate.md) | The install gate: the agent proposes an extension, the user is shown the file, its hash and its diff, and taps Install. What it does, and what it is not. |
-| [reviews/pr12-client-test-isolation-review.md](reviews/pr12-client-test-isolation-review.md) | The review of the client paint fix: an adversarial and a design pass that agreed the fix was right and the test-harness half of it was not. |
-| [reviews/ui-review.md](reviews/ui-review.md) | The client review, in three passes, and the defects it found. |
-| [reviews/S0.1-review.md](reviews/S0.1-review.md) | The review of the *spike* — the proot route that was measured and then not taken. Kept as the audit trail for the decision. |
 
-## The plan
+## The original plan
 
 | document | what it is |
 |---|---|
-| [pi-durable-android-plan.md](pi-durable-android-plan.md) | The original plan: kernel architecture, extension porting, the UI, the self-building loop, the risks. Written for a proot + glibc app; **superseded in part** — read `plan-revision.md` first. |
-| [pi-durable-android-oss-review.md](pi-durable-android-oss-review.md) | The survey of the existing landscape: what runs Pi Durable on a phone today, and what each project actually does. The corrected answer to §1.1's "four premises". |
-| [S0.1-RUNBOOK.md](S0.1-RUNBOOK.md) | How the spike was to be measured, on the device, and what each cell meant. |
-| [S0.8-DECISION-RECORD.md](S0.8-DECISION-RECORD.md) | The blank Phase 0 decision record. Historical: the decisions it was written to record are in `plan-revision.md` (Appendix B, §1.5–§1.9, §5) and in the running app. |
-| [spikes/BASELINE-x86.md](spikes/BASELINE-x86.md) | The host-side baseline the device numbers are compared against. |
-| [spikes/S0.1-2026-10-21a-launch-failed.json](spikes/S0.1-2026-10-21a-launch-failed.json) | The device's own report from the first (and only) spike run. |
+| [pi-durable-android-plan.md](pi-durable-android-plan.md) | The original plan: kernel architecture, extension porting, the UI, the self-building loop, the risks. Written for a proot + glibc app; **superseded in part** — read `plan-revision.md` first. Kept for its still-relevant Phase 1+ material (the extension ledger, the missing screens, the risks). |
+
+The Phase 0 artifacts that went with the proot route — the runbook, the blank
+decision record, the spike reports and the reviews — were removed once the
+route was decided. The failure and the decisions it produced are recorded in
+[plan-revision.md](plan-revision.md) and [device-verification.md](device-verification.md).
 
 ## Two architectures, one decision
 
@@ -56,10 +53,11 @@ routes to the same goal: Pi Durable running on an Android phone.
   device, and it failed at the first launch: `proot error: unknown option
   '-e'`.
 
-The spike's report is in `spikes/`, and `reviews/S0.1-review.md` has the
-review. What the failure proved is worth keeping: the **API-29+ app-home exec
-ban is active** on the device, which is the constraint the Termux route also
-respects — by staying at `targetSdk 28`, where the ban does not apply.
+The spike's raw artifacts are no longer in the tree. What the failure proved is
+recorded here and in [plan-revision.md](plan-revision.md): the **API-29+
+app-home exec ban is active** on the device, which is the constraint the Termux
+route also respects — by staying at `targetSdk 28`, where the ban does not
+apply.
 
 The proot route is not refuted by that failure. It was never finished. It was
 dropped because the other route was already running.
@@ -72,7 +70,7 @@ Android app  (app.pidabl, targetSdk 28)
 ├── MainActivity         a WebView; loads the loopback bridge; holds no state
 └── filesDir/
     ├── prefix/          the Termux userland, applicationId-rewritten
-    │   └── node → ...   Node 24, with node:sqlite
+    │   └── node → ...   Node 26, with node:sqlite
     └── state/
         ├── server.lock  the owner lock: one writer, ever
         └── pi-durable.sqlite

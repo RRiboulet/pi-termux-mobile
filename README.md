@@ -49,8 +49,6 @@ What changed here, and why, is written down in
   a runtime change without building an APK.
 - **[`docs/backup-and-restore.md`](docs/backup-and-restore.md)** — what the
   archive contains, and how to restore it.
-- **[`docs/reviews/ui-review.md`](docs/reviews/ui-review.md)** — the client
-  review, and the defects it found.
 - **[`docs/gh-tool.md`](docs/gh-tool.md)** — `scripts/gh`, the small GitHub CLI
   this fork uses to open pull requests for other agents to review.
 - **[`docs/pi-durable-android-plan.md`](docs/pi-durable-android-plan.md)** —
@@ -160,14 +158,6 @@ own source. What the gate does is make the ordinary path — write an
 extension, propose it — need a tap.
 [docs/install-gate.md](docs/install-gate.md) has the details, including where
 this falls short of the plan's §5 R10.
-
-## App screen
-
-<img src="docs/screens/chat.png" width="260" alt="Chat page">
-
-Local conversation running on the phone (durable: SQLite-backed, survives
-process death), with model dropdown, session name, token/cost counter and
-new / compact buttons.
 
 ## What was removed
 
@@ -393,8 +383,6 @@ Caveats on device:
   package id by `scripts/package-rootfs.ts`, so `npm` and the other scripts
   find their interpreter. The Android *package* names inside Termux's own
   tools (`am`, `pkg`, `termux-*`) still say `com.termux`; they are dead here.
-
-See ANALYSE.md for the full evaluation and upstream facts.
 
 ## Changelog
 
