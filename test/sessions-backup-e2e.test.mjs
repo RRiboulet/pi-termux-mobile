@@ -147,12 +147,22 @@ test('archived sessions can be purged, after a backup, and the rows are gone', a
   const refused = await bd.api('/api/sessions/purge', { method: 'POST', body: '{}' });
   assert.equal(refused.status, 400, 'a purge without confirm:true was accepted');
 
-  const purged = await bd.api('/api/sessions/purge', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+  // A session archived after the sheet's plan was read is not in the ids the
+  // client sends, so it must survive even though it is now archived.
+  const other = await (await bd.api('/api/sessions/new', { method: 'POST', body: '{}' })).json();
+  await bd.api('/api/sessions/select', { method: 'POST', body: JSON.stringify({ id: openId }) });
+  await bd.api('/api/sessions/archive', { method: 'POST', body: JSON.stringify({ id: other.activeId }) });
+
+  const purged = await bd.api('/api/sessions/purge', {
+    method: 'POST',
+    body: JSON.stringify({ confirm: true, ids: plan.ready.map((s) => s.id) }),
+  });
   assert.equal(purged.status, 200);
   const result = await purged.json();
   assert.ok(result.purged.some((s) => String(s.id) === String(id)), 'the candidate was not reported as purged');
   assert.ok(result.backup?.path && existsSync(result.backup.path), 'no backup was taken before the purge');
-  assert.ok(result.after <= result.before, `the store grew: ${result.before} -> ${result.after}`);
+  assert.ok(result.freed >= 0, `the freed bytes are not a number: ${result.freed}`);
+  assert.ok(result.dbBytes > 0, `the store size is not reported: ${result.dbBytes}`);
 
   // It is gone from the list, and from the store: the conversation, its entries
   // and its row in the id allocator's registry.
@@ -163,6 +173,7 @@ test('archived sessions can be purged, after a backup, and the rows are gone', a
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM conversations WHERE id = ?').get(Number(id)).n, 0);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries WHERE conversation_id = ?').get(Number(id)).n, 0);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM record_ids WHERE record_type = 'conversation' AND id = ?").get(Number(id)).n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM conversations WHERE id = ?').get(Number(other.activeId)).n, 1, 'a session outside the confirmed ids was deleted');
   } finally {
     db.close();
   }
@@ -185,7 +196,7 @@ test('the open session is skipped, not purged', async () => {
   assert.ok(!plan.ready.some((s) => String(s.id) === String(id)), 'an open archived session is a purge candidate');
   assert.ok(plan.skipped.some((s) => String(s.id) === String(id) && /open/.test(s.reason)), `the open session was not skipped: ${JSON.stringify(plan.skipped)}`);
 
-  const purged = await (await bd.api('/api/sessions/purge', { method: 'POST', body: JSON.stringify({ confirm: true }) })).json();
+  const purged = await (await bd.api('/api/sessions/purge', { method: 'POST', body: JSON.stringify({ confirm: true, ids: [id] }) })).json();
   assert.ok(!purged.purged.some((s) => String(s.id) === String(id)), 'an open session was purged');
   await bd.api('/api/sessions/select', { method: 'POST', body: JSON.stringify({ id: openId }) });
 });

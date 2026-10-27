@@ -932,6 +932,7 @@ async function preparePurge() {
     const row = inspection.byId[candidate.id] ?? {};
     if (row.runningTasks) skipped.push({ ...candidate, reason: 'a task is still running' });
     else if (row.pendingSubmissions) skipped.push({ ...candidate, reason: 'a submission is queued' });
+    else if (row.dependentForks) skipped.push({ ...candidate, reason: 'a forked session depends on it' });
     else ready.push({ ...candidate, ...row });
   }
   return { ready, skipped, dbBytes: inspection.dbBytes };
@@ -1074,12 +1075,22 @@ async function handleApi(req, res, url, p) {
     if (body.confirm !== true) {
       return json(res, 400, { error: 'confirm: true is required to purge sessions' });
     }
-    // A backup first, and then ask again: the backup can take a moment, and a
-    // device may have opened an archived session while it ran.
-    const initial = await preparePurge();
-    if (!initial.ready.length) {
-      return json(res, 200, { ok: true, purged: [], skipped: initial.skipped, dbBytes: initial.dbBytes });
+    if (body.ids !== undefined && !Array.isArray(body.ids)) {
+      return json(res, 400, { error: 'ids must be an array of session ids' });
     }
+    // The client sends the ids it showed. Purging the server's current plan
+    // instead would let a session archived after the sheet opened be deleted
+    // without the user ever seeing it.
+    const requested = Array.isArray(body.ids) ? new Set(body.ids.map((id) => String(id))) : null;
+    const initialPlan = await preparePurge();
+    const initial = requested
+      ? initialPlan.ready.filter((entry) => requested.has(entry.id))
+      : initialPlan.ready;
+    if (!initial.length) {
+      return json(res, 200, { ok: true, purged: [], skipped: initialPlan.skipped, dbBytes: initialPlan.dbBytes });
+    }
+    // A backup first: it is the way back from the delete, so a degraded copy is
+    // refused rather than presented as a backup.
     let backup;
     try {
       backup = await makeBackup();
@@ -1087,17 +1098,22 @@ async function handleApi(req, res, url, p) {
       return json(res, 500, { error: `could not back up before purging: ${e?.message || e}` });
     }
     if (!backup.started) return json(res, 409, { error: backup.reason || 'a backup is already running' });
-
-    // Only the sessions the user saw are candidates: one archived while the
-    // backup ran waits for the next purge, and one opened while it ran is now
-    // ineligible. Re-check eligibility, but do not widen the set.
+    if (backup.warning) {
+      return json(res, 409, {
+        error: `the backup was degraded (${backup.warning}), so the purge was refused`,
+        backup: { name: backup.name, path: backup.path },
+      });
+    }
+    // Only what the user saw is a candidate; re-check eligibility, do not widen
+    // the set. A session archived while the backup ran waits for the next purge.
     const fresh = await preparePurge();
     const stillReady = new Map(fresh.ready.map((entry) => [entry.id, entry]));
-    const ready = initial.ready.map((entry) => stillReady.get(entry.id)).filter(Boolean);
+    const ready = initial.map((entry) => stillReady.get(entry.id)).filter(Boolean);
     if (!ready.length) {
       return json(res, 200, { ok: true, purged: [], skipped: fresh.skipped, backup: { name: backup.name, path: backup.path }, dbBytes: fresh.dbBytes });
     }
     const ids = ready.map((entry) => entry.id);
+    const relevantSkipped = requested ? fresh.skipped.filter((entry) => requested.has(entry.id)) : fresh.skipped;
     // The tombstone comes first: if the SQL below fails, the sessions stay hidden
     // and the next purge includes them, rather than a listed session with no data.
     await sessions.markPurged(ids, { at: new Date().toISOString(), reason: 'purge archived sessions' });
@@ -1105,6 +1121,13 @@ async function handleApi(req, res, url, p) {
     try {
       result = purgeConversations(DB_PATH, ids);
     } catch (e) {
+      if (e?.status === 409) {
+        return json(res, 409, {
+          error: e.message || 'the purge was blocked',
+          blocked: e.blocked || [],
+          backup: { name: backup.name, path: backup.path },
+        });
+      }
       return json(res, 500, {
         error: `purge failed: ${e?.message || e}`,
         backup: { name: backup.name, path: backup.path },
@@ -1130,14 +1153,14 @@ async function handleApi(req, res, url, p) {
         entries: result.byId[entry.id]?.entries ?? 0,
         conversations: result.byId[entry.id]?.conversations ?? 0,
       })),
-      skipped: fresh.skipped,
+      skipped: relevantSkipped,
       backup: { name: backup.name, path: backup.path },
-      before: result.beforeBytes, after: result.afterBytes,
       freed: Math.max(0, result.beforeBytes - result.afterBytes), dbBytes: result.afterBytes,
-      totals: result.totals, vacuumed: result.vacuumed, vacuumError: result.vacuumError,
+      vacuumed: result.vacuumed, vacuumError: result.vacuumError,
       forgotten,
     });
   }
+
   if (p === '/api/log' && req.method === 'GET') {
     const which = url.searchParams.get('file') === 'service' ? 'service' : 'node';
     const tail = Math.min(Math.max(Number(url.searchParams.get('tail')) || 200, 1), 2000);

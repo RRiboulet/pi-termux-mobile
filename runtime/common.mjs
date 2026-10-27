@@ -337,13 +337,21 @@ export function sessionStore(harness, ctx) {
     register: (id, meta) => commit((reg) => {
       if (!reg.sessions[String(id)]) reg.sessions[String(id)] = { created: new Date().toISOString(), ...defined(meta) };
     }),
-    /** Create a conversation and its registry entry in one commit. */
-    async create(meta, { agent, fork } = {}) {
+    /**
+     * Create a conversation and its registry entry in one commit.
+     *
+     * Forking is deliberately not offered here. pi-durable records a fork's
+     * parent in the conversation record, not in the ownership columns purge.mjs
+     * follows: deleting a fork's parent would leave the fork unreadable, and
+     * deleting the fork with the parent is data loss the user did not ask for.
+     * purge.mjs now skips a parent that has a surviving fork, so a fork route
+     * must decide that trade before it comes back.
+     */
+    async create(meta, { agent } = {}) {
       const init = async (tx, id) => {
         const reg = await tx.doc(SessionRegistry);
         reg.sessions[String(id)] = { created: new Date().toISOString(), ...defined(meta) };
       };
-      if (fork) return fork.conv.fork(fork.entryId, { ownership: { kind: 'ownerless' }, init }, ctx);
       return harness.createConversation({ ownership: { kind: 'ownerless' }, agent, init }, ctx);
     },
     /** One-time import of a legacy JSON registry ({id: meta} map). */

@@ -16,17 +16,42 @@
 // touched: they belong to the session, not to a conversation.
 //
 // This is deliberately synchronous. It runs on the bridge's event loop while the
-// harness holds the same file; a write transaction plus `VACUUM` on a phone-sized
-// store is short, and doing it in one transaction is the point. `busy_timeout`
-// covers a harness write that is in flight.
+// harness holds the same file; the delete itself is short, but `VACUUM` on a large
+// store is not, so an SSE client can see a brief freeze and reconnect afterwards.
+// The trade is that no in-process harness write can interleave with the delete at
+// all. `busy_timeout` covers a harness write that is in flight.
+//
+// Conversation forks are not offered by the bridge (sessionStore.create dropped
+// the unreachable fork path), but a database written before that removal may
+// still hold them. A fork's `record.parent` is not an ownership column, so this
+// closure does not take it with the parent, and a fork left behind would read a
+// deleted parent. Such a target is skipped (and the delete refuses) instead.
 
 import { DatabaseSync } from 'node:sqlite';
 
 const inList = (values) => values.map(() => '?').join(', ');
 
+// The tables this module knows how to take apart. A pi-durable upgrade that adds
+// a table keyed by a conversation would otherwise leave orphans behind while the
+// purge reported success -- the dangerous failure, because it looks clean.
+const KNOWN_TABLES = new Set([
+  'durable_metadata', 'record_ids', 'conversations', 'entries', 'tasks',
+  'submissions', 'documents', 'document_revisions', 'durable_schema',
+]);
+
+function assertKnownSchema(db) {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .all().map((row) => String(row.name));
+  const unknown = tables.filter((name) => !KNOWN_TABLES.has(name));
+  if (unknown.length) {
+    throw new Error(`purge: pi-durable's schema has table(s) this purge does not know: ${unknown.join(', ')}; update purge.mjs before deleting`);
+  }
+}
+
 function open(dbPath) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA busy_timeout = 5000');
+  assertKnownSchema(db);
   return db;
 }
 
@@ -83,6 +108,14 @@ function collect(db, id) {
     docParams.push(...taskIds);
   }
   const documents = db.prepare(`SELECT id FROM documents WHERE ${docClauses.join(' OR ')}`).all(...docParams);
+  // A fork stores its parent in the conversation record, not in the ownership
+  // columns. A surviving fork whose parent is being deleted would read a deleted
+  // conversation; skip the parent rather than break the fork (or delete it).
+  const forks = db.prepare(`
+    SELECT id FROM conversations
+     WHERE json_extract(record, '$.parent.conversationId') IN (${holes})
+       AND id NOT IN (${holes})
+  `).all(...conv, ...conv);
 
   return {
     conversations: conv,
@@ -90,6 +123,7 @@ function collect(db, id) {
     tasks: taskIds,
     submissions: submissions.map((row) => Number(row.id)),
     documents: documents.map((row) => Number(row.id)),
+    dependentForks: forks.map((row) => Number(row.id)),
     runningTasks: tasks.filter((row) => row.status !== 'terminal').length,
     pendingSubmissions: submissions.filter((row) => row.status === 'queued' || row.status === 'placed').length,
   };
@@ -107,6 +141,7 @@ function collectAll(db, ids) {
       tasks: rows.tasks.length,
       submissions: rows.submissions.length,
       documents: rows.documents.length,
+      dependentForks: rows.dependentForks.length,
       runningTasks: rows.runningTasks,
       pendingSubmissions: rows.pendingSubmissions,
     };
@@ -130,8 +165,9 @@ const totalsOf = (byId) => {
 /**
  * What purging these conversations would remove, without removing it.
  *
- * `runningTasks` and `pendingSubmissions` are the caller's veto: a conversation
- * with work in flight is not a cleanup candidate yet.
+ * `runningTasks` and `pendingSubmissions` are the veto: the route uses them to
+ * build the plan, and `purgeConversations` re-checks them inside the write
+ * transaction, because a task can start between the two.
  */
 export function describePurge(dbPath, ids) {
   const db = open(dbPath);
@@ -155,10 +191,25 @@ export function purgeConversations(dbPath, ids) {
   const db = open(dbPath);
   try {
     const beforeBytes = dbBytesOf(db);
-    const { byId, union } = collectAll(db, ids);
-    const result = { byId, totals: totalsOf(byId), vacuumed: false, beforeBytes, afterBytes: beforeBytes };
+    let byId;
+    let union;
+    let result;
     db.exec('BEGIN IMMEDIATE');
     try {
+      // The read and the delete share one write transaction: a task or
+      // submission that started after the route's last check is visible here,
+      // and aborts the delete rather than being deleted underneath.
+      ({ byId, union } = collectAll(db, ids));
+      const blocked = Object.entries(byId)
+        .filter(([, row]) => row.runningTasks || row.pendingSubmissions || row.dependentForks)
+        .map(([id]) => id);
+      if (blocked.length) {
+        const error = new Error(`purge blocked: ${blocked.join(', ')} has work in flight or a dependent fork`);
+        error.status = 409;
+        error.blocked = blocked;
+        throw error;
+      }
+      result = { byId, totals: totalsOf(byId), vacuumed: false, beforeBytes, afterBytes: beforeBytes };
       const del = (table, column, values) => {
         if (values.length) db.prepare(`DELETE FROM ${table} WHERE ${column} IN (${inList(values)})`).run(...values);
       };

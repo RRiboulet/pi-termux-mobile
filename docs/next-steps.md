@@ -9,7 +9,7 @@ point of half this file.*
 ## Where things stand
 
 - **`dev` is green**, and gated: `.github/workflows/tests.yml` runs
-  `node scripts/run-tests.mjs` — 19 test files — on every push to `dev` and every
+  `node scripts/run-tests.mjs` — 20 test files — on every push to `dev` and every
   pull request. It does not build the APK (item 9).
 - **The phone runs pi mobile** (package `app.pidabl`, label "pi mobile"). The
   bridge is on `127.0.0.1:8787` and the served client is current: `app.js` and
@@ -79,13 +79,22 @@ Ordered by value per unit of work. One item per session.
 - `scripts/prepare-runtime.py` packages an explicit `FILES` list.
   `test/packaging.test.mjs` guards it: a module missing from that list is a dead
   bridge on the phone (`ERR_MODULE_NOT_FOUND` at boot).
+- **A purge is synchronous.** The delete transaction and `VACUUM` run on the
+  bridge's event loop; on a large store an SSE client can see a brief freeze and
+  reconnect afterwards. The backup is taken before that, and a backup that had
+  to fall back to a file copy is refused rather than accepted as the way back.
 - **Deleting is a purge, not an archive.** pi-durable has no conversation delete;
   archiving is a flag in `app.sessions`. The bridge's purge route deletes the
   archived sessions' rows directly — conversation, child conversations, entries,
   tasks, submissions, scoped documents and `record_ids` — in one transaction after
   a backup, then `VACUUM`s. It never touches session-scoped documents or the root,
-  and it skips the open session and anything with a task or submission in flight.
+  and it skips the open session, anything with a task or submission in flight,
+  and a parent whose forked session would be left unreadable.
   "Reset this conversation" still appends a marker; only the purge deletes.
+  The purge takes the ids the sheet showed, refuses a degraded backup, and
+  re-checks the veto inside the delete transaction. It also skips a parent whose
+  forked session survives (a fork's parent link is not an ownership column) and
+  refuses a database whose schema has a table it does not know.
 - **Usage is per assistant message**: `entries.record.model[].usage` with
   `timestamp` (ms). The `pi.usage` document is a cumulative ledger per
   (conversation, model) and has no timestamps. Session 7992 reached 746 entries /

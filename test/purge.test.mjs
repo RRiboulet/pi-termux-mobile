@@ -79,7 +79,7 @@ test('a purge takes the conversation, its children and their documents, and leav
     const plan = describePurge(store.dbPath, ['2']);
     assert.deepEqual(plan.byId['2'], {
       conversations: 3, entries: 4, tasks: 1, submissions: 1, documents: 2,
-      runningTasks: 0, pendingSubmissions: 0,
+      dependentForks: 0, runningTasks: 0, pendingSubmissions: 0,
     });
 
     const result = purgeConversations(store.dbPath, ['2']);
@@ -112,16 +112,58 @@ test('a purge takes the conversation, its children and their documents, and leav
   }
 });
 
-test('a running task is reported, not deleted', async () => {
+test('a running task blocks the delete, and the rows stay', async () => {
   const store = await makeStore();
   try {
     seed(store.dbPath);
     const plan = describePurge(store.dbPath, ['5']);
     assert.equal(plan.byId['5'].runningTasks, 1, 'the running task is not visible to the caller');
-
-    // The module deletes what it is given; the route is what refuses. This pins
-    // the signal the route uses.
     assert.equal(plan.byId['5'].pendingSubmissions, 0);
+
+    // The route is not the only gate: the module re-checks under the write
+    // transaction, because a task can start between the route's plan and here.
+    assert.throws(
+      () => purgeConversations(store.dbPath, ['5']),
+      (error) => error.status === 409 && error.blocked.includes('5'),
+    );
+    assert.equal(count(store.dbPath, 'conversations', 'id = 5'), 1, 'the blocked conversation was deleted');
+    assert.equal(count(store.dbPath, 'entries', 'id = 105'), 1);
+  } finally {
+    rmSync(store.dir, { recursive: true, force: true });
+  }
+});
+
+test('a surviving fork blocks purging its parent', async () => {
+  const store = await makeStore();
+  try {
+    seed(store.dbPath);
+    const db = new DatabaseSync(store.dbPath);
+    try {
+      db.prepare("INSERT INTO conversations (id, owner_conversation_id, owner_task_id, record) VALUES (6, NULL, NULL, ?)")
+        .run(JSON.stringify({ parent: { conversationId: 2, at: 101 } }));
+      db.prepare("INSERT INTO record_ids (id, record_type) VALUES (6, 'conversation')").run();
+    } finally { db.close(); }
+
+    const plan = describePurge(store.dbPath, ['2']);
+    assert.equal(plan.byId['2'].dependentForks, 1, 'the surviving fork is not visible');
+    assert.throws(
+      () => purgeConversations(store.dbPath, ['2']),
+      (error) => error.status === 409 && error.blocked.includes('2'),
+    );
+    assert.equal(count(store.dbPath, 'conversations', 'id IN (2, 6)'), 2, 'a parent with a surviving fork was deleted');
+  } finally {
+    rmSync(store.dir, { recursive: true, force: true });
+  }
+});
+
+test('a schema table the purge does not know refuses the delete', async () => {
+  const store = await makeStore();
+  try {
+    seed(store.dbPath);
+    const db = new DatabaseSync(store.dbPath);
+    try { db.exec('CREATE TABLE future_attachment (id INTEGER PRIMARY KEY, conversation_id INTEGER)'); } finally { db.close(); }
+    assert.throws(() => purgeConversations(store.dbPath, ['2']), /does not know/);
+    assert.equal(count(store.dbPath, 'conversations', 'id = 2'), 1, 'a purge ran against an unknown schema');
   } finally {
     rmSync(store.dir, { recursive: true, force: true });
   }

@@ -1336,7 +1336,10 @@ async function purgeArchived() {
   set({ purging: true, purgeResult: null });
   redraw();
   try {
-    const result = await post('/api/sessions/purge', { confirm: true });
+    // Send the ids the sheet showed: a session archived after this sheet opened
+    // must not be deleted without the user having seen it.
+    const ids = (state.purge?.ready ?? []).map((session) => session.id);
+    const result = await post('/api/sessions/purge', { confirm: true, ids });
     set({ purging: false, purgeResult: result });
     await refreshSessions();
     await refreshPurge();
@@ -1377,7 +1380,7 @@ function PurgeSheet() {
     body = html`
       <div class="row"><span class="grow">
         ${result.purged?.length
-          ? `Purged ${result.purged.length} session${result.purged.length === 1 ? '' : 's'} · freed ${bytesLabel(result.freed)}`
+          ? `Purged ${result.purged.length} session${result.purged.length === 1 ? '' : 's'} · freed ${bytesLabel(result.freed)} · store ${bytesLabel(result.dbBytes)}`
           : 'Nothing was purged.'}
       </span></div>
       ${result.backup?.name ? html`<div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">backup: ${result.backup.name}</span></div>` : null}
@@ -1391,7 +1394,7 @@ function PurgeSheet() {
   } else {
     body = html`
       <div class="row"><span class="grow">Delete ${ready.length} archived session${ready.length === 1 ? '' : 's'} — ${entries.toLocaleString()} entries.</span></div>
-      <div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">A backup is taken first; pull it off the phone if you want the transcripts. This cannot be undone.</span></div>
+      <div class="row"><span class="grow" style="color:var(--muted);font-size:12.5px">Store: ${bytesLabel(info.dbBytes)} · a backup is taken first; pull it off the phone if you want the transcripts. This cannot be undone.</span></div>
       ${skippedNote}
       <button class="row danger" disabled=${state.purging} onClick=${() => purgeArchived()}>
         <span class="grow">${state.purging ? 'Purging…' : `Purge ${ready.length} session${ready.length === 1 ? '' : 's'}`}</span>

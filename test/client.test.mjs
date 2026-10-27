@@ -1262,7 +1262,8 @@ test('an archived session can be purged, after the sheet says what it removes', 
   purge.dispatchEvent(new window.Event('click', { bubbles: true }));
   await app.settle();
   assert.match(app.text(), /Delete 1 archived session — 12 entries/, 'the sheet does not say what will be deleted');
-  assert.match(app.text(), /A backup is taken first/, 'the sheet does not say a backup comes first');
+  assert.match(app.text(), /Store: 1\.0 MB/, 'the sheet does not say how big the store is');
+  assert.match(app.text(), /a backup is taken first/, 'the sheet does not say a backup comes first');
 
   const confirm = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Purge 1 session');
   assert.ok(confirm, 'the purge confirmation is missing');
@@ -1271,7 +1272,7 @@ test('an archived session can be purged, after the sheet says what it removes', 
 
   const post = app.fetches.find(([url, opts]) => String(url).includes('/api/sessions/purge') && opts?.method === 'POST');
   assert.ok(post, 'no purge request was sent');
-  assert.deepEqual(JSON.parse(post[1].body), { confirm: true }, 'the purge was not explicitly confirmed');
-  assert.match(app.text(), /Purged 1 session · freed 100 KB/, 'the result does not say what was freed');
+  assert.deepEqual(JSON.parse(post[1].body), { confirm: true, ids: ['20'] }, 'the purge was not explicitly confirmed, or did not carry the ids the sheet showed');
+  assert.match(app.text(), /Purged 1 session · freed 100 KB · store 900 KB/, 'the result does not say what was freed');
   assert.match(app.text(), /pi-backup-x\.tar\.gz/, 'the result does not name the backup');
 });
