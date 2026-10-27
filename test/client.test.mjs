@@ -19,6 +19,9 @@ const PUBLIC = new URL('../runtime/public/', import.meta.url);
 /** Mount the client in a fresh DOM and return the handles the test needs. */
 async function mount({
   state = {}, models = [], providers = [], oauthProviders = [], usage = {}, extensions = {}, sessions = {},
+  // What /api/sessions/purge answers: the plan, and what the POST returns.
+  purge = { ready: [], skipped: [], dbBytes: 0 },
+  purgeResult = { ok: true, purged: [], skipped: [], backup: null, before: 0, after: 0, freed: 0 },
   // What /api/backup lists, and what pi-update answers poll by poll.
   backup = { dir: '/x/backups', running: false, backups: [] },
   // What /api/session answers: null means a bridge that predates sign-in.
@@ -80,6 +83,7 @@ async function mount({
       : u.includes('/api/oauth/start') ? { id: 'login-1' }
       : u.includes('/api/usage') ? usage
       : u.includes('/api/extensions') ? extensions
+      : u.includes('/api/sessions/purge') ? (opts?.method === 'POST' ? purgeResult : purge)
       : u.includes('/api/sessions') ? sessions
       : u.includes('/api/pi-update') ? (opts?.method === 'POST' ? piStart : nextPiStatus())
       : u.includes('/api/session') ? (session)
@@ -1231,4 +1235,44 @@ test('a client survives a bridge that has no sign-in', async () => {
   const state = app.fetches.find(([u]) => String(u).includes('/api/state'));
   assert.equal(state?.[1]?.headers?.['x-token'], 'test-token', 'the fallback stopped sending the token');
   assert.match(app.sources[0].url, /token=test-token/, 'the stream lost its token on an old bridge');
+});
+
+test('an archived session can be purged, after the sheet says what it removes', async () => {
+  const app = await mount({
+    state: { sessionId: '13', sessionName: 'Main' },
+    sessions: [{ id: '13', name: 'Main' }, { id: '20', name: 'old spike', archived: true }],
+    purge: {
+      ready: [{ id: '20', name: 'old spike', purged: false, conversations: 1, entries: 12, tasks: 0, submissions: 0, documents: 0, runningTasks: 0, pendingSubmissions: 0 }],
+      skipped: [],
+      dbBytes: 1024 * 1024,
+    },
+    purgeResult: {
+      ok: true,
+      purged: [{ id: '20', name: 'old spike', entries: 12, conversations: 1 }],
+      skipped: [], backup: { name: 'pi-backup-x.tar.gz', path: '/x/pi-backup-x.tar.gz' },
+      before: 1024 * 1024, after: 900 * 1024, freed: 100 * 1024, dbBytes: 900 * 1024,
+      vacuumed: true, forgotten: true,
+    },
+  });
+  await app.settle();
+  await openSessions(app);
+
+  const purge = [...app.document.querySelectorAll('button')].find((b) => b.textContent.includes('Purge archived'));
+  assert.ok(purge, 'no purge affordance in the sessions sheet');
+  purge.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+  assert.match(app.text(), /Delete 1 archived session — 12 entries/, 'the sheet does not say what will be deleted');
+  assert.match(app.text(), /Store: 1\.0 MB/, 'the sheet does not say how big the store is');
+  assert.match(app.text(), /a backup is taken first/, 'the sheet does not say a backup comes first');
+
+  const confirm = [...app.document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Purge 1 session');
+  assert.ok(confirm, 'the purge confirmation is missing');
+  confirm.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await app.settle();
+
+  const post = app.fetches.find(([url, opts]) => String(url).includes('/api/sessions/purge') && opts?.method === 'POST');
+  assert.ok(post, 'no purge request was sent');
+  assert.deepEqual(JSON.parse(post[1].body), { confirm: true, ids: ['20'] }, 'the purge was not explicitly confirmed, or did not carry the ids the sheet showed');
+  assert.match(app.text(), /Purged 1 session · freed 100 KB · store 900 KB/, 'the result does not say what was freed');
+  assert.match(app.text(), /pi-backup-x\.tar\.gz/, 'the result does not name the backup');
 });

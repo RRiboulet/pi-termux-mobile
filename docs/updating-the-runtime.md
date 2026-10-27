@@ -17,7 +17,7 @@ finally arrives will delete it without asking.
 | payload | lands in | contents |
 |---|---|---|
 | `assets/rootfs.bin` | `files/usr/` | the Termux userland: `node`, `bash`, `git`, `rg`, `fd`, `sqlite` |
-| `assets/runtime.bin` | `files/runtime/` | `server.mjs`, `common.mjs`, `gate.mjs`, `models-config.mjs`, `node-bin.mjs`, `package.json`, `node_modules/`, `public/` |
+| `assets/runtime.bin` | `files/runtime/` | `server.mjs`, `common.mjs`, `gate.mjs`, `models-config.mjs`, `node-bin.mjs`, `purge.mjs`, `package.json`, `node_modules/`, `public/` |
 | `classes.dex` | the APK | `PiService`, `MainActivity`, `RuntimeInstaller` — the Java host |
 
 `files/home/` (HOME, credentials, `~/.pi-mobile/`) and `files/work/` (the
@@ -85,8 +85,9 @@ node -e 'fetch("https://raw.githubusercontent.com/RRiboulet/pidabl/dev/runtime/p
 
 ## Procedure B — server-side code
 
-A change to `server.mjs`, `gate.mjs`, `common.mjs`, `models-config.mjs` or
-`node-bin.mjs` needs a bridge restart, because those are `import`ed at start.
+A change to `server.mjs`, `gate.mjs`, `common.mjs`, `models-config.mjs`,
+`node-bin.mjs` or `purge.mjs` needs a bridge restart, because those are
+`import`ed at start.
 The service supervises node and restarts it with backoff, so the restart is a
 kill:
 

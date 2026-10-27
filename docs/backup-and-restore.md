@@ -11,6 +11,11 @@ test disagree, the document is wrong.
 
 ## Taking a backup
 
+Purging archived sessions takes a backup first (`Menu → Sessions → Purge
+archived`), so the archive is also the way back from that. If the backup had to
+fall back to a plain file copy — the manifest's `database` field says so — the
+purge is refused: a possibly torn copy is not a way back.
+
 **Menu → Back up sessions.** It writes
 `$HOME/.pi-mobile/backups/pi-backup-<UTC stamp>.tar.gz` and shows you the path.
 Ten are kept; older ones are deleted.

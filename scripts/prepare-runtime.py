@@ -18,7 +18,7 @@ ASSETS = ROOT / 'android/app/src/main/assets'
 # bridge and no way for the user to see why. test/packaging.test.mjs checks this
 # list against runtime/.
 FILES = ['server.mjs', 'common.mjs', 'sse.mjs', 'models-config.mjs', 'node-bin.mjs', 'gate.mjs',
-         'watermark.mjs',
+         'watermark.mjs', 'purge.mjs',
          'package.json', 'package-lock.json', 'public', 'node_modules']
 
 if not (RUNTIME / 'node_modules/@earendil-works/pi-durable').is_dir():
