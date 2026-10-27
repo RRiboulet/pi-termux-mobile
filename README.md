@@ -1,10 +1,13 @@
 # pi-termux-mobile
 
 > **Experimental software:** This is a personal prototype under active
-> development. The embedded Termux runtime and Android background-process
-> handling may still change or fail on individual devices.
+> development.
 >
-> **Version 0.0.5** — still quick & dirty, see the [changelog](#changelog).
+> **Termux-native:** This app runs directly in Termux — no APK, no Android
+> foreground service, no WebView host. The bridge is a Node process; the
+> client is any browser. See [docs/termux-setup.md](docs/termux-setup.md).
+>
+> **Version 0.1.0** — Termux-native, see the [changelog](#changelog).
 
 Minimal Android app that embeds Termux-built binaries (Node.js 26.4.0, bash,
 coreutils, git, ripgrep, fd, npm, …) plus a **pi-durable** harness
@@ -177,39 +180,40 @@ file back.
 
 ## Layout
 
-- `android/` — Gradle project (app module, Java only, no NDK)
 - `runtime/` — `server.mjs` (durable bridge: the HTTP/SSE API and the static
   client), `common.mjs` (harness setup, credential store with file lock,
   durable session registry, single-owner lock),
   `models-config.mjs` (the reader for `~/.pi/agent/models.json`),
-  `node-bin.mjs` (the node binary to spawn: on Android `process.execPath` is
-  the dynamic linker, not node),
+  `node-bin.mjs` (the node binary to spawn),
   `gate.mjs` (the install gate: the agent's proposals, the user's approval),
-  `public/` (the single-screen client), package.json for prod node_modules
-- `scripts/` — `package-rootfs.ts` (builds `rootfs.bin` from the Termux
-  index), `prepare-runtime.py` (packages `runtime.bin` + `payload.sha256`),
-  `run-tests.mjs` (runs the test files, on the phone as well as on a host),
+  `public/` (the single-screen PWA client), package.json for prod node_modules
+- `scripts/` — `setup-termux.sh` (one-command Termux bootstrap),
+  `termux-start.sh` (start bridge with wake lock + watchdog),
+  `termux-stop.sh` (graceful shutdown),
+  `termux-boot.sh` (Termux:Boot auto-start),
+  `run-tests.mjs` (runs the test files),
   `gate-smoke.sh` (the install gate, against a live bridge),
   `gh`/`gh.mjs` (a small GitHub CLI)
-- `tools/` — local toolchain (JDK 21, Android SDK, Gradle 8.10.2) — not committed
-- `.devcontainer/` — the container this app is worked on in: the JDK, the
-  Android SDK (installed onto the `pi-agent-config` volume, not baked into
-  the image), and the setup Gradle needs
+- `docs/` — setup guides, architecture, install gate docs
+- `.devcontainer/` — the container this app is worked on in: Node, tmux, gh
 
-## Build
+## Install
 
-The container in [`.devcontainer/`](.devcontainer/) has the toolchain: JDK 17,
-the Android SDK, Node, python3, tmux and gh. Open this repository in it and
-the build below works as written.
+See [docs/termux-setup.md](docs/termux-setup.md) for the full setup guide.
 
-From a clean checkout:
+Quick start:
 
 ```bash
-node scripts/package-rootfs.ts            # assets/rootfs.bin  (once, or after changing the package list)
-cd runtime && npm ci --omit=dev --omit=optional --ignore-scripts && cd ..
-cd android
-JAVA_HOME=<path-to>/tools/jdk21 ./gradlew assembleDebug   # or the container's JDK 17
-# APK: app/build/outputs/apk/debug/app-debug.apk (~96 MB, aarch64 only content)
+# In Termux:
+pkg install nodejs git ripgrep termux-api
+
+git clone https://github.com/<user>/pi-termux-mobile.git ~/pi-mobile
+cd ~/pi-mobile
+bash scripts/setup-termux.sh
+bash scripts/termux-start.sh
+
+# Open a browser:
+# http://127.0.0.1:8787/?token=<bootstrap-token>
 ```
 
 `package-rootfs.ts` needs Linux with `dpkg`, `dpkg-deb`, GNU `tar` and

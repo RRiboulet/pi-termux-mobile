@@ -935,7 +935,9 @@ async function handleApi(req, res, url, p) {
   }
   if (p === '/api/pair' && req.method === 'POST') {
     if (!authed(req)) return json(res, 401, { error: 'unauthorized' });
-    const base = `http://${String(req.headers.host || `127.0.0.1:${listenPort}`)}`;
+    const proto = String(req.headers['x-forwarded-proto'] || 'http');
+    const host = String(req.headers.host || `127.0.0.1:${listenPort}`);
+    const base = `${proto}://${host}`;
     return json(res, 200, makePairing(base));
   }
   if (p === '/api/access' && req.method === 'POST') {
@@ -1291,8 +1293,10 @@ if (!(await listenOnFirstFreePort())) {
   process.exit(1);
 }
 listenPort = server.address().port;
-writeFileAtomic(PORT_FILE, String(listenPort), 0o600);
+try { writeFileAtomic(PORT_FILE, String(listenPort), 0o600); } catch {}
 console.log(`pi-mobile durable bridge on 127.0.0.1:${listenPort}`);
+console.log(`bootstrap token: ${token}`);
+console.log(`open: http://127.0.0.1:${listenPort}/?token=${token}`);
 
 let stopping = false;
 async function shutdown(signal) {

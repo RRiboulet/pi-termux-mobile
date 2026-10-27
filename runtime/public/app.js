@@ -1960,6 +1960,12 @@ function rememberScroll() {
 // every render as a stray line below the composer. Drop it once, before the
 // first render; subsequent redraws diff against the tree Preact owns.
 doc.getElementById('app').replaceChildren();
+
+// Register the service worker for PWA offline support. Only in a browser
+// context — a WebView or a test DOM may not have it.
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 // The cookie is what the bridge accepts; a token or a pairing code in the URL is
 // exchanged for one here, before the first request that needs it.
 (async () => {
