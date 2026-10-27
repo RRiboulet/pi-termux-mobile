@@ -39,13 +39,18 @@ phone at all.
 
 ## What is running now
 
-The phone's own Termux has `pistatus`, which finds the bridge on loopback and
-reports what it serves:
+The bridge prefers **8787** (8788–8791, then ephemeral). Probe it from the
+phone's Termux; no adb needed:
 
 ```bash
-ssh -p 8022 <phone> 'pistatus'
-# bridge on 127.0.0.1:<port>, GET / -> 200, GET /api/state -> 401
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/         # 200
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/api/state # 401
 ```
+
+`pistatus` is the older helper and does **not** find this bridge: it scans
+`32768–60999`, and 8787 is below that range. Read
+`files/home/.pi-mobile/port` (`adb shell run-as`, on a debuggable build) if the
+bridge fell back. Termux cannot run `run-as` itself.
 
 The bridge's state is in `files/home/.pi-mobile/`: `port`, `token`,
 `server.lock` (the owner lock, holding the pid).
@@ -61,7 +66,7 @@ This is the common case: `public/app.js`, `public/style.css`, `public/index.html
 
 ```bash
 cd ~/work
-git clone -b dev --depth 1 https://github.com/RRiboulet/pi-termux-mobile.git pi-mobile
+git clone -b dev --depth 1 https://github.com/RRiboulet/pidabl.git pi-mobile
 cp pi-mobile/runtime/public/app.js ../runtime/public/app.js
 ```
 
@@ -73,7 +78,7 @@ The repo is public, so no token is needed. `curl` is **not** in the app's
 rootfs — that one belongs to the phone's Termux — so use `git`, or `node`:
 
 ```bash
-node -e 'fetch("https://raw.githubusercontent.com/RRiboulet/pi-termux-mobile/dev/runtime/public/app.js")
+node -e 'fetch("https://raw.githubusercontent.com/RRiboulet/pidabl/dev/runtime/public/app.js")
   .then(r => r.text()).then(t => require("fs").writeFileSync(process.argv[1], t))' \
   ../runtime/public/app.js
 ```
@@ -102,11 +107,12 @@ Restarting interrupts a running turn. Do it with nothing in flight.
 cd ~
 sha256sum ../runtime/public/app.js             # what is on disk
 sha256sum pi-mobile/runtime/public/app.js       # what the repo has (must match)
-pistatus                                       # and it answers
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/  # 200
 ```
 
 From a container, `git show dev:runtime/public/app.js | sha256sum` is the same
-comparison against the branch.
+comparison against the branch. `index.html` will differ by the `?v=<mtime>`
+query the bridge adds at serve time; compare `app.js` and `style.css`.
 
 ## The next APK install deletes it
 

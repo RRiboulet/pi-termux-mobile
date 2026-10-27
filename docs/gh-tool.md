@@ -10,18 +10,22 @@ launcher next to it. Node 22.19+ and `git` are all it needs — both are on the
 phone.
 
 ```sh
-scripts/gh pr create --title "..." --body "..." --base master --push
+scripts/gh pr create --title "..." --body "..." --base dev --push
 scripts/gh pr list --state open --json number,title,url
 scripts/gh pr view 12 --comments
 scripts/gh pr comments 12 --since 2026-10-21T12:00:00Z
 scripts/gh pr diff 12
 scripts/gh pr comment 12 --body "one line about what is wrong"
 scripts/gh pr checks 12
-scripts/gh api GET /repos/RRiboulet/pi-termux-mobile/pulls --field state=open
+scripts/gh api GET /repos/RRiboulet/pidabl/pulls --field state=open
 scripts/gh pr create --repo jeamy/pi-termux-mobile --title "..." --base master --push
 scripts/gh repo view
 scripts/gh auth status
 ```
+
+`--base dev` is the rule for this repository (its default branch is `master`,
+which takes releases only); the `jeamy` line shows the flag when the target
+really is another repository's `master`.
 
 To type `gh` instead of `scripts/gh`:
 
