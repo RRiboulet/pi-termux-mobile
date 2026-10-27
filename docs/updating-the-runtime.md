@@ -65,14 +65,20 @@ that APK" from "hand-edited since".
 This is the common case: `public/app.js`, `public/style.css`, `public/index.html`.
 
 ```bash
-cd ~/work
+WORK="${PI_WORKDIR:-$PWD}"       # files/work: the agent's cwd
+RUNTIME="$WORK/../runtime"       # files/runtime
+cd "$WORK"
 git clone -b dev --depth 1 https://github.com/RRiboulet/pidabl.git pi-mobile
-cp pi-mobile/runtime/public/app.js ../runtime/public/app.js
+cp pi-mobile/runtime/public/* "$RUNTIME/public/"
 ```
 
-Then **force-stop and relaunch the app**, or just reload the WebView. No bridge
-restart: the client is fetched per page load, and `no-store` means a reload is
-enough.
+`$HOME` is `files/home`, not `files/`: `cd ~/work` is a different directory, and
+its `../runtime` is not the runtime the bridge runs. Use `$PI_WORKDIR` (or the
+agent's cwd) as above.
+
+Then **force-stop and relaunch the app**, or just reload the WebView (menu →
+**Reload client**). No bridge restart: the client is fetched per page load, and
+`no-store` means a reload is enough.
 
 The repo is public, so no token is needed. `curl` is **not** in the app's
 rootfs — that one belongs to the phone's Termux — so use `git`, or `node`:
@@ -92,7 +98,12 @@ The service supervises node and restarts it with backoff, so the restart is a
 kill:
 
 ```bash
-cp pi-mobile/runtime/server.mjs ../runtime/server.mjs
+WORK="${PI_WORKDIR:-$PWD}"
+RUNTIME="$WORK/../runtime"
+cd "$WORK"
+# Copy every changed .mjs. A NEW module must exist before the restart: the
+# server imports it at boot, and a missing one makes the service restart-loop.
+cp pi-mobile/runtime/*.mjs "$RUNTIME/"
 pkill -f 'files/runtime/server.mjs'      # PiService restarts it within ~1s
 ```
 
@@ -102,13 +113,27 @@ stray start cannot leave two writers: the new process SIGTERMs the old pid from
 
 Restarting interrupts a running turn. Do it with nothing in flight.
 
+### Doing it from the app's own agent
+
+The agent runs **inside the bridge**, as the app's uid, with its cwd at
+`files/work`; it can `git clone` and `cp` into `files/runtime` — no adb and no
+`run-as`. But `pkill` also kills the process the agent is running in, so its
+turn ends there. Copy everything first, then either:
+
+- **force-stop and reopen the app** (the durable session resumes), or
+- run the `pkill` **detached**, as the last command:
+  `(sleep 2; pkill -f 'files/runtime/server.mjs') >/dev/null 2>&1 &`
+
+The client then reloads with **Reload client** (or back out and relaunch).
+
 ## Verify
 
 ```bash
-cd ~
+WORK="${PI_WORKDIR:-$PWD}"
+cd "$WORK"
 sha256sum ../runtime/public/app.js             # what is on disk
 sha256sum pi-mobile/runtime/public/app.js       # what the repo has (must match)
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/  # 200
+node -e 'const fs=require("fs"); const p=fs.readFileSync(process.env.HOME+"/.pi-mobile/port","utf8").trim(); fetch("http://127.0.0.1:"+p+"/").then(r=>console.log(r.status))'
 ```
 
 From a container, `git show dev:runtime/public/app.js | sha256sum` is the same
