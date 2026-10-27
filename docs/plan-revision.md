@@ -42,8 +42,8 @@ bundle — they mean **`MaliNamNam/pi-phone`**, a different project with the
 same name. **`picassio/pi-phone` and its fork `jeamy/pi-termux-mobile` are
 exactly that**: a Termux userland in an APK, with Pi Durable as the kernel and
 a WebView client. The plan's premise was right about one project and wrong
-about the other. `docs/pi-durable-android-oss-review.md` in this repository
-is the corrected survey.
+about the other. The landscape survey that established this is no longer kept
+in the tree; the decision it supports is Appendix B.
 
 ### §1.3 The runtime — **inverted, and now measured instead of argued**
 
@@ -160,7 +160,7 @@ to be used.
 
 ### §3 UI/UX — **the plan's screen set, against a client that now exists**
 
-The new client (see `docs/reviews/ui-review.md`) implements **S1** (the
+The new client implements **S1** (the
 transcript, with thinking blocks), **S2** (the composer, with Steer / Stop),
 **S3** (the status line) and **S7** (usage). **S4** (the task panel),
 **S5** (the subagent view), **S6** (the recovery sheet) and **S8** (the git
